@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>Humdinger live</title>
+<script src="design-runtime.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>/* vietnamese */
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 800;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 800;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-weight: 800;
+  font-stretch: 100%;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* greek-ext */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+1F00-1FFF;
+}
+/* greek */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* greek-ext */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+1F00-1FFF;
+}
+/* greek */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* greek-ext */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+1F00-1FFF;
+}
+/* greek */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* greek-ext */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+1F00-1FFF;
+}
+/* greek */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* greek */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C8A, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* greek */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0370-0377, U+037A-037F, U+0384-038A, U+038C, U+038E-03A1, U+03A3-03FF;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("font") format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+</style>
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="position: relative; width: 390px; height: 844px; background: #14121A; color: #F3EFF8; font-family: Inter, sans-serif; overflow: hidden">
+  <div style="position: absolute; left: 20px; right: 20px; top: 12px; height: 44px; display: flex; align-items: center; gap: 8px">
+    <a href="Output.dc.html" style="flex: 1; height: 44px; border-radius: 22px; background: #1C1925; color: #F3EFF8; text-decoration: none; display: flex; align-items: center; gap: 8px; padding: 0 14px; font-size: 13px; font-weight: 600"><span style="width: 8px; height: 8px; border-radius: 4px; background: #C6F24E"></span>FMutate A<span style="font: 500 11px/1 'JetBrains Mono', monospace; color: #A9A3B8">+ MIDI port · ch 1</span></a>
+    <a href="Settings.dc.html" aria-label="Settings" style="width: 44px; height: 44px; border-radius: 22px; background: #1C1925; display: flex; align-items: center; justify-content: center"><svg width="20" height="20" sc-camel-view-box="0 0 24 24" fill="none" stroke="#F3EFF8" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"></path><circle cx="16" cy="7" r="2"></circle><circle cx="10" cy="17" r="2"></circle></svg></a>
+  </div>
+
+  <div style="position: absolute; left: 28px; top: 70px; width: 334px; height: 12px">
+    <sc-for list="{{map}}" as="m" hint-placeholder-count="88"><div style="position: absolute; left: {{m.l}}px; top: {{m.t}}px; width: {{m.w}}px; height: {{m.h}}px; background: {{m.c}}"></div></sc-for>
+    <div style="position: absolute; left: {{win.l}}px; top: -3px; width: {{win.w}}px; height: 14px; box-sizing: border-box; border: 2px solid #F3EFF8; border-radius: 4px"></div>
+  </div>
+
+  <div style="position: absolute; left: 28px; top: 92px; width: 334px; height: 104px; border-radius: 10px; overflow: hidden; background: #0E0D12">
+    <sc-for list="{{whites}}" as="k" hint-placeholder-count="9">
+      <div style="position: absolute; left: {{k.l}}px; top: 0; width: 41px; height: 104px; border-radius: 0 0 8px 8px; background: {{k.bg}}; overflow: hidden">
+        <div style="height: 9px; background: {{k.cap}}"></div>
+        <span style="position: absolute; left: 0; right: 0; bottom: 8px; text-align: center; font: 700 11px/1 'JetBrains Mono', monospace; color: {{k.fg}}">{{k.name}}</span>
+      </div>
+    </sc-for>
+    <sc-for list="{{blacks}}" as="k" hint-placeholder-count="6">
+      <div style="position: absolute; left: {{k.l}}px; top: 0; width: 26px; height: 62px; border-radius: 0 0 6px 6px; background: #2A2633; box-shadow: 0 0 0 2px #0E0D12; overflow: hidden"><div style="height: 7px; background: {{k.cap}}"></div></div>
+    </sc-for>
+    <div style="position: absolute; left: 157px; top: 70px; width: 3px; height: 14px; border-radius: 2px; background: #14121A"></div>
+  </div>
+
+  <div style="position: absolute; left: 28px; top: 210px; width: 334px; height: 120px; display: flex; align-items: center; gap: 16px">
+    <dc-import note="69" mood="flat" size="1.9" hint-size="105px,105px" name="Blob"></dc-import>
+    <div style="flex: 1; display: flex; flex-direction: column; gap: 8px">
+      <div style="display: flex; align-items: baseline; gap: 10px"><span style="font-family: 'Bricolage Grotesque', sans-serif; font-size: 64px; font-weight: 800; line-height: 0.9; color: {{noteC}}">A4</span><span style="font: 600 12px/1 'JetBrains Mono', monospace; color: #A9A3B8">vel 92</span></div>
+      <div style="position: relative; height: 22px">
+        <div style="position: absolute; left: 0; right: 0; top: 9px; height: 4px; border-radius: 2px; background: #2E2A3B"></div>
+        <div style="position: absolute; left: 86px; width: 40px; top: 7px; height: 8px; border-radius: 4px; background: #C6F24E; opacity: 0.35"></div>
+        <div style="position: absolute; left: 105px; top: 1px; width: 2px; height: 20px; background: #6B6580"></div>
+        <div style="position: absolute; left: 88px; top: 3px; width: 4px; height: 16px; border-radius: 2px; background: #F3EFF8"></div>
+      </div>
+      <span style="font: 600 11px/1 'JetBrains Mono', monospace; color: #C9C3D6">−12¢ · a little flat</span>
+    </div>
+  </div>
+
+  <div style="position: absolute; left: 20px; top: 344px; width: 350px; height: 256px; border-radius: 16px; background: #1C1925; overflow: hidden">
+    <sc-for list="{{rows}}" as="r" hint-placeholder-count="11">
+      <div style="position: absolute; left: 0; right: 0; top: {{r.t}}px; height: 22px; background: {{r.bg}}"><span style="position: absolute; left: 8px; top: 6px; font: 600 10px/1 'JetBrains Mono', monospace; color: {{r.fg}}">{{r.name}}</span></div>
+    </sc-for>
+    <sc-for list="{{blocks}}" as="b" hint-placeholder-count="5"><div style="position: absolute; left: {{b.l}}px; top: {{b.t}}px; width: {{b.w}}px; height: 16px; border-radius: 5px; background: {{b.c}}; opacity: {{b.o}}"></div></sc-for>
+    <svg width="350" height="256" sc-camel-view-box="0 0 350 256" style="position: absolute; left: 0; top: 0" aria-hidden="true"><path d="{{trace}}" fill="none" stroke="#F3EFF8" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+    <div style="position: absolute; left: 306px; top: 0; bottom: 0; width: 2px; background: #F3EFF8; opacity: 0.4"></div>
+    <div style="position: absolute; left: 297px; top: {{nowY}}px; width: 20px; height: 20px; border-radius: 10px; background: #F3EFF8"></div>
+    <a href="Spectrum.dc.html" style="position: absolute; right: 8px; bottom: 8px; height: 36px; padding: 0 12px; border-radius: 18px; background: #14121A; color: #E4DFEE; text-decoration: none; display: flex; align-items: center; font: 600 12px Inter, sans-serif">Spectrum ›</a>
+  </div>
+
+  <div style="position: absolute; left: 20px; right: 20px; top: 614px; display: flex; flex-direction: column; gap: 10px">
+    <div style="display: flex; gap: 8px">
+      <div style="flex: 1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; padding: 3px; border-radius: 12px; background: #1C1925">
+        <button type="button" style="height: 40px; border-radius: 9px; border: none; background: #34304A; color: #F3EFF8; font: 600 13px Inter, sans-serif">Scale</button>
+        <button type="button" style="height: 40px; border-radius: 9px; border: none; background: transparent; color: #A9A3B8; font: 600 13px Inter, sans-serif">Open + bend</button>
+      </div>
+      <button type="button" style="height: 46px; padding: 0 14px; border-radius: 12px; border: none; background: #1C1925; color: #F3EFF8; font: 600 13px Inter, sans-serif">D Dorian ▾</button>
+    </div>
+    <div style="display: flex; gap: 8px">
+      <div style="flex: 1; height: 46px; border-radius: 12px; background: #1C1925; display: flex; align-items: center; justify-content: space-between; padding: 0 4px"><button type="button" aria-label="Octave down" style="width: 44px; height: 40px; border: none; background: transparent; color: #F3EFF8; font: 700 18px Inter, sans-serif">−</button><span style="font: 600 12px 'JetBrains Mono', monospace">octave 0</span><button type="button" aria-label="Octave up" style="width: 44px; height: 40px; border: none; background: transparent; color: #F3EFF8; font: 700 18px Inter, sans-serif">+</button></div>
+      <div style="flex: 1; height: 46px; border-radius: 12px; background: #1C1925; display: flex; align-items: center; justify-content: space-between; padding: 0 4px"><button type="button" aria-label="Transpose down" style="width: 44px; height: 40px; border: none; background: transparent; color: #F3EFF8; font: 700 18px Inter, sans-serif">−</button><span style="font: 600 12px 'JetBrains Mono', monospace">transp 0</span><button type="button" aria-label="Transpose up" style="width: 44px; height: 40px; border: none; background: transparent; color: #F3EFF8; font: 700 18px Inter, sans-serif">+</button></div>
+    </div>
+  </div>
+
+  <div style="position: absolute; left: 20px; right: 20px; bottom: 22px; display: flex; align-items: center; justify-content: space-between">
+    <button type="button" style="width: 96px; height: 56px; border-radius: 16px; border: none; background: #1C1925; color: #F3EFF8; font: 600 13px Inter, sans-serif; display: flex; align-items: center; justify-content: center; gap: 8px"><span style="display: flex; gap: 3px"><span style="width: 4px; height: 14px; border-radius: 1px; background: #F3EFF8"></span><span style="width: 4px; height: 14px; border-radius: 1px; background: #F3EFF8"></span></span>Pause</button>
+    <a href="Record.dc.html" aria-label="Record a phrase" style="width: 76px; height: 76px; border-radius: 38px; background: #FF9A7A; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 6px #2A1A1A"><span style="width: 26px; height: 26px; border-radius: 13px; background: #14121A"></span></a>
+    <a href="Phrases.dc.html" style="width: 96px; height: 56px; border-radius: 16px; background: #1C1925; color: #F3EFF8; text-decoration: none; display: flex; align-items: center; justify-content: center; font: 600 13px Inter, sans-serif">Phrases</a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script="" data-props="{&quot;$preview&quot;:{&quot;width&quot;:390,&quot;height&quot;:844}}">
+class Component extends DCLogic {
+  renderVals() {
+    var hue = function (m, l) { return 'hsl(' + Math.round((m - 21) / 87 * 300) + ', 72%, ' + (l || 62) + '%)'; };
+    var isBlack = function (m) { return [1, 3, 6, 8, 10].indexOf(m % 12) >= 0; };
+    var mw = 334 / 88, map = [];
+    for (var i = 0; i < 88; i++) { var m = 21 + i, b = isBlack(m); map.push({ l: (i * mw).toFixed(2), t: b ? 0 : 3, w: (mw + 0.4).toFixed(2), h: b ? 6 : 9, c: hue(m, b ? 45 : 62) }); }
+    var win = { l: Math.round((62 - 21) * mw), w: Math.round(15 * mw) };
+    var NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+    var wm = [62, 64, 65, 67, 69, 71, 72, 74, 76];
+    var whites = wm.map(function (m, i) { var lit = m === 69; return { l: i * 44 - 29, name: NAMES[m % 12] + (Math.floor(m / 12) - 1), cap: hue(m), bg: lit ? hue(m) : '#ECE7F2', fg: lit ? '#14121A' : '#6B6580' }; });
+    var blacks = [[63, 0], [66, 2], [68, 3], [70, 4], [73, 6], [75, 7]].map(function (p) { return { l: (p[1] + 1) * 44 - 29 - 14, cap: hue(p[0], 50) }; });
+    var rowsM = [72, 71, 70, 69, 68, 67, 66, 65, 64, 63, 62];
+    var inScale = { 72: 1, 71: 1, 69: 1, 67: 1, 65: 1, 64: 1, 62: 1 };
+    var rows = rowsM.map(function (m, i) { var s = !!inScale[m]; return { t: 7 + i * 22, name: NAMES[m % 12] + (Math.floor(m / 12) - 1), bg: s ? (i % 2 ? '#1F1C29' : '#221F2D') : '#17151E', fg: s ? '#A9A3B8' : '#4F4A60' }; });
+    var yOf = function (row) { return 7 + row * 22 + 11; };
+    var blk = function (l, row, w, o) { return { l: l, t: Math.round(yOf(row) - 8), w: w, c: hue(rowsM[row]), o: o }; };
+    var blocks = [blk(40, 10, 60, 0.55), blk(104, 8, 46, 0.55), blk(154, 7, 52, 0.55), blk(210, 5, 50, 0.55), blk(264, 3, 44, 1)];
+    var pts = [[40, 10.2], [70, 9.9], [100, 10.1], [108, 8.3], [146, 7.9], [158, 7.1], [200, 6.9], [214, 5.2], [256, 4.9], [268, 3.4], [290, 3.2], [306, 3.12]];
+    var trace = pts.map(function (p, i) { return (i ? 'L' : 'M') + p[0] + ' ' + yOf(p[1]).toFixed(1); }).join(' ');
+    return { map: map, win: win, whites: whites, blacks: blacks, rows: rows, blocks: blocks, trace: trace, nowY: Math.round(yOf(3.12) - 10), noteC: hue(69) };
+  }
+}
+</script>
+
+
+</body></html>

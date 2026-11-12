@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mimi the hummingbird</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@700&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="position: relative; width: {{W}}px; height: {{H}}px; font-family: Inter, sans-serif; color: #F3EFF8" aria-hidden="true">
+  <svg style="position: absolute; left: 0; top: 0; overflow: visible" width="{{W}}" height="{{H}}" viewBox="0 0 64 56">
+    <path d="M9 44 L1 50 L3 53 L10 49 L5 55 L9 56 L14 49 Z" fill="{{dark}}"></path>
+    <path d="{{crest}}" fill="none" stroke="{{dark}}" stroke-width="1.7" stroke-linecap="round"></path>
+    <rect x="17" y="48" width="4" height="5" rx="1.5" fill="{{dark}}"></rect>
+    <rect x="25" y="48" width="4" height="5" rx="1.5" fill="{{dark}}"></rect>
+    <ellipse cx="{{body.cx}}" cy="{{body.cy}}" rx="{{body.rx}}" ry="{{body.ry}}" fill="{{bodyC}}"></ellipse>
+    <ellipse cx="{{body.cx}}" cy="{{belly.cy}}" rx="{{belly.rx}}" ry="{{belly.ry}}" fill="{{bellyC}}"></ellipse>
+    <ellipse cx="{{wing.cx}}" cy="{{wing.cy}}" rx="4" ry="{{wing.ry}}" fill="{{dark}}"></ellipse>
+    <path d="{{beakUp}}" fill="#2A2636"></path>
+    <path d="{{beakLo}}" fill="#2A2636"></path>
+    <sc-for list="{{eyes}}" as="e" hint-placeholder-count="2">
+      <sc-if value="{{e.open}}" hint-placeholder-val="{{true}}"><circle cx="{{e.cx}}" cy="{{e.cy}}" r="5.6" fill="#FFFFFF"></circle><circle cx="{{e.px}}" cy="{{e.py}}" r="2.6" fill="#17141F"></circle></sc-if>
+      <sc-if value="{{e.closed}}" hint-placeholder-val="{{false}}"><path d="{{e.arc}}" fill="none" stroke="#17141F" stroke-width="1.8" stroke-linecap="round"></path></sc-if>
+    </sc-for>
+    <sc-if value="{{phones.on}}" hint-placeholder-val="{{false}}">
+      <path d="M6 30 C6 2 46 2 46 30" fill="none" stroke="#2A2636" stroke-width="3.5"></path>
+      <rect x="2" y="24" width="8" height="12" rx="3" fill="#2A2636"></rect>
+      <rect x="42" y="24" width="8" height="12" rx="3" fill="#2A2636"></rect>
+    </sc-if>
+    <sc-for list="{{marks}}" as="m" hint-placeholder-count="0"><path d="{{m.d}}" fill="{{m.fill}}" stroke="{{m.stroke}}" stroke-width="1.6" stroke-linecap="round" opacity="{{m.o}}"></path></sc-for>
+  </svg>
+  <sc-if value="{{zz.on}}" hint-placeholder-val="{{false}}"><span style="position: absolute; left: {{zz.l}}px; top: {{zz.t}}px; font-size: {{zz.fs}}px; line-height: 1; font-weight: 700; color: #A9A3B8">z<span style="font-size: {{zz.fs2}}px">Z</span></span></sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"note":{"editor":"int","min":21,"max":108,"default":69},"mood":{"editor":"enum","options":["idle","listen","soft","aria","flat","sharp","sleep","headphones","nomic"],"default":"idle"},"size":{"editor":"float","min":0.3,"max":8,"step":0.1,"default":3.4},"look":{"editor":"enum","options":["center","left","right","up","down"],"default":"center"},"$preview":{"width":220,"height":192}}'>
+class Component extends DCLogic {
+  renderVals() {
+    var P = this.props;
+    var s = parseFloat(P.size == null ? 3.4 : P.size); if (!(s > 0)) s = 3.4;
+    var note = parseInt(P.note == null ? 69 : P.note, 10); if (!(note >= 21 && note <= 108)) note = 69;
+    var mood = P.mood || 'idle';
+    if (mood === 'loud') mood = 'aria';
+    var h = Math.round((note - 21) / 87 * 300);
+    var grey = mood === 'nomic' || mood === 'sleep';
+    var bodyC = grey ? '#6B6580' : 'hsl(' + h + ', 72%, 62%)';
+    var bellyC = grey ? '#8F89A3' : 'hsl(' + h + ', 80%, 76%)';
+    var dark = grey ? '#4A4560' : 'hsl(' + h + ', 55%, 38%)';
+    var aria = mood === 'aria';
+    var body = { cx: 24, cy: aria ? 29 : 30, rx: 20, ry: aria ? 21 : 19.5 };
+    var belly = { cy: body.cy + 7, rx: 12, ry: 10 };
+    var wing = { cx: 6, cy: aria ? 22 : 28, ry: aria ? 7 : 5 };
+    var LOOK = { center: [0, 0], left: [-1, 0], right: [1, 0], up: [0, -1], down: [0, 1] };
+    var lk = LOOK[P.look] || LOOK.center;
+    if (mood === 'listen' || mood === 'sharp') lk = [0.3, -1];
+    if (mood === 'flat') lk = [0.3, 1];
+    var closed = mood === 'sleep' || mood === 'nomic' || aria;
+    var eye = function (cx) {
+      var cy = 22;
+      return { open: !closed, closed: closed, cx: cx, cy: cy, px: (cx + lk[0] * 2.4).toFixed(1), py: (cy + lk[1] * 2.4).toFixed(1),
+        arc: aria ? ('M' + (cx - 4) + ' ' + (cy + 1) + ' Q' + cx + ' ' + (cy - 4) + ' ' + (cx + 4) + ' ' + (cy + 1)) : ('M' + (cx - 4) + ' ' + cy + ' L' + (cx + 4) + ' ' + cy) };
+    };
+    var eyes = [eye(21), eye(33)];
+    var OPEN = { idle: 0, listen: 1, soft: 3, aria: 8, flat: 3, sharp: 3, sleep: 0, headphones: 2, nomic: 0 };
+    var o = OPEN[mood] == null ? 0 : OPEN[mood];
+    var bx = 41, by = 30;
+    var beakUp = 'M' + bx + ' ' + (by - 2.2) + ' L63 ' + (by - 0.6 - o * 0.35) + ' L63 ' + (by + 0.2 - o * 0.35) + ' L' + bx + ' ' + (by + 1) + ' Z';
+    var beakLo = 'M' + bx + ' ' + (by + 1) + ' L' + (60 - o * 0.6) + ' ' + (by + 1.2 + o) + ' L' + (60 - o * 0.6) + ' ' + (by + 2.4 + o) + ' L' + bx + ' ' + (by + 3.4) + ' Z';
+    var crest = 'M22 ' + (body.cy - body.ry + 1) + ' C22 ' + (body.cy - body.ry - 5) + ' 25 ' + (body.cy - body.ry - 8) + ' 27.5 ' + (body.cy - body.ry - 8) + ' C30 ' + (body.cy - body.ry - 8) + ' 30.2 ' + (body.cy - body.ry - 4.5) + ' 27.8 ' + (body.cy - body.ry - 4.4) + ' C26.3 ' + (body.cy - body.ry - 4.3) + ' 26.3 ' + (body.cy - body.ry - 6) + ' 27.4 ' + (body.cy - body.ry - 6);
+    var marks = [];
+    if (aria) {
+      marks = [
+        { d: 'M50 12 a2.4 2 0 1 0 0.1 0 Z M52.3 12 V4', fill: '#F3EFF8', stroke: '#F3EFF8', o: 1 },
+        { d: 'M58 6 a2 1.7 0 1 0 0.1 0 Z M60 6 V0', fill: '#F3EFF8', stroke: '#F3EFF8', o: 0.7 }
+      ];
+    }
+    if (mood === 'sing' || mood === 'soft') {
+      marks = [{ d: 'M52 18 a2 1.7 0 1 0 0.1 0 Z M54 18 V12', fill: '#F3EFF8', stroke: '#F3EFF8', o: 0.6 }];
+    }
+    if (mood === 'flat' || mood === 'sharp') {
+      var up = mood === 'sharp';
+      marks = [{ d: up ? 'M56 14 V4 M52 8 L56 4 L60 8' : 'M56 40 V50 M52 46 L56 50 L60 46', fill: 'none', stroke: '#F3EFF8', o: 0.8 }];
+    }
+    var W = Math.round(64 * s), H = Math.round(56 * s);
+    var zz = { on: mood === 'sleep', l: Math.round(44 * s), t: 0, fs: Math.round(7 * s), fs2: Math.round(10 * s) };
+    return { W: W, H: H, body: body, belly: belly, wing: wing, eyes: eyes, beakUp: beakUp, beakLo: beakLo, crest: crest, marks: marks,
+      phones: { on: mood === 'headphones' }, zz: zz, bodyC: bodyC, bellyC: bellyC, dark: dark };
+  }
+}
+</script>
+</body>
+</html>
