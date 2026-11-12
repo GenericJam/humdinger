@@ -16,15 +16,12 @@ config :mob_dev,
   # Path to your Elixir lib dir (e.g. ~/.local/share/mise/installs/elixir/1.18.4-otp-28/lib).
   elixir_lib: System.get_env("MOB_ELIXIR_LIB", :code.lib_dir(:elixir) |> to_string() |> Path.dirname()),
 
-  # iOS devices and orientations, stamped into the built app's Info.plist
-  # (they override ios/Info.plist). ios_target_devices: [:iphone, :ipad] runs
-  # full-screen on iPad, resizes and joins Split View; [:iphone] runs iPad in
-  # iPhone compatibility mode. An App Store app that has shipped iPad support
-  # can't drop it in an update. ios_orientations (:all, :portrait or
-  # :landscape) applies to iPhone; iPad always declares all four, since
-  # iPadOS 26 rotates resizable apps freely.
-  ios_target_devices: [:iphone, :ipad],
-  ios_orientations: :all,
+  # App identity: one id on both platforms (no "_", so Apple accepts it).
+  bundle_id: "com.genericjam.humdinger",
+
+  # Humdinger is a portrait phone app (reference artboard 390 × 844 pt).
+  ios_target_devices: [:iphone],
+  ios_orientations: :portrait,
 
   # Open the app from <scheme>://... links: each arrives in Elixir as
   # {:link, %{url: url, source: :launch | :running}} (see Mob.Link). Takes a
@@ -44,7 +41,11 @@ config :mob_dev,
 # its native code, permissions, and any demo screens at build time. Drop a name
 # here to deactivate a plugin without removing the dep; remove both to drop it
 # entirely (the native build shrinks and a clean rebuild prunes its artifacts).
-config :mob, :plugins, [:mob_camera, :mob_location, :mob_biometric, :mob_mishka]
+#
+# mob_midi: USB-MIDI and Bluetooth-MIDI output (Output screen).
+# mob_camera + mob_scanner: scanning FMutate's pairing QR code (mob_scanner
+# needs mob_camera, which owns the :camera permission).
+config :mob, :plugins, [:mob_midi, :mob_camera, :mob_scanner]
 
 # Trust gate for the first-party plugins. Each is signed in CI with the shared
 # mob release key; this is that key's public fingerprint. The build refuses an
@@ -55,6 +56,7 @@ config :mob, :plugins, [:mob_camera, :mob_location, :mob_biometric, :mob_mishka]
 # `mix mob.plugin.trust <name>`, or `config :mob, :acknowledge_unsafe_plugins,
 # [...]` for an unsigned prototype.
 config :mob, :trusted_plugins, %{
+  mob_midi: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=",
   mob_audio_capture: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=",
   mob_camera: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=",
   mob_location: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=",
@@ -67,10 +69,5 @@ config :mob, :trusted_plugins, %{
   mob_mishka: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=",
   mob_ash: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg="
 }
-
-# Style packages (theming). :default_style selects the theme applied at boot.
-config :mob, :styles, [:mob_themes]
-config :mob, :default_style, :mob_themes
-
 
 if File.exists?(Path.join(__DIR__, "mob.local.exs")), do: import_config("mob.local.exs")

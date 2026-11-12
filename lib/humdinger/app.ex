@@ -5,7 +5,7 @@ defmodule Humdinger.App do
 
   @impl Mob.App
   def navigation(_platform) do
-    stack(:main, root: Humdinger.HomeScreen)
+    stack(:main, root: Humdinger.LiveScreen)
   end
 
   @impl Mob.App
@@ -24,19 +24,16 @@ defmodule Humdinger.App do
 
     {:ok, _} = Application.ensure_all_started(:ecto_sqlite3)
     {:ok, _} = Humdinger.Repo.start_link()
+
     Ecto.Migrator.with_repo(Humdinger.Repo, fn repo ->
       Ecto.Migrator.run(repo, migrations_dir(), :up, all: true)
     end)
 
-    # Register every gallery page in the Mishka Chelekom showcase. The
-    # `<Mishka…>` composite tags themselves come from the `:mob_mishka`
-    # plugin — its own lifecycle registers them at boot, so nothing here
-    # needs to touch `Mob.Composite`. The catalog of gallery ENTRIES (one
-    # per showcased composite) lives in Humdinger.Showcase, so
-    # the app and its tests cannot drift apart.
-    Humdinger.Showcase.register_all()
+    Mob.Theme.set(Humdinger.Style.theme())
 
-    Mob.Screen.start_root(Humdinger.HomeScreen)
+    # Humdinger is held in portrait, like a phone normally is.
+    Mob.Device.lock_orientation(:portrait)
+    Mob.Screen.start_root(Humdinger.LiveScreen)
     Mob.Dist.ensure_started(node: :"humdinger_android@127.0.0.1", cookie: :mob_secret)
   end
 
@@ -61,7 +58,7 @@ defmodule Humdinger.App do
   # and pass the explicit path to Ecto.Migrator.run/4.
   defp migrations_dir do
     case System.get_env("MOB_BEAMS_DIR") do
-      nil       -> Application.app_dir(:humdinger, "priv/repo/migrations")
+      nil -> Application.app_dir(:humdinger, "priv/repo/migrations")
       beams_dir -> Path.join([beams_dir, "priv", "repo", "migrations"])
     end
   end
