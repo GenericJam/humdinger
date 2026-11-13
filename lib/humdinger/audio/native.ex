@@ -51,6 +51,9 @@ defmodule Humdinger.Audio.Native do
   end
 
   @impl true
+  def cancel_analysis(ref) when is_reference(ref), do: Nif.cancel_analysis(ref)
+
+  @impl true
   def background_start(owner, %{title: title, text: text, state: state}) when is_pid(owner),
     do: Nif.background_start(owner, title, text, state)
 

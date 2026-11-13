@@ -41,6 +41,12 @@ defmodule Humdinger.Audio.Nif do
   def analyze_file(_owner, _ref, _path), do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
+  Cancel the analysis tagged `ref`: it stops at its next decoder buffer and
+  sends nothing more. `:ok`, also for an unknown or finished `ref`.
+  """
+  def cancel_analysis(_ref), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
   Start (or update and retarget) the background service. `state` is
   `:listening | :paused | :recording`. `:ok` or `{:error, :permission |
   :refused | :unavailable | :owner_dead}`. `owner` is monitored: the

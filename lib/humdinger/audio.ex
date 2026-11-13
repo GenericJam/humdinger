@@ -78,9 +78,19 @@ defmodule Humdinger.Audio do
   Decode and analyse an audio file in the background (≤ 10 minutes). Errors
   arrive as `{:analysis_error, reason}`: `:not_found`, `:unsupported`,
   `:no_audio`, `:decode_error`, `:too_long`, `:alloc`.
+
+  One analysis per owner: a new call cancels the owner's previous one (its
+  reference goes stale and gets no message). At most two owners analyse at
+  once; a third gets `{:error, :busy}`. The analysis is cancelled when
+  `owner` exits (`{:error, :owner_dead}` if it already has).
   """
   @callback analyze_file(owner :: pid(), path :: Path.t(), opts :: keyword()) ::
               {:ok, reference()} | {:error, term()}
+  @doc """
+  Stop the analysis `ref` names. Nothing for `ref` arrives once this has
+  returned. Unknown or finished references are ignored.
+  """
+  @callback cancel_analysis(reference()) :: :ok
   @doc "Start the background-listening service with `notice`; button taps go to `owner`."
   @callback background_start(owner :: pid(), notice()) :: :ok | {:error, term()}
   @doc "Change what the background notification shows."
