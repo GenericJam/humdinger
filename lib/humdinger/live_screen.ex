@@ -187,7 +187,7 @@ defmodule Humdinger.LiveScreen do
     <Column background={Style.bg()} fill_width={true} fill_height={true}>
       <Row fill_width={true} fill_height={true} align={:top}>
         <Spacer />
-        <Column width={350} fill_height={true} padding_top={12} padding_bottom={16}>
+        <Column width={350} fill_height={true} padding_top={12} padding_bottom={8}>
           <Row height={44} gap={8}>
             {pill(a, output_tap)}
             <Box
@@ -206,12 +206,12 @@ defmodule Humdinger.LiveScreen do
           <Box align="center">
             <Canvas width={strip_w()} height={PianoStrip.height()} draw={a.ops.strip} />
           </Box>
-          <Spacer size={14} />
-          <Row height={120} gap={16} padding_left={8} padding_right={8}>
+          <Spacer size={10} />
+          <Row height={112} gap={16} padding_left={8} padding_right={8}>
             <Canvas width={mimi_w} height={mimi_h} draw={a.ops.mimi} />
             {note_panel(a)}
           </Row>
-          <Spacer size={14} />
+          <Spacer size={10} />
           <Box width={roll_w} height={roll_h} align="bottom_trailing">
             <Canvas width={roll_w} height={roll_h} draw={a.ops.roll} />
             <Box fill_width={false} padding={8}>
@@ -230,7 +230,7 @@ defmodule Humdinger.LiveScreen do
               </Box>
             </Box>
           </Box>
-          <Spacer size={14} />
+          <Spacer size={10} />
           <Column gap={10}>
             <Row gap={8}>
               {Widgets.segmented(modes)}
@@ -260,14 +260,15 @@ defmodule Humdinger.LiveScreen do
           </Column>
           <Spacer />
           <Text
-            :if={status_line(a)}
-            text={status_line(a)}
+            height={18}
+            fill_width={true}
+            text={status_line(a) || ""}
             font={:mono_semibold}
             text_size={12}
             text_align="center"
             text_color={if(a.recording, do: Style.danger_text(), else: Style.text_2())}
           />
-          <Spacer size={8} />
+          <Spacer size={4} />
           <Row>
             <Box
               width={96}

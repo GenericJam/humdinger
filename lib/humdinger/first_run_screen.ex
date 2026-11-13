@@ -429,6 +429,7 @@ defmodule Humdinger.FirstRunScreen do
 
   defp holding_caption(a, finder, held) do
     cond do
+      a.audio_missing or a.mic == :denied or match?({:error, _}, a.status) -> ""
       a.status == :paused -> "paused"
       held > 0 -> "holding… #{:erlang.float_to_binary(held / 1000, decimals: 1)} s"
       finder.phase == :high -> "lowest #{Music.note_name(finder.low)} · now go up"

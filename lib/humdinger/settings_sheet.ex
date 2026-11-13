@@ -193,7 +193,7 @@ defmodule Humdinger.SettingsSheet do
                 <Spacer />
                 {Widgets.segmented(responses,
                   width: 230,
-                  height: 36,
+                  height: 42,
                   track: Style.bg(),
                   text_size: 12
                 )}

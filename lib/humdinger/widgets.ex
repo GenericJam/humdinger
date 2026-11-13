@@ -140,8 +140,8 @@ defmodule Humdinger.Widgets do
       height={Keyword.get(opts, :height, 34)}
       corner_radius={9}
       background={bg}
-      padding_left={12}
-      padding_right={12}
+      padding_left={8}
+      padding_right={8}
       align="center"
       on_tap={tap}
       on_press_out={held()}
