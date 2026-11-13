@@ -34,6 +34,8 @@ defmodule Humdinger.FMutate.Pairing.Client do
   @wire_errors %{
     "unsupported_version" => :unsupported_version,
     "no_such_instance" => :no_such_instance,
+    "loopback_only" => :loopback_only,
+    "bad_node" => :bad_node,
     "not_pairing" => :not_pairing,
     "busy" => :busy,
     "expired" => :expired,
@@ -53,6 +55,8 @@ defmodule Humdinger.FMutate.Pairing.Client do
   link's, or FMutate's SRP proof doesn't cover the certificate seen),
   `{:wrong_code, attempts_left}`, `:too_many_attempts`, `:expired`,
   `:invalid_token`, `:not_pairing`, `:busy`, `:denied`, `:timeout`,
+  `:loopback_only` (that FMutate has no TLS distribution, so it pairs only
+  apps on its own phone), `:bad_node`,
   `:no_such_instance`, `:unsupported_version`, `{:protocol, detail}`.
   """
   @spec pair(target(), auth(), identity(), (atom() -> any())) ::

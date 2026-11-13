@@ -11,8 +11,10 @@ defmodule Humdinger.FMutate do
 
   When the connection drops or can't be made it retries with backoff (1, 2,
   5, 10, then every 30 s). For an FMutate on another phone it also looks it
-  up over mDNS from the second failed attempt, and follows a new address (the
-  same certificate fingerprint and instance) without pairing again.
+  up over mDNS from the second failed attempt, and tries a new address (the
+  same certificate fingerprint, instance and node name, a unicast non-loopback
+  host) without pairing again; the new address is saved only after it has
+  connected, since mDNS answers are unauthenticated.
 
   ## API
 
@@ -122,6 +124,10 @@ defmodule Humdinger.FMutate do
       subscribers: %{},
       connecting: nil,
       looking: nil,
+      # A new address from mDNS on trial: saved only once it connects.
+      trying: nil,
+      # Hosts from mDNS that failed since the last connection.
+      tried: MapSet.new(),
       attempt: 0,
       timer: nil
     }
@@ -224,6 +230,7 @@ defmodule Humdinger.FMutate do
 
   def handle_info({:connected, pid, conn, firmware}, %{connecting: {pid, _}} = state) do
     old = state
+    state = adopt(state)
     record = remember_firmware(state, firmware)
     # Subscribed only now, so FMutate's first status event can't overtake this.
     state.transport.cast(conn, record.inst, {:subscribe, self(), [:status]})
@@ -236,7 +243,8 @@ defmodule Humdinger.FMutate do
         node: conn.node,
         info: info,
         connecting: nil,
-        attempt: 0
+        attempt: 0,
+        tried: MapSet.new()
     }
 
     {:noreply, notify(state, old)}
@@ -244,7 +252,7 @@ defmodule Humdinger.FMutate do
 
   def handle_info({:connect_failed, pid, reason}, %{connecting: {pid, _}} = state) do
     Logger.debug("FMutate: connect failed: #{inspect(reason)}")
-    {:noreply, retry(%{state | connecting: nil})}
+    {:noreply, state |> reject_trial() |> Map.put(:connecting, nil) |> retry()}
   end
 
   def handle_info({:DOWN, _ref, :process, pid, reason}, %{connecting: {pid, _}} = state) do
@@ -300,7 +308,8 @@ defmodule Humdinger.FMutate do
 
   defp connect(state) do
     link = self()
-    %{record: record, transport: transport} = state
+    record = state.trying || state.record
+    transport = state.transport
 
     {pid, ref} =
       spawn_monitor(fn ->
@@ -364,28 +373,54 @@ defmodule Humdinger.FMutate do
     %{state | looking: pid}
   end
 
-  # Takes a candidate with the pairing's certificate and instance at a new
-  # address, saves it and connects now.
-  defp follow(%{record: record, conn: nil, store: {store, store_opts}} = state, candidates)
-       when record != nil do
-    with %{} = found <- Enum.find(candidates, &(&1.fp == record.fp and &1.inst == record.inst)),
-         moved = %{
-           record
-           | host: found.host,
-             node: found.node,
-             dist_port: found.dist_port || record.dist_port
-         },
-         true <- moved != record,
-         {:ok, moved} <- Record.validate(moved),
-         :ok <- store.save(moved, store_opts) do
-      Logger.info("FMutate: moved to #{moved.host}")
-      %{state | record: moved, attempt: 0} |> cancel_timer() |> connect()
+  # Tries a candidate with the pairing's certificate, instance and node name
+  # at a new address. mDNS is unauthenticated, so the candidate is only
+  # tried: it replaces the stored record once it has connected (TLS pinned to
+  # the pairing's certificate, then the cookie handshake). Loopback and other
+  # non-unicast addresses are never taken from mDNS, nor a node name other
+  # than the pairing's at the new host. Nothing moves while FMutate's current
+  # address is still among the answers.
+  defp follow(%{record: record, conn: nil, trying: nil} = state, candidates) when record != nil do
+    ours = Enum.filter(candidates, &(&1.fp == record.fp and &1.inst == record.inst))
+
+    with false <- Enum.any?(ours, &(&1.host == record.host)),
+         %{} = found <- Enum.find(ours, &movable?(state, &1)),
+         {:ok, moved} <-
+           Record.validate(%{
+             record
+             | host: found.host,
+               node: found.node,
+               dist_port: found.dist_port || record.dist_port
+           }) do
+      Logger.info("FMutate: trying #{moved.host}")
+      %{state | trying: moved} |> cancel_timer() |> connect()
     else
       _ -> state
     end
   end
 
   defp follow(state, _candidates), do: state
+
+  defp movable?(%{record: record, tried: tried}, candidate) do
+    [name, _host] = String.split(record.node, "@", parts: 2)
+
+    Record.remote_unicast?(candidate.host) and not MapSet.member?(tried, candidate.host) and
+      candidate.node == "#{name}@#{candidate.host}"
+  end
+
+  # The trial connected: it becomes the pairing.
+  defp adopt(%{trying: nil} = state), do: state
+
+  defp adopt(%{trying: moved, store: {store, store_opts}} = state) do
+    store.save(moved, store_opts)
+    Logger.info("FMutate: moved to #{moved.host}")
+    %{state | record: moved, trying: nil}
+  end
+
+  defp reject_trial(%{trying: nil} = state), do: state
+
+  defp reject_trial(%{trying: moved} = state),
+    do: %{state | trying: nil, tried: MapSet.put(state.tried, moved.host)}
 
   defp firmware(transport, conn, inst) do
     case transport.call(conn, inst, {:list_firmware}, @call_timeout) do
@@ -424,7 +459,7 @@ defmodule Humdinger.FMutate do
     if state.connecting, do: Process.exit(elem(state.connecting, 0), :kill)
     if state.looking, do: Process.exit(state.looking, :kill)
     if state.conn, do: state.transport.disconnect(state.conn)
-    %{cancel_timer(state) | connecting: nil, looking: nil}
+    %{cancel_timer(state) | connecting: nil, looking: nil, trying: nil, tried: MapSet.new()}
   end
 
   defp status_of(%{record: nil}), do: :unpaired

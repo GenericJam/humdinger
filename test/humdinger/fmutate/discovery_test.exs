@@ -157,7 +157,28 @@ defmodule Humdinger.FMutate.DiscoveryTest do
     assert {:ok, [%{name: "Beta", inst: "b"}, %{inst: "a"}]} = browse([a, a2, b])
   end
 
-  test "the latest answer for the same fp and inst wins" do
+  test "the same fp and inst at two hosts gives two candidates, so a second answer can't hide the first" do
+    target =
+      fake(fn _query ->
+        for {label, ip} <- [{"FMutate A", {10, 0, 0, 1}}, {"FMutate A (2)", {10, 0, 0, 2}}] do
+          name = [label | @service]
+
+          Dns.encode_response(%{
+            answers: [record(@service, :ptr, name)],
+            additionals: [
+              record(name, :srv, %{port: 1, target: [String.replace(label, " ", "-"), "local"]}),
+              record(name, :txt, Dns.txt_strings(txt())),
+              record([String.replace(label, " ", "-"), "local"], :a, ip)
+            ]
+          })
+        end
+      end)
+
+    assert {:ok, candidates} = browse([target])
+    assert candidates |> Enum.map(& &1.host) |> Enum.sort() == ["10.0.0.1", "10.0.0.2"]
+  end
+
+  test "the latest answer for the same fp, inst and host wins" do
     target =
       fake(fn _query ->
         [answer("Old", txt(%{"fw" => "old"})), answer("New", txt(%{"fw" => "new"}))]

@@ -3,12 +3,12 @@ defmodule Humdinger.FMutate.Reference.Epmd do
   FMutate's port mapper (reference): no epmd, one fixed distribution port.
 
   FMutate runs its own BEAM and must not depend on an epmd another app
-  started (protocol §2). Start its node with
+  started (protocol §2). Start its node with `Humdinger.FMutate.Reference.boot_args/1`:
 
       -start_epmd false -epmd_module Elixir.Humdinger.FMutate.Reference.Epmd
       -kernel erl_epmd_node_listen_port <dist_port>
-
-  (or the kernel environment before `net_kernel:start/2`). It listens on that
+      -proto_dist inet_tls -ssl_dist_optfile <file>          (siblings on other phones)
+      -kernel inet_dist_use_interface {127,0,0,1}            (plain: same phone only) It listens on that
   port, registers nowhere, and never looks other nodes up: siblings connect
   to FMutate, not the other way round, so a message to a sibling that has
   gone stays undelivered instead of starting a connection.

@@ -15,7 +15,11 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
 
   Stopping the server stops pairing and advertising. Siblings that connect
   from loopback are granted `127.0.0.1` as the distribution host; others get
-  `:dist_host`.
+  `:dist_host` and always `inet_tls`. With `dist_proto: :inet_tcp` (FMutate's
+  plain listener on loopback, see `Reference.boot_args/1`) only siblings on
+  the same phone can pair: others get `loopback_only` before they spend an
+  attempt, and a non-loopback `:dist_host` refuses to start. At most 8
+  connections are handled at once.
 
   The approval hook is `:approve`: a function of the request returning
   `:allow` or `:deny` (it runs in the connection's process and may block), or
@@ -23,7 +27,12 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
   `{:fmutate_pair_request, server, ref, request}` and waits for
   `decide(server, ref, :allow | :deny)`; if the sibling hangs up first,
   `pid` gets `{:fmutate_pair_withdrawn, server, ref}`. The request is
-  `%{app_id, app_name, device_name, node, client_fp, remote_ip}`.
+  `%{app_id, app_name, device_name, node, client_fp, remote_ip, replaces}`:
+  the names are what the sibling says (control and format characters
+  removed; a sibling on another phone can claim any name), and `replaces` is
+  `%{app_name, device_name, paired_at}` of an existing pairing under the same
+  node name with another certificate (Allow replaces it), else nil. FMutate's
+  own node name and any `fmutate_*` name are refused (`bad_node`).
   """
 
   use GenServer
@@ -35,11 +44,12 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
   @max_attempts 5
   @step_timeout 30_000
   @decision_timeout 120_000
+  @max_handshakes 8
 
   @doc """
   Options: `:cert` (FMutate's `Humdinger.FMutate.Cert`, required),
-  `:dist_port` (required), `:dist_proto` (`:inet_tcp` default, or
-  `:inet_tls`), `:dist_host` (default `:host`), `:inst` (`"a"`), `:name`
+  `:dist_port` (required), `:dist_proto` (`:inet_tls` default, or
+  `:inet_tcp`: same-phone siblings only), `:dist_host` (default `:host`), `:inst` (`"a"`), `:name`
   (`"FMutate A"`), `:device`, `:firmware`, `:node` (FMutate's node name,
   default `node()`), `:ip` / `:port` to listen on (`{0, 0, 0, 0}`, 0),
   `:host` (the address put in the link; default the first non-loopback IPv4
@@ -83,6 +93,23 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
   def init(opts) do
     cert = Keyword.fetch!(opts, :cert)
     host = Keyword.get_lazy(opts, :host, &default_host/0)
+    dist_proto = Keyword.get(opts, :dist_proto, :inet_tls)
+
+    case Keyword.get(opts, :dist_host) do
+      plain when dist_proto == :inet_tcp and is_binary(plain) ->
+        if Record.loopback?(plain),
+          do: start(opts, cert, host),
+          else: {:stop, :plain_distribution_off_loopback}
+
+      _ when dist_proto in [:inet_tcp, :inet_tls] ->
+        start(opts, cert, host)
+
+      _ ->
+        {:stop, {:bad_option, :dist_proto}}
+    end
+  end
+
+  defp start(opts, cert, host) do
     {:ok, _} = Application.ensure_all_started(:ssl)
 
     listen_options =
@@ -108,7 +135,7 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
       port: port,
       dist_host: Keyword.get(opts, :dist_host, host),
       dist_port: Keyword.fetch!(opts, :dist_port),
-      dist_proto: Keyword.get(opts, :dist_proto, :inet_tcp),
+      dist_proto: Keyword.get(opts, :dist_proto, :inet_tls),
       approve: Keyword.get(opts, :approve, fn _request -> :deny end)
     }
 
@@ -120,6 +147,7 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
       max_attempts: Keyword.get(opts, :max_attempts, @max_attempts),
       secret: nil,
       asks: %{},
+      handshakes: %{},
       responder: nil
     }
 
@@ -161,11 +189,11 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
     end
   end
 
-  def handle_call(:srp_params, _from, state) do
+  # The verifier (a 2048-bit modpow) is computed by the connection, not here.
+  def handle_call(:srp_code, _from, state) do
     case usable(state) do
       :ok ->
-        salt = Srp.salt()
-        {:reply, {:ok, salt, Srp.verifier(state.secret.code, salt)}, state}
+        {:reply, {:ok, state.secret.code}, state}
 
       error ->
         {:reply, error, state}
@@ -177,6 +205,12 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
       :ok -> if proof_ok?, do: {:reply, :ok, consume(state)}, else: failed(state, "wrong_code")
       error -> {:reply, error, state}
     end
+  end
+
+  def handle_call({:admit, handler}, _from, state) do
+    if map_size(state.handshakes) < @max_handshakes,
+      do: {:reply, :ok, put_in(state.handshakes[Process.monitor(handler)], handler)},
+      else: {:reply, :busy, state}
   end
 
   def handle_call({:ask, request}, {handler, _}, %{config: %{approve: {:ask, pid}}} = state) do
@@ -195,6 +229,22 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
     {handler, asks} = Map.pop(state.asks, ref)
     if handler, do: send(pid, {:fmutate_pair_withdrawn, self(), ref})
     {:reply, :ok, %{state | asks: asks}}
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state),
+    do: {:noreply, %{state | handshakes: Map.delete(state.handshakes, ref)}}
+
+  # The code and token stay out of crash reports and :sys.get_status/1.
+  @impl true
+  def format_status(status) do
+    Map.update(status, :state, nil, fn
+      %{secret: %{} = secret} = state ->
+        %{state | secret: %{secret | code: :redacted, token: :redacted}}
+
+      other ->
+        other
+    end)
   end
 
   @impl true
@@ -304,9 +354,11 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
     end
   end
 
-  # One sibling's exchange, in its own process.
+  # One sibling's exchange, in its own process; at most @max_handshakes at a
+  # time, so a peer on the Wi-Fi can't exhaust processes or CPU.
   defp handle_connection(server, transport_socket) do
-    with {:ok, socket} <- :ssl.handshake(transport_socket, @step_timeout) do
+    with :ok <- admit(server, transport_socket),
+         {:ok, socket} <- :ssl.handshake(transport_socket, @step_timeout) do
       config = GenServer.call(server, :config)
 
       case exchange(server, socket, config) do
@@ -318,11 +370,23 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
     end
   end
 
+  defp admit(server, transport_socket) do
+    case GenServer.call(server, {:admit, self()}) do
+      :ok ->
+        :ok
+
+      :busy ->
+        :ssl.close(transport_socket)
+        :busy
+    end
+  end
+
   defp exchange(server, socket, config) do
     with {:ok, hello} <- recv(socket),
          :ok <- check_hello(hello, config),
+         :ok <- check_carrier(socket, config),
          :ok <- authenticate(server, socket, config, hello),
-         {:ok, request} <- recv_request(socket),
+         {:ok, request} <- recv_request(socket, config),
          {:ok, request} <- describe(socket, request),
          :ok <- Wire.send(socket, %{"type" => "pending"}),
          :allow <- decide(server, socket, config, request) do
@@ -343,6 +407,17 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
   defp check_hello(%{"type" => "hello"}, _config), do: {:error, Wire.error("unsupported_version")}
   defp check_hello(_message, _config), do: {:error, Wire.error("bad_message")}
 
+  # Plain distribution only reaches loopback (protocol §2): an FMutate without
+  # TLS distribution pairs only siblings on the same phone, and refuses others
+  # before they spend an attempt.
+  defp check_carrier(socket, %{dist_proto: :inet_tcp}) do
+    if loopback_peer?(socket), do: :ok, else: {:error, Wire.error("loopback_only")}
+  end
+
+  defp check_carrier(_socket, %{dist_proto: :inet_tls}), do: :ok
+
+  defp loopback_peer?(socket), do: match?({:ok, {{127, _, _, _}, _}}, :ssl.peername(socket))
+
   defp authenticate(server, socket, _config, %{"auth" => "token", "token" => token}) do
     with {:ok, token} <- decode(token, size: 16),
          :ok <- secret_call(server, {:check_token, token}) do
@@ -353,7 +428,9 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
   defp authenticate(server, socket, config, %{"auth" => "srp", "A" => a}) do
     with {:ok, a_pub} <- decode(a, max: 256),
          true <- Srp.valid_public?(a_pub) || {:error, Wire.error("bad_message")},
-         {:ok, salt, verifier} <- secret_call(server, :srp_params),
+         {:ok, code} <- secret_call(server, :srp_code),
+         salt = Srp.salt(),
+         verifier = Srp.verifier(code, salt),
          {b_pub, _} = keys = Srp.server_keys(verifier),
          :ok <-
            Wire.send(socket, %{
@@ -390,24 +467,46 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
     end
   end
 
-  defp recv_request(socket) do
+  defp recv_request(socket, config) do
     with {:ok, %{"type" => "request"} = m} <- recv(socket),
-         true <-
-           text?(m["app_id"], 1, 200) and text?(m["app_name"], 1, 100) and
-             text?(m["device_name"], 0, 100),
+         {:ok, app_id} <- text(m["app_id"], 1, 200),
+         {:ok, app_name} <- text(m["app_name"], 1, 100),
+         {:ok, device_name} <- text(m["device_name"], 0, 100),
          true <- Record.self_node?(m["node"]),
+         :ok <- sibling_node(m["node"], config),
          {:ok, cert} <- decode(m["client_cert"], max: 4096) do
+      client_fp = Cert.fingerprint(cert)
+
       {:ok,
        %{
-         app_id: m["app_id"],
-         app_name: m["app_name"],
-         device_name: m["device_name"],
+         app_id: app_id,
+         app_name: app_name,
+         device_name: device_name,
          node: m["node"],
-         client_fp: Cert.fingerprint(cert)
+         client_fp: client_fp,
+         replaces: replaces(m["node"], client_fp)
        }}
     else
       {:error, _} = error -> error
       _ -> {:error, Wire.error("bad_message")}
+    end
+  end
+
+  # A sibling can't take FMutate's own name (its cookie would become
+  # FMutate's default cookie) or any FMutate instance's.
+  defp sibling_node(node, config) do
+    if node == config.node or String.starts_with?(node, "fmutate_"),
+      do: {:error, Wire.error("bad_node")},
+      else: :ok
+  end
+
+  # Another app already paired under this node name with another
+  # certificate: the Allow sheet must say it would be replaced.
+  defp replaces(node, client_fp) do
+    case Pairings.get(node) do
+      %{client_fp: ^client_fp} -> nil
+      %{} = old -> Map.take(old, [:app_name, :device_name, :paired_at])
+      nil -> nil
     end
   end
 
@@ -443,6 +542,10 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
 
     loopback? = match?({127, _, _, _}, request.remote_ip)
 
+    # Plain distribution only on loopback; check_carrier/2 already turned a
+    # remote sibling away when TLS distribution is off.
+    proto = if loopback?, do: config.dist_proto, else: :inet_tls
+
     Wire.send(socket, %{
       "type" => "granted",
       "inst" => config.inst,
@@ -452,7 +555,7 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
       "node" => config.node,
       "dist_host" => if(loopback?, do: "127.0.0.1", else: config.dist_host),
       "dist_port" => config.dist_port,
-      "dist_proto" => Atom.to_string(config.dist_proto),
+      "dist_proto" => Atom.to_string(proto),
       "cookie" => pairing.cookie
     })
   end
@@ -471,7 +574,19 @@ defmodule Humdinger.FMutate.Reference.PairingServer do
     end
   end
 
-  defp text?(value, min, max), do: is_binary(value) and String.length(value) in min..max
+  # Text for the Allow sheet: control and format characters (newlines, bidi
+  # overrides) removed, then the length checked.
+  defp text(value, min, max) when is_binary(value) do
+    with true <- String.valid?(value),
+         clean = String.replace(value, ~r/[\p{Cc}\p{Cf}]/u, ""),
+         true <- String.length(clean) in min..max do
+      {:ok, clean}
+    else
+      _ -> :error
+    end
+  end
+
+  defp text(_value, _min, _max), do: :error
 
   defp short_name(node), do: node |> String.split("@") |> hd()
 

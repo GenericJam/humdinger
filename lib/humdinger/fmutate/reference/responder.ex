@@ -30,6 +30,9 @@ defmodule Humdinger.FMutate.Reference.Responder do
 
   ## How it replies (RFC 6762)
 
+  Queries from addresses outside this host's directly attached IPv4 subnets
+  are ignored (§11).
+
     * Query from a port other than 5353 (legacy unicast, §6.7): unicast to
       the query's source address and port, echoing the query id and
       questions, TTL 10, no cache-flush bits.
@@ -96,6 +99,7 @@ defmodule Humdinger.FMutate.Reference.Responder do
        %{
          socket: socket,
          interfaces: interfaces,
+         subnets: subnets(),
          service: service,
          instance: [Keyword.fetch!(opts, :instance) | service],
          hostname: opts |> Keyword.fetch!(:hostname) |> Dns.name(),
@@ -124,6 +128,35 @@ defmodule Humdinger.FMutate.Reference.Responder do
     end)
   end
 
+  # RFC 6762 §11: answer only queries from this host or a directly attached
+  # IPv4 subnet, never a querier further away.
+  defp subnets do
+    case :inet.getifaddrs() do
+      {:ok, interfaces} ->
+        for {_name, opts} <- interfaces,
+            {{_, _, _, _} = addr, {_, _, _, _} = mask} <- pairs(opts),
+            do: {mask_ip(addr, mask), mask}
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  # getifaddrs lists each address followed by its netmask.
+  defp pairs([{:addr, addr}, {:netmask, mask} | rest]), do: [{addr, mask} | pairs(rest)]
+  defp pairs([_ | rest]), do: pairs(rest)
+  defp pairs([]), do: []
+
+  defp on_link?(_subnets, {127, _, _, _}), do: true
+
+  defp on_link?(subnets, {_, _, _, _} = ip),
+    do: Enum.any?(subnets, fn {net, mask} -> mask_ip(ip, mask) == net end)
+
+  defp on_link?(_subnets, _ip), do: false
+
+  defp mask_ip({a, b, c, d}, {w, x, y, z}),
+    do: {Bitwise.band(a, w), Bitwise.band(b, x), Bitwise.band(c, y), Bitwise.band(d, z)}
+
   defp interface_addresses do
     case :inet.getifaddrs() do
       {:ok, interfaces} ->
@@ -149,7 +182,8 @@ defmodule Humdinger.FMutate.Reference.Responder do
 
   @impl true
   def handle_info({:udp, socket, ip, port, data}, %{socket: socket} = state) do
-    with {:ok, query} <- Dns.decode(data),
+    with true <- on_link?(state.subnets, ip),
+         {:ok, query} <- Dns.decode(data),
          false <- Dns.response?(query),
          [_ | _] = questions <- Enum.filter(query.questions, &ours?(state, &1)) do
       reply(state, query, questions, ip, port)

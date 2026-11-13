@@ -111,6 +111,8 @@ Then FMutate closes. Any step can instead get `{"type":"error","reason":R}` and 
 | `wrong_code` | wrong SRP proof (counts); carries `"attempts_left":n` |
 | `too_many_attempts` | 5 failed attempts: the code and token are dead until New code |
 | `bad_message` | malformed or unexpected message |
+| `loopback_only` | this FMutate has no TLS distribution, so it pairs only apps on its own phone (sent before authentication; no attempt used) |
+| `bad_node` | `request.node` is FMutate's own name or any `fmutate_*` name |
 | `denied` | the player tapped Don't allow |
 | `timeout` | the player didn't answer |
 
@@ -144,8 +146,20 @@ another FMutate pairing at the same moment counts one wrong attempt.
 **Grant.** On Allow: a cookie of 32 random bytes (base64url), set with
 `:erlang.set_cookie(:"<request.node>", cookie)` (the atom is made only after Allow); the
 client certificate's SHA-256 pinned for TLS distribution; `dist_host` `127.0.0.1` when the
-pairing connection came from loopback, else FMutate's Wi-Fi address; `dist_proto`
-`inet_tcp` (loopback listener) or `inet_tls`.
+pairing connection came from loopback, else FMutate's Wi-Fi address. `dist_proto` is
+**always `inet_tls` for a sibling that connected from another address**; `inet_tcp` only for
+a loopback sibling, and only when FMutate's plain listener is bound to `127.0.0.1` (§2).
+Plain distribution checks the cookie in its handshake and has no integrity after it, so
+anyone on the Wi-Fi path could inject messages, i.e. run code, in both nodes. Siblings refuse
+an `inet_tcp` grant to any other host, and refuse to connect that way.
+
+**Request checks.** FMutate refuses `request.node` equal to its own name or starting with
+`fmutate_` (`bad_node`): setting a cookie for its own name would change its default cookie.
+If another certificate is already paired under the same node name, the Allow sheet says so
+("replaces Humdinger on Pixel 7") and Allow replaces that pairing. `app_name` and
+`device_name` are shown only after removing Unicode control and format characters
+(newlines, bidi overrides). FMutate handles at most 8 pairing connections at a time and
+computes the SRP verifier in the connection, not in the process that holds the secret.
 
 **Node names.** The sibling declares its node name in `request.node` and keeps it for the
 life of the pairing; FMutate sets the cookie for exactly that name. Humdinger uses
@@ -181,8 +195,12 @@ hosts.
   handshake (`inet_tcp_dist` frames it with 2-byte lengths, `inet_tls_dist` with 4) and then
   passing bytes through. FMutate needs nothing special for it.
 - Reconnect: 1, 2, 5, 10, then every 30 s. For FMutate on another phone the sibling browses
-  mDNS from the second failure and adopts a candidate with the same `fp` and `inst` (new
-  host, node name, `dport`).
+  mDNS from the second failure. mDNS answers are unauthenticated (anyone on the LAN can
+  repeat FMutate's public `fp` and `inst`), so a candidate is only *tried*: same `fp` and
+  `inst`, a unicast non-loopback host, the pairing's node name with the new host part
+  (`fmutate_a@<new host>`), nothing while FMutate's current address is still answering, and
+  each failed host once per outage. The sibling saves the new address only after it has
+  connected (TLS pinned to `fp`, then the cookie handshake).
 - Forgetting: the sibling calls `{:unpair, node}` (§4), drops the connection, replaces the
   cookie for FMutate's node and deletes its record. FMutate answers `:ok` and then revokes as
   for Disconnect.
@@ -192,8 +210,16 @@ hosts.
 - **No epmd.** Each app runs its own BEAM; a shared epmd would die with whichever app started it.
   Fixed distribution port per instance, `-start_epmd false`, and a small custom
   `-epmd_module` in sibling apps that returns the port from the pairing record (FMutate's:
-  `Humdinger.FMutate.Reference.Epmd` with `-kernel erl_epmd_node_listen_port <port>`).
-- **Same phone:** distribution bound to `127.0.0.1`.
+  `Humdinger.FMutate.Reference.Epmd` with `-kernel erl_epmd_node_listen_port <port>`;
+  `Humdinger.FMutate.Reference.boot_args/1` gives the full set).
+- **Same phone only:** plain distribution, bound to `127.0.0.1`
+  (`-kernel inet_dist_use_interface {127,0,0,1}`). Never plain on Wi-Fi.
+- **FMutate's default cookie** is 32 random bytes, set at start: any node name without a
+  pairing meets it. With plain distribution FMutate also restricts connections to the paired
+  names (`:net_kernel.allow/1`). With TLS distribution the allow list can't be used
+  (`inet_tls_dist` turns it into a certificate host-name check that pinned self-signed
+  certificates don't pass); there the pinned client certificate and the per-name cookie are
+  the check.
 - **Other phone:** TLS distribution (`-proto_dist inet_tls`), FMutate's cert pinned by `fp`,
   the sibling's client cert pinned at pairing (§1.5). Listen on the Wi-Fi interface only while
   at least one remote app is paired; never on mobile data.
@@ -221,11 +247,15 @@ stands behind a connection:
   key. The `app.fmutate.permission.PAIR` signature permission covers the activity/service
   paths (waking FMutate), not a TCP socket.
 - **Loopback distribution** (`inet_tcp`) is unencrypted; other apps can connect to FMutate's
-  loopback port but can't pass the cookie challenge (the cookie never crosses the wire), and
-  can't observe loopback traffic without root.
+  loopback port, but a name that isn't paired is refused (allow list) and would meet the
+  random default cookie, a paired name needs that pairing's cookie (it never crosses the
+  wire), and loopback traffic can't be observed without root. This holds only if FMutate's
+  default cookie is random (not a development cookie a Mac knows) and the listener is bound
+  to loopback.
 - **Secrets at rest:** Humdinger keeps the cookie and its TLS key in Android Keystore-backed
-  storage (`mob_secure_store`). FMutate should keep its pairings, cookies and certificate key
-  the same way.
+  storage (`mob_secure_store`), and never logs them (`Record` hides both from `inspect`).
+  FMutate should keep its pairings, cookies and certificate key the same way; its
+  `-ssl_dist_optfile` holds the private key and must be mode 0600 in app-private storage.
 
 **Anything else** (laptops, browsers, third-party apps) must use a separate, restricted
 socket protocol carrying only the messages below (`:erlang.binary_to_term(bin, [:safe])` or
@@ -234,8 +264,11 @@ JSON over WebSocket) with its own pairing. Not in v1.
 ## 4. Messages
 
 All messages: `{:fmutate, 1, instance_id, payload}` to the registered process
-`{:global, {:fmutate, "a"}}` (or `:fmutate_instance` on that node; siblings on a hidden
-connection, which is what §1.5 uses, can only reach `:fmutate_instance`).
+`{:global, {:fmutate, "a"}}` (or `:fmutate_instance` on that node). Over a hidden connection,
+which is what §1.5 uses, `global` names aren't visible, so siblings send to
+`:fmutate_instance`. That is name visibility, not access control: per §3 a connected sibling
+can still call anything in FMutate, so "ask the player first" in §4.3 guards against
+mistakes, not against a hostile peer.
 
 Delivery (as implemented): inputs and `subscribe`/`unsubscribe` are `GenServer.cast/2`, calls
 are `GenServer.call/3`, and events go to the subscribed pid as plain messages

@@ -216,6 +216,63 @@ defmodule Humdinger.FMutateTest do
     _ = link
   end
 
+  test "spoofed mDNS answers are only tried, never saved, and never loopback or another node",
+       ctx do
+    fp = record().fp
+
+    spoofs = [
+      %{
+        name: "FMutate A",
+        inst: "a",
+        node: "fmutate_a@127.0.0.1",
+        host: "127.0.0.1",
+        port: nil,
+        dist_port: 1,
+        fp: fp,
+        firmware: nil,
+        device: nil
+      },
+      %{
+        name: "FMutate A",
+        inst: "a",
+        node: "fmutate_x@192.168.1.50",
+        host: "192.168.1.50",
+        port: nil,
+        dist_port: 1,
+        fp: fp,
+        firmware: nil,
+        device: nil
+      },
+      %{
+        name: "FMutate A",
+        inst: "a",
+        node: "fmutate_a@192.168.1.60",
+        host: "192.168.1.60",
+        port: nil,
+        dist_port: 1,
+        fp: fp,
+        firmware: nil,
+        device: nil
+      }
+    ]
+
+    ScriptedTransport.script(fn _ -> {:error, :unreachable} end)
+    link = start_link(ctx, discovery: fn _ -> {:ok, spoofs} end, backoff: [20])
+    :ok = FMutate.install(record(), link)
+
+    hosts = for _ <- 1..8, do: assert_receive({:connect, %{host: host}, _}, 1_000) && host
+
+    assert "192.168.1.60" in hosts
+    refute "127.0.0.1" in hosts
+    refute "192.168.1.50" in hosts
+    # A failed trial is not tried again, and the link goes back to the pairing's address.
+    assert Enum.count(hosts, &(&1 == "192.168.1.60")) == 1
+    assert List.last(hosts) == "192.168.1.23"
+
+    assert {:ok, %Record{host: "192.168.1.23", node: "fmutate_a@192.168.1.23"}} =
+             Store.load(key: ctx.key)
+  end
+
   test "FMutate on the same phone is never looked up over mDNS", ctx do
     test = self()
     ScriptedTransport.script(fn _ -> {:error, :unreachable} end)

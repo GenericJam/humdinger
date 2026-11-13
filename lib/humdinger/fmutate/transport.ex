@@ -26,7 +26,8 @@ defmodule Humdinger.FMutate.Transport do
   ## Carriers
 
   `dist_proto` from the pairing: `:inet_tcp` is plain distribution to
-  FMutate's loopback port (same phone); `:inet_tls` goes through
+  FMutate's loopback port (same phone), refused to any other host
+  (`{:error, :plain_distribution_off_loopback}`); `:inet_tls` goes through
   `Humdinger.FMutate.Tunnel` (mutual TLS, both certificates pinned).
 
   ## Atoms
@@ -103,7 +104,8 @@ defmodule Humdinger.FMutate.Transport do
   """
   @impl true
   def connect(%Record{} = record, owner) do
-    with :ok <- ensure_node(record.self_node),
+    with :ok <- safe_carrier(record),
+         :ok <- ensure_node(record.self_node),
          {:ok, route, tunnel} <- open_route(record, owner) do
       node = String.to_atom(record.node)
       true = :erlang.set_cookie(node, String.to_atom(record.cookie))
@@ -189,6 +191,15 @@ defmodule Humdinger.FMutate.Transport do
           {:error, {:distribution, reason}}
       end
     end
+  end
+
+  # Plain distribution checks the cookie in the handshake and nothing after
+  # it: anyone on the path could inject messages (code) into both nodes. Only
+  # over loopback, whatever the record says (Record.validate/1 refuses it too).
+  defp safe_carrier(%Record{dist_proto: :inet_tls}), do: :ok
+
+  defp safe_carrier(%Record{dist_proto: :inet_tcp} = record) do
+    if Record.loopback?(record), do: :ok, else: {:error, :plain_distribution_off_loopback}
   end
 
   defp open_route(%Record{dist_proto: :inet_tcp} = record, _owner) do

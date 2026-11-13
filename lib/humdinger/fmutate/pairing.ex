@@ -330,7 +330,8 @@ defmodule Humdinger.FMutate.Pairing do
   defp retry_elsewhere?({:wrong_code, _}), do: true
 
   defp retry_elsewhere?(reason),
-    do: reason in [:unreachable, :not_pairing, :busy, :expired, :too_many_attempts]
+    do:
+      reason in [:unreachable, :not_pairing, :busy, :expired, :too_many_attempts, :loopback_only]
 
   # The error to report when no candidate pairs: a wrong code says the most.
   defp better({:wrong_code, _} = best, _reason), do: best
