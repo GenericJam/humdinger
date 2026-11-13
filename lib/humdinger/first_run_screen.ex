@@ -131,12 +131,19 @@ defmodule Humdinger.FirstRunScreen do
       end
 
     ~MOB"""
-    <Column weight={1} gap={6}>
+    <Column weight={step_weight(step)} gap={6}>
       <Box height={4} corner_radius={2} background={bar} />
       <Text text={step_label(step)} font={:semibold} text_size={11} text_color={fg} max_lines={1} />
     </Column>
     """
   end
+
+  # Wider for the longer labels, so "Headphones" fits a 342 dp row
+  # (Android honours unequal weights; iOS shares equally).
+  defp step_weight(:mic), do: 0.8
+  defp step_weight(:headphones), do: 1.35
+  defp step_weight(:range), do: 0.9
+  defp step_weight(:send_to), do: 1.0
 
   defp step_label(:mic), do: "Mic"
   defp step_label(:headphones), do: "Headphones"

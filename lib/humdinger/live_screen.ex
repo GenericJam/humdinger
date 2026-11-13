@@ -400,12 +400,19 @@ defmodule Humdinger.LiveScreen do
 
     ~MOB"""
     <Column weight={1} gap={6}>
-      <Row gap={10} align={:bottom}>
+      <Row gap={10} align={:bottom} height={62}>
         <Text text={name} font={:display} text_size={64} line_height={0.9} text_color={color} />
         <Text text={vel} font={:mono_semibold} text_size={12} text_color={Style.muted()} />
       </Row>
       <Canvas width={meter_w()} height={TuningMeter.height()} draw={a.ops.meter} />
-      <Text text={cents_line(a)} font={:mono_semibold} text_size={11} text_color={Style.text_2()} />
+      <Text
+        text={cents_line(a)}
+        height={18}
+        font={:mono_semibold}
+        text_size={11}
+        max_lines={1}
+        text_color={Style.text_2()}
+      />
     </Column>
     """
   end
