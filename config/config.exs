@@ -17,6 +17,12 @@ config :humdinger, device_calls: config_env() != :test
 config :humdinger,
   audio: if(config_env() == :test, do: Humdinger.Audio.Fake, else: Humdinger.Audio.Native)
 
+# Sharing and printing exports: the humdinger_file_share plugin on the phone.
+# Unset in host tests, where Export.share/print answer {:error, :unsupported}.
+if config_env() != :test do
+  config :humdinger, :file_share, Humdinger.Export.Android
+end
+
 # Host tests use a fresh in-memory database each time the Repo starts.
 if config_env() == :test do
   config :humdinger, Humdinger.Repo, database: ":memory:", log: false

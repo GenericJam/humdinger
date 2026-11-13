@@ -38,6 +38,8 @@ defmodule Humdinger.MixProject do
       # The virtual MIDI port, device watcher and Bluetooth-MIDI connect
       # (Android native, in this repo).
       {:humdinger_midi_port, path: "plugins/humdinger_midi_port"},
+      # Sharing and printing exported files (Android native, in this repo).
+      {:humdinger_file_share, path: "plugins/humdinger_file_share"},
       # Scanning FMutate's pairing QR code (mob_scanner needs mob_camera).
       {:mob_camera, "~> 0.1.15"},
       {:mob_scanner, "~> 0.1.8"},

@@ -14,7 +14,8 @@ config :mob_dev,
   mob_dir: Path.join(File.cwd!(), "deps/mob"),
 
   # Path to your Elixir lib dir (e.g. ~/.local/share/mise/installs/elixir/1.18.4-otp-28/lib).
-  elixir_lib: System.get_env("MOB_ELIXIR_LIB", :code.lib_dir(:elixir) |> to_string() |> Path.dirname()),
+  elixir_lib:
+    System.get_env("MOB_ELIXIR_LIB", :code.lib_dir(:elixir) |> to_string() |> Path.dirname()),
 
   # App identity: one id on both platforms (no "_", so Apple accepts it).
   bundle_id: "com.genericjam.humdinger",
@@ -46,13 +47,22 @@ config :mob_dev,
 # humdinger_midi_port: the virtual "Humdinger" MIDI port, the MIDI device
 # watcher and Bluetooth-MIDI connect (plugins/humdinger_midi_port, Kotlin + a
 # Zig NIF), part of this repo.
+# humdinger_file_share: sharing an exported phrase file and printing its PDF
+# (plugins/humdinger_file_share, Kotlin + a Zig NIF), part of this repo.
 # mob_camera + mob_scanner: scanning FMutate's pairing QR code (mob_scanner
 # needs mob_camera, which owns the :camera permission).
-config :mob, :plugins, [:mob_midi, :humdinger_midi_port, :mob_camera, :mob_scanner]
+config :mob, :plugins, [
+  :mob_midi,
+  :humdinger_midi_port,
+  :humdinger_file_share,
+  :mob_camera,
+  :mob_scanner
+]
 
-# humdinger_midi_port is this app's own code, reviewed with it, so it builds
-# unsigned instead of carrying a signing key (mob_dev prints a banner).
-config :mob, :acknowledge_unsafe_plugins, [:humdinger_midi_port]
+# humdinger_midi_port and humdinger_file_share are this app's own code,
+# reviewed with it, so they build unsigned instead of carrying a signing key
+# (mob_dev prints a banner).
+config :mob, :acknowledge_unsafe_plugins, [:humdinger_midi_port, :humdinger_file_share]
 
 # Trust gate for the first-party plugins. Each is signed in CI with the shared
 # mob release key; this is that key's public fingerprint. The build refuses an
