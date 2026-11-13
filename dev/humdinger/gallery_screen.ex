@@ -22,6 +22,7 @@ defmodule Humdinger.GalleryScreen do
     QrFrame,
     RangeBar,
     Spectrum,
+    Staff,
     TuningMeter,
     Waveform
   }
@@ -196,7 +197,145 @@ defmodule Humdinger.GalleryScreen do
          326,
          56
        )}
+    ] ++ staff_scenes()
+  end
+
+  # Board 10-sheet_music, and a bass-clef phrase that exercises the rest of
+  # the engraving: a flat key, a tie, a triplet, sixteenths, accidentals,
+  # ledger lines, flags and every rest.
+  defp staff_scenes do
+    board = %{
+      note_names: true,
+      layout: %{
+        clef: :treble,
+        key_fifths: 0,
+        time: {4, 4},
+        measures: [
+          %{
+            index: 0,
+            items: [
+              staff_note(0.0, :quarter, -5, 62, "D", 4),
+              staff_note(1.0, :eighth, -4, 64, "E", 4, beam: :begin),
+              staff_note(1.5, :eighth, -3, 65, "F", 4, beam: :end),
+              staff_note(2.0, :quarter, -1, 69, "A", 4, dots: 1),
+              staff_rest(3.5, :eighth)
+            ]
+          },
+          %{
+            index: 1,
+            items: [
+              staff_note(0.0, :quarter, -3, 65, "F", 4),
+              staff_note(1.0, :quarter, -4, 64, "E", 4),
+              staff_note(2.0, :quarter, -5, 62, "D", 4),
+              staff_note(3.0, :quarter, -6, 60, "C", 4)
+            ]
+          }
+        ]
+      }
+    }
+
+    triplet = [tuplet: {3, 2}]
+
+    bass = %{
+      note_names: false,
+      layout: %{
+        clef: :bass,
+        key_fifths: -3,
+        time: {4, 4},
+        measures: [
+          %{
+            index: 0,
+            items: [
+              staff_note(0.0, :quarter, -1, 48, "C", 3),
+              staff_note(1.0, :eighth, 1, 51, "E", 3, alter: -1, beam: :begin),
+              staff_note(1.5, :eighth, 2, 53, "F", 3, beam: :end),
+              staff_note(2.0, :half, 3, 55, "G", 3, tie_to_next: true)
+            ]
+          },
+          %{
+            index: 1,
+            items: [
+              staff_note(0.0, :quarter, 3, 55, "G", 3),
+              staff_note(1.0, :eighth, 4, 56, "A", 3, [alter: -1, beam: :begin] ++ triplet),
+              staff_note(4 / 3, :eighth, 5, 58, "B", 3, [alter: -1, beam: :continue] ++ triplet),
+              staff_note(5 / 3, :eighth, 6, 60, "C", 4, [beam: :end] ++ triplet),
+              staff_note(2.0, :sixteenth, 5, 59, "B", 3, accidental: :natural, beam: :begin),
+              staff_note(2.25, :sixteenth, 6, 60, "C", 4, beam: :continue),
+              staff_note(2.5, :sixteenth, 7, 62, "D", 4, beam: :continue),
+              staff_note(2.75, :sixteenth, 8, 63, "E", 4, alter: -1, beam: :end),
+              staff_rest(3.0, :quarter)
+            ]
+          },
+          %{
+            index: 2,
+            items: [
+              staff_rest(0.0, :half),
+              staff_note(2.0, :quarter, -6, 40, "E", 2, accidental: :natural),
+              staff_rest(3.0, :eighth),
+              staff_note(3.5, :eighth, -4, 43, "G", 2)
+            ]
+          },
+          %{index: 3, items: [staff_rest(0.0, :whole)]},
+          %{
+            index: 4,
+            items: [
+              staff_rest(0.0, :sixteenth),
+              staff_note(0.25, :sixteenth, -2, 47, "B", 2, accidental: :natural),
+              staff_note(0.5, :eighth, -1, 48, "C", 3),
+              staff_note(1.0, :half, 0, 50, "D", 3, dots: 1)
+            ]
+          }
+        ]
+      }
+    }
+
+    [
+      {"Staff: the board's two bars", 350, Staff.height(board, 350),
+       Staff.ops(board, 350, Staff.height(board, 350))},
+      {"Staff: bass clef, three flats", 350, Staff.height(bass, 350),
+       Staff.ops(bass, 350, Staff.height(bass, 350))}
     ]
+  end
+
+  defp staff_note(beat, type, pos, midi, step, octave, extra \\ []) do
+    Map.merge(
+      %{
+        kind: :note,
+        beat: beat,
+        type: type,
+        dots: 0,
+        tuplet: nil,
+        midi: midi,
+        step: step,
+        octave: octave,
+        alter: 0,
+        accidental: nil,
+        staff_pos: pos,
+        tie_to_next: false,
+        beam: nil,
+        note_index: nil
+      },
+      Map.new(extra)
+    )
+  end
+
+  defp staff_rest(beat, type) do
+    %{
+      kind: :rest,
+      beat: beat,
+      type: type,
+      dots: 0,
+      tuplet: nil,
+      midi: nil,
+      step: nil,
+      octave: nil,
+      alter: nil,
+      accidental: nil,
+      staff_pos: nil,
+      tie_to_next: false,
+      beam: nil,
+      note_index: nil
+    }
   end
 
   defp thumb_notes(seq) do

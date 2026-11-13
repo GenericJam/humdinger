@@ -391,6 +391,19 @@ defmodule Humdinger.Views.StaffTest do
 
   # ── Wrapping ──────────────────────────────────────────────────────────────
 
+  test "a measure joins a system it fits squeezed, not only at natural width" do
+    # Natural widths 198 + 96 against ~255 of room after a three-flat key:
+    # squeezed toward their minimums the two share a system.
+    busy = [rest(0.0, :half), note(2.0, :quarter, -2), rest(3.0, :eighth), note(3.5, :eighth, 0)]
+    d = data([quarters(0), busy, [rest(0.0, :whole)]], clef: :bass, fifths: -3)
+
+    assert Enum.map(Staff.systems(d, @w), & &1.measures) == [[0], [1, 2]]
+
+    # Two busy measures (≈ 396 natural) are too much to squeeze into one.
+    crowded = data(List.duplicate(busy, 3), clef: :bass, fifths: -3)
+    assert Enum.map(Staff.systems(crowded, @w), & &1.measures) == [[0], [1], [2]]
+  end
+
   test "narrower canvases wrap into more systems and a taller height" do
     d =
       data(

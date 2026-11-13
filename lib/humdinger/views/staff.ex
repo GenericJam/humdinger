@@ -114,6 +114,9 @@ defmodule Humdinger.Views.Staff do
   @min_below 110
   @names_below 34
   @stretch_at 0.7
+  # How far a system may be squeezed below its natural width before the
+  # next measure goes to a new system (natural ≤ room × 1.2).
+  @squeeze 1.2
 
   @sharp_pos %{treble: [4, 1, 5, 2, -1, 3, 0], bass: [2, -1, 3, 0, -3, 1, -2]}
   @flat_pos %{treble: [0, 3, -1, 2, -2, 1, -3], bass: [-2, 1, -3, 0, -4, -1, -5]}
@@ -272,17 +275,22 @@ defmodule Humdinger.Views.Staff do
     wrap(rest, s, right, i + 1, [row | acc])
   end
 
+  # Measures join a system while their natural widths need at most
+  # @squeeze more than the room (the fitter then closes the gaps toward
+  # their minimums) and their minimum widths still fit.
   defp fit([first | rest], avail) do
     {more, left} =
-      Enum.reduce_while(rest, {[], first.width}, fn m, {acc, used} ->
-        if used + m.width <= avail,
-          do: {:cont, {[m | acc], used + m.width}},
-          else: {:halt, {acc, used}}
+      Enum.reduce_while(rest, {[], first.width, min_width(first)}, fn m, {acc, used, least} ->
+        if used + m.width <= avail * @squeeze and least + min_width(m) <= avail,
+          do: {:cont, {[m | acc], used + m.width, least + min_width(m)}},
+          else: {:halt, {acc, used, least}}
       end)
-      |> then(fn {acc, _} -> {Enum.reverse(acc), Enum.drop(rest, length(acc))} end)
+      |> then(fn {acc, _, _} -> {Enum.reverse(acc), Enum.drop(rest, length(acc))} end)
 
     {[first | more], left}
   end
+
+  defp min_width(m), do: m.lead + (m.gaps |> Enum.map(&elem(&1, 1)) |> Enum.sum())
 
   defp place_row(metrics, start, right, last?, index) do
     avail = right - start
