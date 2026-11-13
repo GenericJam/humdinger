@@ -627,8 +627,11 @@ defmodule Humdinger.Output do
   defp native_event(state, :ble_scan_done, payload),
     do: %{state | scanning: false, scan_error: error_atom(payload["error"]) || state.scan_error}
 
+  # Android names a Bluetooth MIDI device after the name its stack cached,
+  # which can be missing; the name the scan saw is the better one.
   defp native_event(state, :ble_connected, %{"address" => address} = payload) do
-    paired = %{address: address, name: payload["name"] || address}
+    scanned = Enum.find_value(state.found, &(&1.address == address and &1.name != "" and &1.name))
+    paired = %{address: address, name: scanned || payload["name"] || address}
     state.device.remember(paired)
     %{state | paired: paired, connecting: nil}
   end

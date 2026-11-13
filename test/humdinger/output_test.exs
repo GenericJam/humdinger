@@ -416,7 +416,8 @@ defmodule Humdinger.OutputTest do
       assert_receive {:connect, "AA:BB:CC:DD:EE:FF"}
       assert row(output, :bt).detail == "connecting…"
 
-      connected = ~s({"address":"AA:BB:CC:DD:EE:FF","id":12,"name":"Minilogue"})
+      # Android's own name for it can be the generic one; the scan's wins.
+      connected = ~s({"address":"AA:BB:CC:DD:EE:FF","id":12,"name":"MIDI device"})
       send(output, {:humdinger_midi, :ble_connected, connected})
       plug(output, 12, "bluetooth", name: "Minilogue")
 

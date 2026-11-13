@@ -65,6 +65,10 @@ object HumdingerMidiBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPe
     // The Mob.Permissions capability covering BLE scan + connect.
     private const val BLUETOOTH_CAPABILITY = "midi_bluetooth"
 
+    // MidiDeviceInfo property holding a MidiDeviceService's ServiceInfo
+    // (PROPERTY_SERVICE_INFO, hidden from the SDK's android.jar).
+    private const val PROPERTY_SERVICE_INFO = "service_info"
+
     private val main = Handler(Looper.getMainLooper())
 
     @Volatile private var appContext: Context? = null
@@ -191,7 +195,7 @@ object HumdingerMidiBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPe
     @Suppress("DEPRECATION") // typed getParcelable is API 33+
     private fun describe(info: MidiDeviceInfo): JSONObject {
         val props = info.properties
-        val owner = props.getParcelable<ServiceInfo>(MidiDeviceInfo.PROPERTY_SERVICE_INFO)?.packageName
+        val owner = props.getParcelable<ServiceInfo>(PROPERTY_SERVICE_INFO)?.packageName
         val type = when (info.type) {
             MidiDeviceInfo.TYPE_USB -> "usb"
             MidiDeviceInfo.TYPE_BLUETOOTH -> "bluetooth"
