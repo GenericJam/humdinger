@@ -1037,7 +1037,10 @@ the boards' 390 minus 20 a side (30 a side on the 411 dp Moto G).
   settings / Try again) · Headphones · Range · Send to (Output's
   destinations with switches, "More in Output ›"). Range uses
   `Humdinger.RangeFinder` on the raw sung pitch: a hold starts on a voiced
-  frame, survives gaps ≤ 150 ms and stays within ±1 semitone of its start;
+  frame, survives silences ≤ 250 ms and stays within ±1 semitone of its start
+  (off-note readings count as a new note only after a consistent 100 ms run
+  that outnumbers the held note's readings meanwhile, so octave blips are
+  ignored; the last held note stays on screen through a pause);
   2 s sets the lowest, then the highest (a highest not above the lowest is
   refused). Both in → saved at once with `octave = RangeFinder.octave_for/1`
   (the shift −3..3 that brings the range's middle nearest E4, MIDI 64: E2–G4
