@@ -145,13 +145,15 @@ defmodule Humdinger.PairScreenTest do
   end
 
   describe "typing the code" do
-    test "is grouped as typed, lights up when whole and valid, and pairs once" do
+    test "keeps the keys while typing, groups and lights up once whole and valid, pairs once" do
+      # Partial codes stay as typed: changing them would make Android's field
+      # drop the keys still in flight.
       view = type(mount(), "kq7m")
-      assert assigns(view).code == "KQ7M"
+      assert field(view).props.value == "kq7m"
       assert field(view).props.border_color == Style.line()
 
       view = type(view, "kq7mx2")
-      assert assigns(view).code == "KQ7M-X2"
+      assert field(view).props.value == "kq7mx2"
       refute assigns(view).code_valid
       refute_received {:pairing, :pair, _, _}
 
@@ -177,13 +179,20 @@ defmodule Humdinger.PairScreenTest do
       assert_paired_with(%{code: "KQ7M-X2P1"})
 
       view = type(view, "o")
-      assert assigns(view).code == "O"
+      assert assigns(view).code == "o"
       refute assigns(view).code_valid
+    end
+
+    test "format_code groups partial codes (what a paste shows)" do
+      assert PairScreen.format_code("kq7m") == {"KQ7M", false}
+      assert PairScreen.format_code("kq7m-x2") == {"KQ7M-X2", false}
+      assert PairScreen.format_code(" kq7m x2pd ") == {"KQ7M-X2PD", true}
+      assert PairScreen.format_code("KQ7M-X2PU") == {"KQ7M-X2PU", false}
     end
 
     test "a character codes never use keeps it unlit" do
       view = type(mount(), "KQ7M-X2PU")
-      assert assigns(view).code == "KQ7M-X2PU"
+      assert field(view).props.value == "KQ7M-X2PU"
       refute assigns(view).code_valid
       refute_received {:pairing, :pair, _, _}
     end

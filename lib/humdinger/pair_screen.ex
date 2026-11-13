@@ -9,10 +9,10 @@ defmodule Humdinger.PairScreen do
       (`Mob.Permissions`) and opens `MobScanner.scan(socket, formats:
       [:qr])`, a full-screen scanner; the scanned `fmutate://pair?…` link goes
       through `parse_link/1` to `pair/2`.
-    * **Type.** The field upper-cases and groups as you type (`KQ7M-X2PD`);
-      once `normalize_code/1` accepts the 8 characters it turns lime and
-      pairing starts by code (for the FMutate tapped in FOUND NEARBY, if
-      any).
+    * **Type.** Once `normalize_code/1` accepts the 8 characters typed, the
+      field shows them as `KQ7M-X2PD`, turns lime and pairing starts by code
+      (for the FMutate tapped in FOUND NEARBY, if any). Until then it keeps
+      the keys as typed (Android's field would drop keys in flight).
     * **Paste.** Reads the clipboard (`Mob.Clipboard`, or the module in
       `config :humdinger, :clipboard`): a code fills the field, a whole link
       pairs at once. A link typed into the field works too.
@@ -31,7 +31,9 @@ defmodule Humdinger.PairScreen do
   alias Humdinger.{Mimi, OutputScreen, Style}
   alias Humdinger.Views.QrFrame
 
-  @width 350
+  # The viewfinder canvas: the board's box (390 − 2 × 20 wide), centred in
+  # the content width.
+  @scanner_w 350
   @scanner_h 300
   @close_after_ms 1_500
 
@@ -66,77 +68,83 @@ defmodule Humdinger.PairScreen do
 
   @impl true
   def render(assigns) do
-    width = @width
     paste = {self(), :paste}
     change = {self(), :code}
     border = if assigns.code_valid, do: Style.fm(), else: Style.line()
     border_w = if assigns.code_valid, do: 2, else: 1
 
     ~MOB"""
-    <Column background={Style.bg()} fill_width={true} fill_height={true} align={:center}>
-      <Column width={width} fill_height={true} padding_top={12} padding_bottom={22} gap={14}>
-        {OutputScreen.header("Pair with FMutate")}
-        <Scroll weight={1} show_indicator={false}>
-          <Column fill_width={true} gap={14}>
-            <Text
-              text="In FMutate, open I/O › Pair an app, then scan its code."
-              text_size={13}
-              text_color={Style.text_2()}
-            />
-            {scanner(@scanner)}
-            <Column fill_width={true} gap={8}>
-              {OutputScreen.heading("OR ENTER THE CODE")}
-              <Row fill_width={true} gap={8} align={:center}>
-                <TextField
-                  id="code"
-                  weight={1}
-                  value={@code}
-                  placeholder="XXXX-XXXX"
-                  on_change={change}
-                  on_submit={change}
-                  caret="end"
-                  font={:mono_bold}
-                  text_size={22}
-                  letter_spacing={1.3}
-                  text_color={Style.text()}
-                  placeholder_color={Style.faint()}
-                  background={Style.surface()}
-                  border_color={border}
-                  border_width={border_w}
-                  corner_radius={14}
-                  padding={14}
-                  underline={false}
-                />
-                <Box
-                  fill_width={false}
-                  height={52}
-                  corner_radius={14}
-                  background={Style.raised_hi()}
-                  padding_left={14}
-                  padding_right={14}
-                  align="center"
-                  on_tap={paste}
-                  on_press_out={OutputScreen.held()}
-                >
-                  <Text text="Paste" font={:semibold} text_size={14} text_color={Style.text()} />
-                </Box>
-              </Row>
-            </Column>
-            <Column fill_width={true} gap={6}>
-              {OutputScreen.heading("FOUND NEARBY")}
-              {nearby(shown_candidates(assigns), assigns)}
-            </Column>
+    <Column
+      background={Style.bg()}
+      fill_width={true}
+      fill_height={true}
+      padding_left={20}
+      padding_right={20}
+      padding_top={12}
+      padding_bottom={22}
+      gap={14}
+    >
+      {OutputScreen.header("Pair with FMutate")}
+      <Scroll weight={1} show_indicator={false}>
+        <Column fill_width={true} gap={14}>
+          <Text
+            text="In FMutate, open I/O › Pair an app, then scan its code."
+            text_size={13}
+            text_color={Style.text_2()}
+          />
+          {scanner(@scanner)}
+          <Column fill_width={true} gap={8}>
+            {OutputScreen.heading("OR ENTER THE CODE")}
+            <Row fill_width={true} gap={8} align={:center}>
+              <TextField
+                id="code"
+                weight={1}
+                value={@code}
+                placeholder="XXXX-XXXX"
+                on_change={change}
+                on_submit={change}
+                caret="end"
+                font={:mono_bold}
+                text_size={22}
+                letter_spacing={1.3}
+                text_color={Style.text()}
+                placeholder_color={Style.faint()}
+                background={Style.surface()}
+                border_color={border}
+                border_width={border_w}
+                corner_radius={14}
+                padding={14}
+                underline={false}
+              />
+              <Box
+                fill_width={false}
+                height={52}
+                corner_radius={14}
+                background={Style.raised_hi()}
+                padding_left={14}
+                padding_right={14}
+                align="center"
+                on_tap={paste}
+                on_press_out={OutputScreen.held()}
+              >
+                <Text text="Paste" font={:semibold} text_size={14} text_color={Style.text()} />
+              </Box>
+            </Row>
           </Column>
-        </Scroll>
-        {status_card(@status, @matched)}
-      </Column>
+          <Column fill_width={true} gap={6}>
+            {OutputScreen.heading("FOUND NEARBY")}
+            {nearby(shown_candidates(assigns), assigns)}
+          </Column>
+        </Column>
+      </Scroll>
+      {status_card(@status, @matched)}
     </Column>
     """
   end
 
   defp scanner(state) do
     scan = {self(), :scan}
-    w = @width
+    w = @scanner_w
     h = @scanner_h
     ops = scanner_ops(state, w, h)
 
@@ -151,26 +159,28 @@ defmodule Humdinger.PairScreen do
     ~MOB"""
     <Box
       id="scanner"
-      width={w}
+      fill_width={true}
       height={h}
       corner_radius={18}
       background={0xFF241F2A}
-      align="bottom_leading"
+      align="center"
       on_tap={scan}
       on_press_out={OutputScreen.held()}
     >
-      <Canvas width={w} height={h} draw={ops} />
-      <Box fill_width={false} padding={12}>
-        <Box
-          fill_width={false}
-          corner_radius={10}
-          background={Style.bg()}
-          padding_left={10}
-          padding_right={10}
-          padding_top={6}
-          padding_bottom={6}
-        >
-          <Text text={chip} font={:semibold} text_size={12} text_color={Style.text()} />
+      <Box width={w} height={h} align="bottom_leading">
+        <Canvas width={w} height={h} draw={ops} />
+        <Box fill_width={false} padding={12}>
+          <Box
+            fill_width={false}
+            corner_radius={10}
+            background={Style.bg()}
+            padding_left={10}
+            padding_right={10}
+            padding_top={6}
+            padding_bottom={6}
+          >
+            <Text text={chip} font={:semibold} text_size={12} text_color={Style.text()} />
+          </Box>
         </Box>
       </Box>
     </Box>
@@ -437,7 +447,7 @@ defmodule Humdinger.PairScreen do
 
   def handle_info({:tap, :back}, socket), do: {:noreply, Mob.Socket.pop_screen(socket)}
 
-  def handle_info({:change, :code, text}, socket), do: {:noreply, entered(socket, text)}
+  def handle_info({:change, :code, text}, socket), do: {:noreply, entered(socket, text, :typed)}
 
   def handle_info({:submit, :code}, socket) do
     a = socket.assigns
@@ -447,7 +457,7 @@ defmodule Humdinger.PairScreen do
   def handle_info({:tap, :paste}, socket) do
     case clipboard().get(socket) do
       {:clipboard, :ok, text} ->
-        {:noreply, entered(socket, text)}
+        {:noreply, entered(socket, text, :pasted)}
 
       {:clipboard, :empty} ->
         {:noreply,
@@ -549,13 +559,18 @@ defmodule Humdinger.PairScreen do
 
   # ── Pairing ────────────────────────────────────────────────────────────────
 
-  # Typed, pasted or submitted text: a link pairs at once, a code is
-  # formatted and pairs once it is complete (and new).
-  defp entered(socket, text) do
+  # Typed, pasted or submitted text: a link pairs at once, a code pairs once
+  # it is complete (and new). While a code is being typed the field keeps the
+  # keystrokes as they are: Android's field adopts any value the screen
+  # changes, and during a burst of typing that drops the keys still in flight
+  # (MobTextSync). It takes the `XXXX-XXXX` form once the code is whole, and
+  # pasted text is formatted at once.
+  defp entered(socket, text, how) do
     if link?(text) do
       socket |> Mob.Socket.assign(code: "", code_valid: false) |> link(text)
     else
-      {code, valid} = format_code(text)
+      {formatted, valid} = format_code(text)
+      code = if valid or how == :pasted, do: formatted, else: text
       a = socket.assigns
       socket = Mob.Socket.assign(socket, code: code, code_valid: valid)
 
@@ -593,9 +608,9 @@ defmodule Humdinger.PairScreen do
   end
 
   @doc """
-  The field's text for what was typed: upper-cased, letters and digits only,
-  at most 8, grouped `XXXX-XXXX`; and whether it is a whole valid code (then
-  in `Pairing.normalize_code/1`'s form, so `o`/`l` read as `0`/`1`).
+  The `XXXX-XXXX` form of `text` (upper-cased, letters and digits only, at
+  most 8; a pasted code shows it at once) and whether it is a whole valid
+  code (then in `Pairing.normalize_code/1`'s form, so `o`/`l` read as `0`/`1`).
   """
   def format_code(text) do
     chars =

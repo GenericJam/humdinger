@@ -30,9 +30,6 @@ defmodule Humdinger.OutputScreen do
 
   alias Humdinger.{Engine, Output, PairScreen, Style}
 
-  # The board's content width (390 − 2 × 20).
-  @width 350
-
   @impl true
   def mount(_params, _session, socket) do
     :ok = Output.subscribe(self())
@@ -55,36 +52,42 @@ defmodule Humdinger.OutputScreen do
 
   @impl true
   def render(assigns) do
-    width = @width
     none_on = not Enum.any?(assigns.destinations, & &1.enabled)
 
     footer_color = if none_on, do: Style.warn(), else: Style.muted()
     footer_font = if none_on, do: :semibold, else: :default
 
     ~MOB"""
-    <Column background={Style.bg()} fill_width={true} fill_height={true} align={:center}>
-      <Column width={width} fill_height={true} padding_top={12} padding_bottom={22} gap={14}>
-        {header("Send MIDI to")}
-        <Scroll weight={1} show_indicator={false}>
-          <Column fill_width={true} gap={14}>
-            <Column fill_width={true} gap={8}>
-              {Enum.map(@destinations, &card(&1, @fmutate))}
-              <Row fill_width={true} gap={8}>
-                {flat_button("Pair FMutate · QR or code", :pair, weight: 1)}
-                {flat_button("Scan Bluetooth", :scan_bluetooth, weight: 1)}
-              </Row>
-            </Column>
-            {channel_section(@settings.channel)}
-            {sent_section(@settings, @last_sent)}
+    <Column
+      background={Style.bg()}
+      fill_width={true}
+      fill_height={true}
+      padding_left={20}
+      padding_right={20}
+      padding_top={12}
+      padding_bottom={22}
+      gap={14}
+    >
+      {header("Send MIDI to")}
+      <Scroll weight={1} show_indicator={false}>
+        <Column fill_width={true} gap={14}>
+          <Column fill_width={true} gap={8}>
+            {Enum.map(@destinations, &card(&1, @fmutate))}
+            <Row fill_width={true} gap={8}>
+              {flat_button("Pair FMutate · QR or code", :pair, weight: 1)}
+              {flat_button("Scan Bluetooth", :scan_bluetooth, weight: 1)}
+            </Row>
           </Column>
-        </Scroll>
-        <Text
-          text="Humdinger makes no sound itself. Turn on at least one destination, or nothing will play."
-          font={footer_font}
-          text_size={12}
-          text_color={footer_color}
-        />
-      </Column>
+          {channel_section(@settings.channel)}
+          {sent_section(@settings, @last_sent)}
+        </Column>
+      </Scroll>
+      <Text
+        text="Humdinger makes no sound itself. Turn on at least one destination, or nothing will play."
+        font={footer_font}
+        text_size={12}
+        text_color={footer_color}
+      />
       {if @bt_sheet, do: bluetooth_sheet(assigns)}
     </Column>
     """
@@ -340,7 +343,7 @@ defmodule Humdinger.OutputScreen do
   defp flat_button(label, tag, opts) do
     tap = {self(), tag}
     weight = Keyword.get(opts, :weight)
-    pad = Keyword.get(opts, :padding, 8)
+    pad = Keyword.get(opts, :padding, 4)
 
     ~MOB"""
     <Box
@@ -355,7 +358,14 @@ defmodule Humdinger.OutputScreen do
       on_tap={tap}
       on_press_out={held()}
     >
-      <Text text={label} font={:semibold} text_size={13} text_color={Style.text()} max_lines={1} />
+      <Text
+        text={label}
+        font={:semibold}
+        text_size={13}
+        text_color={Style.text()}
+        text_align="center"
+        fill_width={false}
+      />
     </Box>
     """
   end
@@ -366,6 +376,7 @@ defmodule Humdinger.OutputScreen do
     dismiss = {self(), :bt_sheet}
     bt = assigns.bluetooth
     found = Enum.reject(bt.found, &(bt.paired && &1.address == bt.paired.address))
+    message = bt_message(bt, assigns.bt_permission)
 
     {scan_label, scan_tag} =
       if bt.scanning, do: {"Stop", :stop_scan}, else: {"Scan again", :scan_bluetooth}
@@ -380,23 +391,18 @@ defmodule Humdinger.OutputScreen do
       <Column fill_width={true} padding={20} gap={12}>
         <Text text="Bluetooth MIDI" font={:display} text_size={22} text_color={Style.text()} />
         <Row :if={bt.scanning} fill_width={true} gap={10} align={:center}>
-          <Progress color={Style.fm()} />
+          <Box width={8} height={8} corner_radius={4} background={Style.fm()} />
           <Text
             text="Looking for Bluetooth MIDI devices…"
             text_size={13}
             text_color={Style.text_2()}
           />
         </Row>
-        <Text
-          :if={bt_message(bt, @bt_permission)}
-          text={bt_message(bt, @bt_permission)}
-          text_size={13}
-          text_color={Style.danger_text()}
-        />
+        <Text :if={message} text={message} text_size={13} text_color={Style.danger_text()} />
         {if bt.paired, do: bt_row(bt.paired, bt_paired_detail(@destinations), :forget, bt)}
         {Enum.map(found, &bt_row(&1, "#{&1.rssi} dBm", :connect, bt))}
         <Text
-          :if={found == [] and not bt.scanning and bt.paired == nil}
+          :if={found == [] and not bt.scanning and bt.paired == nil and message == nil}
           text="Nothing found yet. Switch the synth's Bluetooth MIDI on and scan."
           text_size={13}
           text_color={Style.muted()}

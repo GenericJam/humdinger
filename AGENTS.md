@@ -544,6 +544,97 @@ If FMutate isn't running yet, Output retries `subscribe/1` every second.
 - USB/Bluetooth need hardware: plug a USB-MIDI synth (OTG) or scan for a
   BLE-MIDI one; the `:usb` / `:bt` rows should change at once.
 
+### The Output and Pair screens
+
+`Humdinger.OutputScreen` (board `output`) subscribes to `Output` and to
+the FMutate link (`config :humdinger, :fmutate`, the key Output reads too)
+and re-renders on their messages, so every tap target carries
+`on_press_out={held()}` (`OutputScreen.held/0`, MOB-509).
+
+- **Cards**: `Output.destinations/0`, badge tiles FM / PORT / USB / BT.
+  The switch shows `enabled` (tap → `Output.set_enabled/2`); the lime
+  outline means enabled *and* available; an unavailable card is dimmed
+  but still switchable (it sends once the device shows up). FMutate unpaired
+  reads "not paired · pair below"; once paired (connected or not) the card
+  has "Forget this FMutate" → `Mob.Alert` confirm → `FMutate.forget/0`.
+- **Pair FMutate · QR or code** pushes `PairScreen`. **Scan Bluetooth**
+  opens a `<Sheet>` driven by `Output.bluetooth/0` and `{:output,
+  :bluetooth, view}`: scanning spinner, finds with Connect / Connecting…,
+  the paired device with Forget, Scan again / Stop, Done (closing stops a
+  scan). `{:error, :no_permission}` → `Mob.Permissions.request(socket,
+  :midi_bluetooth)` → granted scans again, denied explains Settings;
+  scan errors (`bluetooth_off`, `location_off`, …) read as sentences
+  (`OutputScreen.bt_message/2`).
+- **CHANNEL** taps call `Engine.update_settings(%{channel: n})` (the
+  engine releases notes on the old channel, then moves Output). **WHAT GETS
+  SENT** is `OutputScreen.chips/1` of `Engine.settings/0`: an off chip is
+  outlined (pitch bend in Scale mode, CC 11 / velocity when not from
+  loudness), CC 1 appears only with vibrato on. **Last sent** follows
+  `{:output, :sent, summary}` ("nothing yet" before); **Send test note** is
+  `Output.test_note/0`. The footer turns amber and semibold when every
+  destination is off.
+
+`Humdinger.PairScreen` (board `pair`) talks to the pairing service in
+`config :humdinger, :pairing` (default `Humdinger.FMutate.Pairing`) and
+reads the clipboard through `config :humdinger, :clipboard` (default
+`Mob.Clipboard`); both keys exist for the screen tests' doubles.
+
+- Mount calls `discover(self())`; `terminate/2` calls `cancel/0` (the
+  service also drops an owner that exits).
+- **Scan**: the viewfinder box (QrFrame brackets over a camera glyph, the
+  "Point at the code" chip) is one tap target: it asks for `:camera`, then
+  `MobScanner.scan(socket, formats: [:qr])` (full screen); `{:scan,
+  :result, %{value: link}}` → `parse_link/1` → `pair/2`. A non-FMutate code,
+  a refused camera and an unavailable scanner each get a sentence.
+- **Code field**: while a code is incomplete the field keeps the keys as
+  typed (a controlled Android field adopts any value the screen changes,
+  and during fast typing that drops the keys still in flight:
+  `MobTextSync`); once `PairScreen.format_code/1` / `normalize_code/1`
+  accept 8 characters it shows `XXXX-XXXX`, turns lime and pairing starts
+  (once per code; Return retries). **Paste** formats at once. A link typed
+  or pasted pairs by link.
+- **FOUND NEARBY**: `{:fmutate_pair, :found, list}` rows "FMutate A · X0X"
+  / "Pixel 7 · Wi-Fi · showing its code" ("this phone" for 127.0.0.1, "not
+  showing its code" when `port` is nil, untappable), "code matches" after
+  `:matched` (a link's FMutate is listed even if mDNS didn't see it).
+  Tapping one picks it: the code then pairs with `%{code:, candidate:}`.
+- **Status card** (`PairScreen.status_view/2`, Mimi 54 × 48): idle hint;
+  "Finding FMutate…" / "Code matches FMutate A" / "Waiting for Allow…" with
+  Cancel (`cancel/0`, then `discover/1` again); "Paired with FMutate A",
+  then `pop_screen` after 1.5 s; failures through
+  `PairScreen.failure_text/1` with Try again (re-pairs the same offer,
+  except wrong code / too many tries / expired / used token / not a link,
+  which clear the field for a fresh code).
+
+Host calls that only exist on a phone (`Mob.Permissions`, `Mob.Alert`) are
+skipped under `config :humdinger, device_calls: false` (host tests); the
+state they lead to is still assigned, so tests deliver the answer
+(`{:permission, …}`, `{:alert, …}`) themselves. MobScanner's NIF is
+`config :mob_scanner, :nif` (a stub in the tests). Tests:
+`test/humdinger/{output,pair}_screen_test.exs` (a real named `Output` and
+`Engine` over doubles; the pairing double reports to the screen's process).
+
+Layout notes from the phone: both screens use the board's 20 dp side
+padding at full width (a fixed-width column isn't centred by its parent's
+`align` on Android); the viewfinder is a 350 × 300 canvas centred in a
+full-width box. A `:text` with `text_align` fills the width unless
+`fill_width: false` (it pushed a weighted sibling to zero width), and
+`<Progress>` inside a row grows to fill the sheet: the scan row uses a lime
+dot instead.
+
+Checked on the moto g power (Android 11), 2026-11-12: both screens opened
+over `Mob.Test.navigate/3`, compared with the boards; real `adb shell input
+tap` on the USB switch, channel 5 and Send test note (Output and Engine
+state followed, "A4 off · ch 5" in Last sent), Scan Bluetooth (sheet,
+`:midi_bluetooth` already granted, a 10 s scan with nothing nearby), Pair
+(navigated), the viewfinder (Android's camera prompt, then
+`MobScannerActivity`; closing it returns to idle), `adb shell input text`
+of the code (all keys kept, `KQ7M-X2PD` lime, a real pairing that failed
+`:not_found` with no FMutate on the Wi-Fi) and back (the pairing service
+left with no owner). After `mix mob.deploy` without `--native` (a hot
+load) the `humdinger_midi_port` NIF answered `:unavailable` until the app
+restarted (`mix mob.connect`).
+
 ## The audio engine
 
 `c_src/hum_audio.c` is a static NIF (`mob.exs` `:static_nifs`, Android
