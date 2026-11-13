@@ -262,6 +262,17 @@ tones → note ons (and the time from tone start to the first clear reading
 to the note on, from a trace of the engine process), frames and moods, a
 recorded take, Home pressed (frames, events and the notification text keep
 coming), then the notification's buttons through their intents.
+Measured on the moto g power 2021 (Balanced, room −67 dBFS, sensitivity
+−59, `VOLUME=3`): every tone became its note; first clear reading → note
+on 58–65 ms (the 60 ms response plus a reading batch); tone start → note
+on 258–290 ms, about 200 ms of it before the first clear reading (afplay
+start, speaker, the 42 ms YIN window); frames 29.2/s; in the background
+the notification read "A4 0¢ → Humdinger port · ch 1" mid-tone. With the
+tones only 2–5 dB over the gate (`VOLUME=1`) some onsets took 300–400 ms
+(readings dipping under the gate restart the onset), and the first tone
+after a silence sometimes read as its subharmonics (D3 for A4) for
+300–600 ms, which the engine then plays: a detector-level effect at low
+signal, not seen at the louder level.
 
 **Output** (`Humdinger.Output`, GenServer; `Humdinger.Midi` pure
 encoder): `send_events([event])` (cast, on the settings channel),
