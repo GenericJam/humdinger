@@ -2,19 +2,22 @@ defmodule Humdinger.ImportScreenTest do
   # Doubles configured in the application env.
   use Mob.ScreenCase, async: false
 
-  import Humdinger.Test.ScreenHelpers
+  import Humdinger.Test.Screens
 
+  alias Humdinger.Audio.Fake
   alias Humdinger.{ImportScreen, Music, Phrase, PhraseScreen, Scale, Style}
-  alias Humdinger.Test.Listener
+  alias Humdinger.Test.{FakeOutput, Listener}
 
   @duration 6000
   @wave_w 344
 
   setup do
     Listener.listen()
+    Fake.reset()
+    FakeOutput.reset()
     audio = Application.get_env(:humdinger, :audio)
-    Application.put_env(:humdinger, :audio, Humdinger.Test.FileAudio)
-    Application.put_env(:humdinger, :output, Humdinger.Test.Output)
+    Application.put_env(:humdinger, :audio, Fake)
+    Application.put_env(:humdinger, :output, FakeOutput)
     Application.put_env(:humdinger, :file_share, Humdinger.Test.FileShare)
     dir = Path.join(System.tmp_dir!(), "humdinger-import-#{System.unique_integer([:positive])}")
     Application.put_env(:humdinger, :export_dir, dir)
@@ -53,12 +56,24 @@ defmodule Humdinger.ImportScreenTest do
   defp item(name \\ "voice-memo.m4a", mime \\ "audio/mp4"),
     do: %{path: "/tmp/" <> name, name: name, mime: mime, size: 1024}
 
+  # The reference of the newest `analyze_file/3` call (for `path`).
+  defp analysis_ref(path \\ "/tmp/voice-memo.m4a") do
+    assert [{ref, ^path} | _] = Fake.analyses()
+    ref
+  end
+
+  # Fake delivers the analysis to the screen that asked: the test process.
+  defp analysed(view, ref) do
+    :ok = Fake.analysis(ref, analysis())
+    assert_receive {:hum_audio, ^ref, {:analysis, _}} = message
+    render_info(view, message)
+  end
+
   defp ready do
     view =
       ImportScreen |> mount_screen(%{notify: self()}) |> render_info({:files, :picked, [item()]})
 
-    assert_receive {:analyze, _owner, "/tmp/voice-memo.m4a", ref}
-    render_info(view, {:hum_audio, ref, {:analysis, analysis()}})
+    analysed(view, analysis_ref())
   end
 
   defp x_of(ms), do: 7 + ms / @duration * (@wave_w - 14)
@@ -77,8 +92,7 @@ defmodule Humdinger.ImportScreenTest do
 
   test "a picked file is analysed in the background while Mimi listens" do
     view = ImportScreen |> mount_screen() |> render_info({:files, :picked, [item()]})
-    assert_receive {:analyze, owner, "/tmp/voice-memo.m4a", ref}
-    assert owner == self()
+    ref = analysis_ref()
     assert assigns(view).stage == :analysing
     assert "Listening to voice-memo.m4a…" in texts(view)
     assert find(view, :progress, [])
@@ -87,7 +101,7 @@ defmodule Humdinger.ImportScreenTest do
     stale = render_info(view, {:hum_audio, make_ref(), {:analysis, analysis()}})
     assert assigns(stale).stage == :analysing
 
-    view = render_info(view, {:hum_audio, ref, {:analysis, analysis()}})
+    view = analysed(view, ref)
     assert assigns(view).stage == :ready
     assert "voice-memo.m4a · 0:06" in texts(view)
     assert text_of(view, "using") == "using 0:00 – 0:06"
@@ -118,8 +132,10 @@ defmodule Humdinger.ImportScreenTest do
     assert text_of(view, "notice") == "That isn't an audio file."
 
     view = render_info(view, {:files, :picked, [item()]})
-    assert_receive {:analyze, _, _, ref}
-    failed = render_info(view, {:hum_audio, ref, {:analysis_error, :not_supported}})
+    ref = analysis_ref()
+    :ok = Fake.analysis_error(ref, :not_supported)
+    assert_receive {:hum_audio, ^ref, {:analysis_error, :not_supported}} = message
+    failed = render_info(view, message)
     assert {:error, text} = assigns(failed).stage
     assert text == "This phone can't decode that kind of file."
     assert by_id(failed, "other_file")
@@ -251,8 +267,7 @@ defmodule Humdinger.ImportScreenTest do
     playing = ready() |> render_info({:tap, :play})
 
     for v <- [mount_screen(ImportScreen), playing, render_info(playing, {:tap, :snap_scale})] do
-      assert taps(v) != []
-      assert unguarded(v) == []
+      assert_every_tap_held(v)
     end
   end
 end

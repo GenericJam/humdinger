@@ -4,8 +4,9 @@ defmodule Humdinger.LiveScreenTest do
 
   import Humdinger.Test.Screens
 
+  alias Humdinger.Audio.Fake
   alias Humdinger.{Engine, FirstRunScreen, LiveScreen, Scale, SpectrumScreen}
-  alias Humdinger.Test.{FakeAudio, FakeOutput}
+  alias Humdinger.Test.FakeOutput
 
   defp mount_live(settings \\ %{first_run_done: true}) do
     start_engine(settings)
@@ -37,7 +38,7 @@ defmodule Humdinger.LiveScreenTest do
     test "after first run it listens at once and shows where the MIDI goes" do
       view = mount_live()
       assert Engine.status() == :listening
-      assert FakeAudio.current()
+      assert Fake.current()
       assert_renderable(view)
 
       assert "FMutate A" in texts(view)
@@ -323,7 +324,7 @@ defmodule Humdinger.LiveScreenTest do
 
     test "an engine error shows what happened" do
       view = mount_live()
-      FakeAudio.fail(FakeAudio.current(), :device_lost)
+      Fake.fail(Fake.current(), :device_lost)
       view = pump(view)
       assert "The microphone stopped" in texts(view)
       _view = render_info(view, {:tap, :retry_mic})
@@ -447,12 +448,12 @@ defmodule Humdinger.LiveScreenTest do
 
     test "Live watches the new engine and sets it listening again" do
       view = mount_live()
-      FakeAudio.reset()
+      Fake.reset()
       view = restart_engine(view)
 
       assert Engine.status() == :listening
       assert assigns(view).status == :listening
-      assert FakeAudio.current()
+      assert Fake.current()
 
       # Frames come again.
       view = sing_note(view, 69)

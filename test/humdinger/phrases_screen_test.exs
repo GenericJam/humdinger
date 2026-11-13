@@ -2,17 +2,18 @@ defmodule Humdinger.PhrasesScreenTest do
   # One in-memory database, and doubles configured in the application env.
   use Mob.ScreenCase, async: false
 
-  import Humdinger.Test.ScreenHelpers
+  import Humdinger.Test.Screens
 
   alias Humdinger.{ImportScreen, Phrase, Phrases, PhraseScreen, PhrasesScreen, Repo, Scale, Style}
-  alias Humdinger.Test.Listener
+  alias Humdinger.Test.{FakeOutput, Listener}
 
   setup_all do: Humdinger.Test.Repo.start()
 
   setup do
     Repo.delete_all(Phrases.Row)
     Listener.listen()
-    Application.put_env(:humdinger, :output, Humdinger.Test.Output)
+    FakeOutput.reset()
+    Application.put_env(:humdinger, :output, FakeOutput)
     Application.put_env(:humdinger, :file_share, Humdinger.Test.FileShare)
     dir = Path.join(System.tmp_dir!(), "humdinger-phrases-#{System.unique_integer([:positive])}")
     Application.put_env(:humdinger, :export_dir, dir)
@@ -216,8 +217,7 @@ defmodule Humdinger.PhrasesScreenTest do
           view |> render_info({:tap, {:rename, id}}),
           render_info(view, {:tap, {:delete, id}})
         ] do
-      assert taps(v) != []
-      assert unguarded(v) == []
+      assert_every_tap_held(v)
     end
 
     assert render_info(view, {:press_out, :held}).socket == view.socket

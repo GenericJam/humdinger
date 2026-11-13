@@ -2,8 +2,10 @@ defmodule Humdinger.OutputScreenTest do
   # A real Output (named) and Engine over doubles; Mob.State is shared.
   use Mob.ScreenCase, async: false
 
+  import Humdinger.Test.Screens, only: [assert_every_tap_held: 1, tap_tags: 1, texts: 1]
+
+  alias Humdinger.Audio.Fake
   alias Humdinger.{Engine, Output, OutputScreen, PairScreen, Settings, Style}
-  alias Humdinger.Test.FakeAudio
 
   # Doubles behind Output (and the screen's FMutate link). They report to
   # the test, registered under this module's name.
@@ -56,7 +58,7 @@ defmodule Humdinger.OutputScreenTest do
   setup do
     Mob.State.delete(:settings)
     :ok = Settings.save(Settings.defaults())
-    FakeAudio.reset()
+    Fake.reset()
     Process.register(self(), __MODULE__)
 
     previous = Application.fetch_env(:humdinger, :fmutate)
@@ -82,7 +84,7 @@ defmodule Humdinger.OutputScreenTest do
        sent_interval_ms: 0}
     )
 
-    start_supervised!({Engine, audio: FakeAudio, output: Output})
+    start_supervised!({Engine, audio: Fake, output: Output})
     :ok
   end
 
@@ -99,10 +101,6 @@ defmodule Humdinger.OutputScreenTest do
   end
 
   defp press(view, tag), do: view |> render_info({:tap, tag}) |> pump()
-
-  defp texts(view), do: for(node <- flatten(view), node.type == :text, do: node.props.text)
-
-  defp tap_tags(view), do: for(node <- flatten(view), tap = node.props[:on_tap], do: elem(tap, 1))
 
   defp card(view, id), do: find(view, :box, id: id)
 
@@ -182,10 +180,7 @@ defmodule Humdinger.OutputScreenTest do
 
       view = pump(view)
 
-      taps = for node <- flatten(view), node.props[:on_tap], do: node
-
-      for node <- taps,
-          do: assert(node.props[:on_press_out] == {self(), :held}, inspect(node.props))
+      assert_every_tap_held(view)
 
       tags = tap_tags(view)
 

@@ -1,22 +1,68 @@
 defmodule Humdinger.Test.Screens do
   @moduledoc """
-  Helpers for screen tests that run against a real `Humdinger.Engine` on
-  `Humdinger.Test.FakeAudio` and `Humdinger.Test.FakeOutput`.
+  Helpers for screen tests (`import Humdinger.Test.Screens`).
 
-  A screen mounted with `Mob.ScreenCase.mount_screen/2` runs in the test
-  process, so the Engine's frames and the screen's own timers arrive in the
-  test's mailbox: `pump/2` hands them to the screen (`render_info/2`) until
-  nothing more comes for `quiet_ms`.
+  Queries on a mounted view: `texts/1`, `tap_tags/1`, `by_id/2`,
+  `text_of/2`, `sheet/1`, `nav/1`, and `assert_every_tap_held/1`.
+
+  Screens that run against a real `Humdinger.Engine` on
+  `Humdinger.Audio.Fake` and `Humdinger.Test.FakeOutput`: `start_engine/1`,
+  `readings/4`, `sing/1`. A screen mounted with
+  `Mob.ScreenCase.mount_screen/2` runs in the test process, so the Engine's
+  frames and the screen's own timers arrive in the test's mailbox:
+  `pump/2` hands them to the screen (`render_info/2`) until nothing more
+  comes for `quiet_ms`, `pump_frame/1` waits for the next frame first.
   """
 
   import ExUnit.Assertions
   import ExUnit.Callbacks
+  import Mob.ScreenCase, only: [flatten: 1, find: 3]
 
+  alias Humdinger.Audio.Fake
   alias Humdinger.{Engine, Music, Settings}
-  alias Humdinger.Test.{FakeAudio, FakeOutput}
+  alias Humdinger.Test.FakeOutput
+
+  # ── Queries ─────────────────────────────────────────────────────────────
+
+  @doc "Every Text string on screen, in order."
+  def texts(view), do: for(%{type: :text, props: %{text: t}} <- flatten(view), do: t)
+
+  @doc "The tag of every tap target in the view."
+  def tap_tags(view), do: for(%{props: %{on_tap: {_pid, tag}}} <- flatten(view), do: tag)
+
+  @doc "The node with `id`, any type."
+  def by_id(view, id), do: Enum.find(flatten(view), &(&1.props[:id] == id))
+
+  @doc "The text of the `<Text>` with `id`."
+  def text_of(view, id), do: find(view, :text, id: id).props.text
+
+  @doc "The open sheet node, or nil."
+  def sheet(view), do: Enum.find(flatten(view), &(&1.type == :sheet))
+
+  @doc "The nav action the last event recorded (`{:push, dest, params}`, `{:pop}`, …)."
+  def nav(view), do: Map.get(view.socket.__mob__, :nav_action)
 
   @doc """
-  Saved settings, fresh fakes and an Engine named `Humdinger.Engine`.
+  Every tap target also has `on_press_out={held()}` (MOB-509: the screens
+  re-render on frames, output events or a playing phrase, and Android drops
+  a plain tap from an older render). Returns how many there are.
+  """
+  def assert_every_tap_held(view) do
+    taps = for node <- flatten(view), node.props[:on_tap] != nil, do: node
+    assert taps != [], "no tap targets rendered"
+
+    for node <- taps do
+      assert node.props[:on_press_out] == {self(), :held},
+             "#{node.type} with on_tap #{inspect(node.props.on_tap)} has no on_press_out={held()}"
+    end
+
+    length(taps)
+  end
+
+  # ── A real Engine on the doubles ────────────────────────────────────────
+
+  @doc """
+  Saved settings, fresh doubles and an Engine named `Humdinger.Engine`.
   Screen tests sing in bursts and then look, so the Engine waits a minute,
   not 150 ms, before it treats missing readings as a stalled input.
   """
@@ -24,16 +70,16 @@ defmodule Humdinger.Test.Screens do
     Mob.State.delete(:settings)
     {:ok, saved} = Settings.merge(Settings.defaults(), settings)
     :ok = Settings.save(saved)
-    FakeAudio.reset()
+    Fake.reset()
     FakeOutput.reset()
 
-    for {key, value} <- [audio: FakeAudio, output: FakeOutput] do
+    for {key, value} <- [audio: Fake, output: FakeOutput] do
       previous = Application.fetch_env(:humdinger, key)
       Application.put_env(:humdinger, key, value)
       on_exit(fn -> restore_env(key, previous) end)
     end
 
-    start_supervised!({Engine, audio: FakeAudio, output: FakeOutput, stall_ms: 60_000})
+    start_supervised!({Engine, audio: Fake, output: FakeOutput, stall_ms: 60_000})
     :ok
   end
 
@@ -52,9 +98,9 @@ defmodule Humdinger.Test.Screens do
 
   @doc "Sing `readings` into the live microphone (in the phone's batches of two)."
   def sing(readings) do
-    ref = FakeAudio.current()
+    ref = Fake.current()
     assert ref, "the microphone isn't on"
-    readings |> Enum.chunk_every(2) |> Enum.each(&FakeAudio.sing(ref, &1))
+    readings |> Enum.chunk_every(2) |> Enum.each(&Fake.sing(ref, &1))
     Engine.status()
     :ok
   end
@@ -87,7 +133,7 @@ defmodule Humdinger.Test.Screens do
       message when is_tuple(message) and elem(message, 0) in @screen_messages ->
         view |> Mob.ScreenCase.render_info(message) |> pump_frame()
     after
-      2_000 -> ExUnit.Assertions.flunk("no frame from the Engine")
+      2_000 -> flunk("no frame from the Engine")
     end
   end
 
@@ -100,34 +146,8 @@ defmodule Humdinger.Test.Screens do
         message when is_tuple(message) and elem(message, 0) in @screen_messages ->
           view |> Mob.ScreenCase.render_info(message) |> await_tick()
       after
-        2_000 -> ExUnit.Assertions.flunk("no tick")
+        2_000 -> flunk("no tick")
       end
     end
-  end
-
-  @doc """
-  Every node with an `on_tap` also has `on_press_out` (MOB-509: the screen
-  re-renders on frames, and Android drops a plain tap from an older render).
-  """
-  def assert_every_tap_held(view) do
-    taps = for node <- Mob.ScreenCase.flatten(view), node.props[:on_tap] != nil, do: node
-    assert taps != [], "no tap targets rendered"
-
-    for node <- taps do
-      assert node.props[:on_press_out] != nil,
-             "#{node.type} with on_tap #{inspect(node.props.on_tap)} has no on_press_out"
-    end
-
-    length(taps)
-  end
-
-  @doc "The tag of every tap target in the view."
-  def tap_tags(view) do
-    for node <- Mob.ScreenCase.flatten(view), tap = node.props[:on_tap], do: elem(tap, 1)
-  end
-
-  @doc "All the visible strings."
-  def texts(view) do
-    for node <- Mob.ScreenCase.flatten(view), node.type == :text, do: node.props.text
   end
 end

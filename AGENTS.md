@@ -110,6 +110,17 @@ foreground. Screens subscribe for display and send commands.
   its moduledoc): `listen/2`, `set_spectrum/2`, `stop/1`, `inputs/0`,
   `analyze_file/3`; readings `%{t, hz, clarity, db}`; spectrum columns of
   128 log-spaced bins.
+- `Humdinger.Controls` — the UI pieces every screen uses (`import
+  Humdinger.Controls`), drawn as on the boards; options for the sizes
+  and colours a screen needs, never a screen-local copy: `held/0` (the
+  `on_press_out` every tap target carries, MOB-509), `page/2` (the
+  centred 350-wide column, or `width: nil` for the full width less 20 a
+  side, as Output and Pair), `centered/1`, `header/5` + `back_button/1`,
+  `heading/1`, `button/3` (kinds `:flat`, `:lime`, `:primary`, `:header`,
+  `:raised`, `:action`, `:outline`), `action_row/1`, `play_button/3`,
+  `more_button/2`, `segmented/2` (+ `segments/3`), `chip/4` (kinds
+  `:pick`, `:menu`, `:tag`), `switch/2`, `stepper/5`, `labelled/3`,
+  `mimi/4`, `sheet/4`, `sheet_title/2`, `menu_item/4`, `notice/1`.
 
 ### Contracts between parts
 
@@ -121,8 +132,9 @@ stale); listening stops when the owner exits. `listen/2` answers
 (`Mob.Permissions.request(socket, :microphone)` → `{:permission,
 :microphone, :granted | :denied}`). `Fake` is driven by tests:
 `Fake.sing(ref, [reading])`, `spectrum/2`, `fail/2`, `analysis/2`,
-`analysis_error/2`, `listening?/1`, `spectrum?/1`, `current/0`,
-`set_permission/1`, `reset/0` (one engine per VM: tests that listen are
+`analysis_error/2`, `analyses/0` (the `analyze_file/3` calls, newest
+first), `listening?/1`, `spectrum?/1`, `current/0`, `set_permission/1`,
+`reset/0` (one engine per VM: tests that listen are
 not `async`).
 
 **Background** (`Humdinger.Background`, Android `HumListenService`):
@@ -275,10 +287,9 @@ permission, which the engine can't detect (the service runs unseen):
 the Live screen requests it before the first `listen/0`.
 
 Verifying the Engine: host tests `test/humdinger/{engine,tracker,settings}_test.exs`,
-`test/humdinger/engine/` (`Audio.Fake` with an output double; host timers
-can fire late on macOS, so tests never depend on a timer being on time).
-`Humdinger.Test.FakeAudio` (test/support) is an older double some screen
-branches still use. On the phone: deploy, `mix mob.connect --no-iex
+`test/humdinger/engine/` (`Audio.Fake` with `Humdinger.Test.FakeOutput`;
+host timers can fire late on macOS, so tests never depend on a timer being
+on time). On the phone: deploy, `mix mob.connect --no-iex
 --android-only --device <serial>`, then `SERIAL=<serial> mix run
 --no-start scripts/engine_check.exs` with the phone by the Mac's speaker:
 tones → note ons (and the time from tone start to the first clear reading
@@ -627,7 +638,7 @@ subscribes again.
 `Humdinger.OutputScreen` (board `output`) subscribes to `Output` and to
 the FMutate link (`config :humdinger, :fmutate`, the key Output reads too)
 and re-renders on their messages, so every tap target carries
-`on_press_out={held()}` (`OutputScreen.held/0`, MOB-509).
+`on_press_out={held()}` (`Humdinger.Controls`, MOB-509).
 
 - **Cards**: `Output.destinations/0`, badge tiles FM / PORT / USB / BT.
   The switch shows `enabled` (tap → `Output.set_enabled/2`); the lime
@@ -914,9 +925,9 @@ this implementation, for FMutate to implement the other side).
 ## Phrase screens: Phrases, Review, Import
 
 `Humdinger.PhrasesScreen`, `Humdinger.PhraseScreen` (Review: Piano roll |
-Staff) and `Humdinger.ImportScreen` share `Humdinger.Controls` (back
+Staff) and `Humdinger.ImportScreen` use `Humdinger.Controls` (back
 chevron, header, segmented controls, buttons, stepper, sheets, all with
-`on_press_out={held()}`), `Humdinger.PhraseActions` (write + share sheet,
+`on_press_out={held()}`), share `Humdinger.PhraseActions` (write + share sheet,
 print, the "Play out to <destination>" label, error wording) and
 `Humdinger.Player`. Menus, rename and confirmations are `<Sheet>`s in the
 tree (not native alerts), so the tests see them.
@@ -961,9 +972,10 @@ tests).
   Edit as a phrase / Sheet music push Review with `Phrase.from_take/2`.
 
 Verifying: `mix test test/humdinger/{player,phrases_screen,phrase_screen,
-import_screen}_test.exs` (doubles in `test/support/phrase_doubles.ex`
-report to the test through `config :humdinger, :test_listener`; the
-database helper is `test/support/database.ex`). On the phone, over dist:
+import_screen}_test.exs` (`Humdinger.Test.FakeOutput` and
+`Humdinger.Test.FileShare` report to the test through `config :humdinger,
+:test_listener` (`Humdinger.Test.Listener`), file analysis goes through
+`Audio.Fake`; the database helper is `test/support/test_repo.ex`). On the phone, over dist:
 `Humdinger.Phrases.save/1` a phrase, `Mob.Test.navigate(node,
 Humdinger.PhrasesScreen)`; drag notes with `adb shell input swipe` on the
 roll; Export/Share/Print open the system share sheet and print dialog.
@@ -971,10 +983,10 @@ roll; Export/Share/Print open the system share sheet and print dialog.
 ## Screens: Live, Settings, Spectrum, First run
 
 All four re-render on Engine frames, so every tap target carries
-`on_press_out={held()}` (`Humdinger.Widgets`: segmented controls, chips,
-switches, buttons, Mimi on a canvas, section headings) and each screen's
-tests assert it. Frames arm a token-guarded 33 ms tick (`{:tick, token}`);
-the tick takes the newest frame. Without a screen-size API (Mob's
+`on_press_out={held()}` (`Humdinger.Controls`) and each screen's
+tests assert it (`Humdinger.Test.Screens.assert_every_tap_held/1`). Frames
+arm a token-guarded 33 ms tick (`{:tick, token}`); the tick takes the
+newest frame. Without a screen-size API (Mob's
 `screen_info` is test-only) content sits in a centred 350-wide column,
 the boards' 390 minus 20 a side (30 a side on the 411 dp Moto G).
 
@@ -1034,7 +1046,7 @@ the boards' 390 minus 20 a side (30 a side on the 411 dp Moto G).
 
 Verifying: `mix test test/humdinger/{live_screen,first_run_screen,
 spectrum_screen,range_finder,live_feed}_test.exs` (a real Engine on
-`Humdinger.Test.FakeAudio` and `Humdinger.Test.FakeOutput`;
+`Humdinger.Audio.Fake` and `Humdinger.Test.FakeOutput`;
 `Humdinger.Test.Screens.pump_frame/1` waits for the Engine's frame and the
 screen's tick). `mise exec -- mix run --no-start scripts/preview_screens.exs`
 drives the screens with the boards' data and writes their canvases to

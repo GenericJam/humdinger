@@ -3,12 +3,15 @@ defmodule Humdinger.PlayerTest do
   use ExUnit.Case, async: false
 
   alias Humdinger.Player
-  alias Humdinger.Test.{Listener, Output}
+  alias Humdinger.Test.{FakeOutput, Listener}
 
   setup do
     Listener.listen()
     {:ok, clock} = Agent.start_link(fn -> 0 end)
-    {:ok, player} = Player.start_link(output: Output, clock: fn -> Agent.get(clock, & &1) end)
+
+    {:ok, player} =
+      Player.start_link(output: FakeOutput, clock: fn -> Agent.get(clock, & &1) end)
+
     %{clock: clock, player: player}
   end
 
@@ -112,7 +115,7 @@ defmodule Humdinger.PlayerTest do
 
     owner =
       spawn(fn ->
-        {:ok, player} = Player.start_link(output: Output, clock: fn -> 0 end)
+        {:ok, player} = Player.start_link(output: FakeOutput, clock: fn -> 0 end)
         send(test, {:player, player})
         Player.play(player, [note(0, 1000, 70)], :x)
         receive do: (:go -> exit(:shutdown))

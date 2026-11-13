@@ -4,36 +4,17 @@ defmodule Humdinger.EngineTest do
 
   alias Humdinger.Audio.Fake
   alias Humdinger.{Engine, Music, Phrase, Phrases, Repo, Scale, Settings, Take, Tracker}
+  alias Humdinger.Test.{FakeOutput, Listener}
   alias Mob.ScreenCase.StateOwner
 
-  defmodule Output do
-    @moduledoc false
-    # Forwards what the engine sends to the test process; tells the engine
-    # where the notes go, as Humdinger.Output does on subscribe.
-    # (Like a cast, it never fails: the engine's terminate/2 may call it
-    # after the test process has gone.)
-    def send_events(events), do: report({:output, events})
-    def configure(opts), do: report({:configure, opts})
-
-    defp report(message) do
-      if pid = Process.whereis(Humdinger.EngineTest), do: send(pid, message)
-      :ok
-    end
-
-    def subscribe(pid) do
-      send(pid, {:output, :destinations, destinations()})
-      :ok
-    end
-
-    def destinations do
-      [
-        %{id: :fmutate, name: "FMutate", detail: "", enabled: true, available: false},
-        %{id: :port, name: "Humdinger port", detail: "", enabled: true, available: true},
-        %{id: :usb, name: "USB MIDI out", detail: "", enabled: false, available: true},
-        %{id: :bt, name: "Bluetooth MIDI", detail: "", enabled: false, available: false}
-      ]
-    end
-  end
+  # Where the notes go: FMutate is on but not reachable, so the notice
+  # names the port.
+  @destinations [
+    %{id: :fmutate, name: "FMutate", detail: "", enabled: true, available: false},
+    %{id: :port, name: "Humdinger port", detail: "", enabled: true, available: true},
+    %{id: :usb, name: "USB MIDI out", detail: "", enabled: false, available: true},
+    %{id: :bt, name: "Bluetooth MIDI", detail: "", enabled: false, available: false}
+  ]
 
   setup_all do
     Humdinger.Test.Repo.start()
@@ -46,8 +27,9 @@ defmodule Humdinger.EngineTest do
     :ok = Settings.save(%{Settings.defaults() | scale: Scale.chromatic(), on_stop: :note_off})
     Repo.delete_all(Phrases.Row)
     Fake.reset()
-    Process.register(self(), __MODULE__)
-    start_supervised!({Engine, output: Output})
+    FakeOutput.reset(@destinations)
+    Listener.listen()
+    start_supervised!({Engine, output: FakeOutput})
     :ok
   end
 
@@ -292,7 +274,7 @@ defmodule Humdinger.EngineTest do
 
   test "a take reaching its longest is saved as a phrase" do
     :ok = stop_supervised(Engine)
-    start_supervised!({Engine, output: Output, max_take_ms: 400})
+    start_supervised!({Engine, output: FakeOutput, max_take_ms: 400})
     :ok = Engine.subscribe(self())
     ref = listening()
     :ok = Engine.record_start()
@@ -335,7 +317,7 @@ defmodule Humdinger.EngineTest do
            name: :realtime_test,
            children: [
              %{id: :output, start: {Agent, :start_link, [fn -> nil end]}},
-             {Engine, output: Output}
+             {Engine, output: FakeOutput}
            ]}
         )
 
