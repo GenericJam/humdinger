@@ -95,9 +95,14 @@ defmodule CanvasSvg do
       "file://" <> Path.expand(html_path)
     ]
 
-    case System.cmd(@chrome, args, stderr_to_stdout: true) do
-      {_, 0} -> :ok
-      {out, code} -> raise "Chrome exited #{code}: #{out}"
+    File.rm(png_path)
+    {out, code} = System.cmd(@chrome, args, stderr_to_stdout: true)
+
+    # Headless Chrome sometimes exits non-zero at teardown after writing the
+    # screenshot; only a missing PNG is a failure.
+    case File.stat(png_path) do
+      {:ok, %{size: size}} when size > 0 -> :ok
+      _ -> raise "Chrome wrote no screenshot (exit #{code}): #{out}"
     end
   end
 
