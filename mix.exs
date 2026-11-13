@@ -8,6 +8,7 @@ defmodule Humdinger.MixProject do
       elixir: "~> 1.18",
       start_permanent: false,
       deps: deps(),
+      elixirc_paths: elixirc_paths(Mix.env()),
       aliases: aliases(),
       erlc_paths: ["src"],
       erlc_options: [:debug_info]
@@ -17,6 +18,10 @@ defmodule Humdinger.MixProject do
   def application do
     [extra_applications: [:logger]]
   end
+
+  # Test doubles (e.g. the scripted microphone) compile in test only.
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_env), do: ["lib"]
 
   defp deps do
     [

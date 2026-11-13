@@ -119,33 +119,92 @@ tests: `Fake.sing(ref, [reading])`, `Fake.analysis(ref, analysis)`.
 
 **Tracker** (`Humdinger.Tracker`, pure): readings in, MIDI events out.
 `new(settings)`, `push(tracker, reading) :: {tracker, [event]}`,
-`tick(tracker, t_ms) :: {tracker, [event]}` (hold timeouts), `release(tracker)
-:: {tracker, [event]}` (all off), `display(tracker) :: %{pitch: float | nil,
-note: midi | nil, cents: float | nil, hz: float | nil, db: float, velocity:
-1..127 | nil, voiced: boolean}`. Events carry no channel:
-`{:note_on, note, velocity}`, `{:note_off, note}`, `{:pitch_bend, -8192..8191}`,
-`{:cc, number, value}`.
+`tick(tracker, t_ms) :: {tracker, [event]}` (hold timeouts),
+`deadline(tracker) :: t_ms | nil` (when `tick/2` next matters),
+`release(tracker) :: {tracker, [event]}` (note off, bend centred, CC 1
+zeroed), `configure(tracker, settings) :: {tracker, [event]}` (releases
+first when mode, scale, octave, transpose, bend range or channel change),
+`display(tracker) :: %{pitch: float | nil, note: midi | nil, cents: float
+| nil, hz: float | nil, db: float, velocity: 1..127 | nil, voiced:
+boolean, holding: boolean}` (pitch and note after octave/transpose: the
+displayed note is the sent one). `response_ms/1` (Fast 30, Balanced 60,
+Steady 120: the "~xx ms" on the Settings sheet), `hold_ms/0` (250),
+`tuning_label(cents)` ("in tune" < 10¢, "a little flat/sharp" ≤ 30¢, then
+"flat"/"sharp"), `cents_label(cents)` ("−12¢ · a little flat"). Events
+carry no channel: `{:note_on, note, velocity}`, `{:note_off, note}`,
+`{:pitch_bend, -8192..8191}`, `{:cc, number, value}` (1 and 11).
 
-**Settings** (`Humdinger.Settings`, saved with `Mob.State`): `load/0`,
-`save/1`, `update/1`. Fields: `sensitivity_db` (gate), `response` (`:fast |
-:balanced | :steady`), `pitch_change` (`:legato | :new_note`), `on_stop`
-(`:note_off | :hold`, hold = 250 ms), `bend_range` (1, 2, 7, 12),
-`velocity_from_loudness`, `cc11_from_loudness`, `cc1_from_vibrato`, `mode`
-(`:scale | :open`), `scale`, `octave` (−3..3), `transpose` (−12..12),
-`channel` (1..16), `destinations` (`%{fmutate:, port:, usb:, bt:}` booleans),
-`range` (`{low, high}` MIDI or nil), `first_run_done`.
+How it works (the moduledoc has the detail): a gate opens on pitched,
+clear (≥ 0.8), loud enough (≥ `sensitivity_db`) readings unbroken for the
+response time and closes after 30 ms without a reading that keeps it
+(clarity ≥ 0.6, level ≥ gate − 6 dB). Pitch = median of 3, then an
+exponential smoother (12/30/60 ms) that jumps on leaps > 1.5 semitones.
+Scale mode snaps (`Scale.snap/2`, octave/transpose applied first so notes
+stay in the scale) with hysteresis (a quarter semitone past the midpoint)
+and changes note after the new one holds for the response time. Open mode
+strikes the nearest semitone and bends (1 cent resolution) for the rest,
+re-striking when the pitch drifts past the bend range or a slow centre
+(100 ms) settles within 40¢ of another semitone, moving < 15¢, for the
+response time; bend centres before each new note. `:legato` = new on, old
+off; `:new_note` = old off, new on. `:hold` keeps a note 250 ms after the
+last voiced reading (same note on re-voicing continues it). Velocity maps
+the onset's peak level (gate → 16, −10 dBFS → 127; 100 when off); CC 11
+follows the smoothed level (≥ 1 change, ≤ every 20 ms); CC 1 follows
+vibrato depth (3.5–9 Hz swing over 500 ms, detrended, 8–100¢ → 0–127).
+Property tests run 300 random streams × random settings and check no
+note is ever unbalanced.
 
-**Engine** (`Humdinger.Engine`, GenServer): `subscribe(pid)` (monitored) →
-`{:engine, :frame, frame}` ≤ 30/s while listening, `{:engine, :status,
-status}` on change, `{:engine, :spectrum, spectrum}` while a subscriber has
-`spectrum(true)`. `listen/0`, `pause/0`, `resume/0`, `stop/0`, `status/0`
-(`:off | :listening | :paused | {:error, reason}`), `settings/0`,
-`update_settings(map | fun)`, `record_start/0`, `record_stop/0 :: {:ok,
-Take.t()} | {:error, :empty}`, `recording?/0`. A frame: `%{t, pitch, note,
-cents, hz, db, velocity, voiced, mood, sent}` where `mood` is Mimi's
-(`:idle | :listening | :singing | :aria | :flat | :sharp | :paused |
-:no_mic`) and `sent` the last event summary. The engine sends tracker
-events to `Output.send_events/1`.
+**Settings** (`Humdinger.Settings`, saved with `Mob.State` under
+`:settings` as a plain map, scale as `{root, mode}`): `load/0`, `save/1`,
+`update(change) :: {:ok, settings} | {:error, {:invalid, field}}` (re-loads,
+merges, validates, saves; `change` is a map/keyword of fields or a
+function of the settings), pure `merge(settings, change)` (same result),
+`defaults/0`, `decode/1`/`encode/1`, `sensitivity_range/0` (−70..−20 dBFS,
+the slider span), `bend_ranges/0`. Loading drops unknown keys and
+defaults invalid values (forward/backward compatible). `destinations`
+merges into the current map. Fields and defaults: `sensitivity_db` −55
+(gate), `response` `:balanced` (`:fast | :balanced | :steady`),
+`pitch_change` `:legato` (`| :new_note`), `on_stop` `:hold` (`|
+:note_off`, hold = 250 ms), `bend_range` 2 (1, 2, 7, 12),
+`velocity_from_loudness` true, `cc11_from_loudness` true,
+`cc1_from_vibrato` false, `mode` `:scale` (`| :open`), `scale` D Dorian,
+`octave` 0 (−3..3), `transpose` 0 (−12..12), `channel` 1 (1..16),
+`destinations` `%{fmutate: true, port: true, usb: false, bt: false}`,
+`range` nil (`{low, high}` MIDI), `first_run_done` false. Output persists
+`destinations` through `update/1`, the engine everything else, both from a
+fresh load so neither clobbers the other.
+
+**Engine** (`Humdinger.Engine`, GenServer, started in `App.on_start`
+before the root screen; starts `:off`, the Live screen calls `listen/0`):
+`start_link(audio:, output:, name:)` (defaults `Audio.impl/0`,
+`config :humdinger, :output` or `Humdinger.Output`, `Humdinger.Engine`).
+Every call also takes the server as an optional first argument.
+`subscribe(pid)` (monitored; replies with the current status at once) →
+`{:engine, :frame, frame}` ≤ 30/s while listening (token-guarded 33 ms
+timer, latest state, only when changed; plus one per status change),
+`{:engine, :status, status}` on change, `{:engine, :spectrum, spectrum}`
+for subscribers with `spectrum(pid, true)` (the mic computes it only while
+someone wants it). `listen/0 :: :ok | {:error, reason}`, `pause/0` (note
+off, mic off), `resume/0`, `stop/0`, `status/0` (`:off | :listening |
+:paused | {:error, reason}`; audio errors and refusals land here),
+`settings/0`, `update_settings(map | fun) :: {:ok, settings} | {:error,
+{:invalid, field}}` (saves, then `Tracker.configure/2`; a channel change
+calls `output.configure(channel: n)` after the release's note offs),
+`record_start/0`, `record_stop/0 :: {:ok, Take.t()} | {:error, :empty |
+:not_recording}`, `recording?/0`, pure `describe(event, channel)` (same
+wording as `Midi.describe/2`). A frame: `%{t, pitch, note, cents, hz, db,
+velocity, voiced, mood, sent}`; `mood`: `:no_mic` (error), `:paused`,
+`:idle` (off, or nothing voiced for 5 s and quieter than gate − 10 dB),
+`:listening`, `:flat`/`:sharp` (sounding note, voice ≥ 10¢ off),
+`:aria` (≥ gate + 35 dB), `:singing`; `sent` = the last note on/off sent
+(`describe/2`). Readings move onto one engine clock that runs across
+pause/resume; a hold timer fires `Tracker.tick/2` at `Tracker.deadline/1`.
+A take's notes come from the note on/off pairs sent (ms from
+`record_start`, open notes closed at the stop), its trace is the
+tracker's smoothed (shifted) pitch every ≥ 10 ms with one nil per gap.
+Host tests drive it with `Humdinger.Test.FakeAudio` (test/support, the
+`Audio.Fake` test API) and an output double; host timers can fire late
+(macOS), so tests never depend on a timer being on time.
 
 **Output** (`Humdinger.Output`, GenServer; `Humdinger.Midi` pure
 encoder): `send_events([event])` (cast, on the settings channel),
