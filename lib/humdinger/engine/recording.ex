@@ -6,17 +6,32 @@ defmodule Humdinger.Engine.Recording do
 
   Notes come from note on/off pairs: a note sounding at the start begins at
   0, one still sounding at the finish ends there. The trace keeps a pitch at
-  most every 10 ms and a single nil where the voice stops.
+  most every 20 ms (what `Humdinger.Phrases` stores anyway) and a single nil
+  where the voice stops.
+
+  A take is at most `max_ms/0` long (10 minutes, like an imported file):
+  `full?/2` says when it is, and the engine then finishes and saves it, so
+  a recording left running in the background can't grow without bound
+  (about 3 MB at the limit).
   """
 
   alias Humdinger.{Scale, Take}
 
-  @trace_every_ms 10
+  @trace_every_ms 20
+  @max_ms 10 * 60 * 1000
 
   @enforce_keys [:t0, :recorded_at]
   defstruct [:t0, :scale, :recorded_at, open: %{}, notes: [], trace: [], trace_t: nil]
 
   @type t :: %__MODULE__{}
+
+  @doc "The longest take, in ms."
+  @spec max_ms() :: pos_integer()
+  def max_ms, do: @max_ms
+
+  @doc "Whether the take, at engine time `t`, has reached `max_ms` (default `max_ms/0`)."
+  @spec full?(t(), number(), pos_integer()) :: boolean()
+  def full?(%__MODULE__{t0: t0}, t, max_ms \\ @max_ms), do: t - t0 >= max_ms
 
   @doc """
   Start at engine time `t0`. `sounding` is the note already sounding as

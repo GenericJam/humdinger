@@ -96,9 +96,23 @@ defmodule Humdinger.Engine do
   note sounding at the start begins at 0, one still sounding at the stop
   ends there), the sung pitch trace (the tracker's smoothed pitch after
   octave and transpose, so it lines up with the notes, at most one every
-  10 ms, a single nil where the voice stops), the scale in Scale mode (nil
+  20 ms, a single nil where the voice stops), the scale in Scale mode (nil
   in Open), `source: :hum` and `recorded_at`. A take without notes is
-  `{:error, :empty}`.
+  `{:error, :empty}`. A take that reaches 10 minutes
+  (`Humdinger.Engine.Recording.max_ms/0`) is finished and saved as a
+  phrase, as Stop rec in the notification does (`{:engine, :phrase_saved,
+  phrase}`), so a forgotten recording can't grow without bound.
+
+  ## When the engine restarts
+
+  `Humdinger.Realtime` supervises Output and the engine (`rest_for_one`:
+  an Output restart restarts the engine too). However the engine ends,
+  `terminate/2` turns the sounding note off, stops the microphone and the
+  notification. The new engine starts `:off`, with no subscribers and no
+  take (a take in progress is lost). A screen that `watch/0`ed gets
+  `:DOWN` on its monitor, frames stop until it watches again; it then gets
+  `{:engine, :status, :off}` and should `listen/0` again if it was
+  listening (Live does, and pauses again if it was paused).
   """
 
   use GenServer
@@ -135,13 +149,42 @@ defmodule Humdinger.Engine do
   Start the engine. Options: `audio:` (default `Humdinger.Audio.impl/0`:
   the NIF on the phone, `Humdinger.Audio.Fake` in host tests), `output:`
   (default `config :humdinger, :output`, else `Humdinger.Output`), `name:`
-  (default `Humdinger.Engine`). Settings come from
+  (default `Humdinger.Engine`), `max_take_ms:` (default
+  `Humdinger.Engine.Recording.max_ms/0`), `stall_ms:` (the tracker's, see
+  `Humdinger.Tracker.new/2`; screen tests that sing in bursts raise it).
+  Settings come from
   `Humdinger.Settings.load/0`. The engine starts `:off`; `listen/0` turns
   the microphone on.
   """
   def start_link(opts \\ []) do
     {name, opts} = Keyword.pop(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, opts, name: name)
+  end
+
+  @doc """
+  Subscribe the calling process (as `subscribe/1`) and monitor the engine:
+  `{:ok, monitor}`, or `{:error, :down}` while there is no engine (it is
+  being restarted). A screen keeps the monitor; on its `:DOWN` it calls
+  `watch/0` again until it succeeds (see "When the engine restarts").
+  """
+  @spec watch(GenServer.server()) :: {:ok, reference()} | {:error, :down}
+  def watch(server \\ __MODULE__) do
+    case GenServer.whereis(server) do
+      nil ->
+        {:error, :down}
+
+      pid ->
+        monitor = Process.monitor(pid)
+
+        try do
+          :ok = subscribe(pid, self())
+          {:ok, monitor}
+        catch
+          :exit, _down ->
+            Process.demonitor(monitor, [:flush])
+            {:error, :down}
+        end
+    end
   end
 
   @doc "Get the status now and frames from now on (see the moduledoc)."
@@ -211,6 +254,8 @@ defmodule Humdinger.Engine do
 
   @impl GenServer
   def init(opts) do
+    # Exits from the supervisor reach terminate/2, which ends the sounding note.
+    Process.flag(:trap_exit, true)
     settings = Settings.load()
 
     {:ok,
@@ -220,7 +265,7 @@ defmodule Humdinger.Engine do
        output_subscribed: false,
        destination: nil,
        settings: settings,
-       tracker: Tracker.new(settings),
+       tracker: Tracker.new(settings, Keyword.take(opts, [:stall_ms])),
        status: :off,
        ref: nil,
        base: now_ms(),
@@ -234,6 +279,7 @@ defmodule Humdinger.Engine do
        hold_timer: nil,
        sent: nil,
        record: nil,
+       max_take_ms: Keyword.get(opts, :max_take_ms, Recording.max_ms()),
        background: :off,
        notice: nil,
        notice_at: nil
@@ -331,6 +377,19 @@ defmodule Humdinger.Engine do
 
   def handle_info(_message, state), do: {:noreply, state}
 
+  # However the engine ends (stopped by its supervisor, or crashed), the
+  # note it left sounding is turned off on every destination, the
+  # microphone stops and the notification goes away. A screen sees `:DOWN`
+  # on its `watch/0` monitor.
+  @impl GenServer
+  def terminate(_reason, state) do
+    if state.ref, do: state.audio.stop(state.ref)
+    {_tracker, events} = Tracker.release(state.tracker)
+    if events != [], do: state.output.send_events(events)
+    if state.background == :running, do: Background.stop()
+    :ok
+  end
+
   defp reply({result, state}), do: {:reply, result, state}
 
   # ── Listening ─────────────────────────────────────────────────────────
@@ -422,9 +481,14 @@ defmodule Humdinger.Engine do
     state = %{state | tracker: tracker, last_t: t, last_voiced_t: last_voiced_t}
     state = emit(state, events, t)
 
-    if state.record,
-      do: %{state | record: Recording.trace(state.record, t, display.pitch)},
-      else: state
+    case state.record do
+      nil ->
+        state
+
+      record ->
+        state = %{state | record: Recording.trace(record, t, display.pitch)}
+        if Recording.full?(record, t, state.max_take_ms), do: save_recording(state), else: state
+    end
   end
 
   # ── Events and recording ──────────────────────────────────────────────
