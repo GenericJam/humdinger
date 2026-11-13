@@ -49,7 +49,7 @@ defmodule Humdinger.FMutate.DiscoveryTest do
   defp browse(targets), do: Discovery.browse(targets: targets, timeout: @timeout)
 
   # A loopback responder that answers each query with `fun.(query)`, a list
-  # of datagrams.
+  # of datagrams. A reply is only taken when it echoes a query's id.
   defp fake(fun) do
     test = self()
 
@@ -76,18 +76,24 @@ defmodule Humdinger.FMutate.DiscoveryTest do
 
   defp record(name, type, data), do: %{name: name, type: type, ttl: 10, data: data}
 
-  defp answer(instance, txt_map, a? \\ true) do
-    name = [instance | @service]
+  # A legacy unicast reply to `query`: PTR to `label`, SRV to `target`, TXT
+  # and (with an `address`) the target's A record.
+  defp reply(query, label, txt_map, target, address) do
+    name = [label | @service]
 
     Dns.encode_response(%{
+      id: query.id,
       answers: [record(@service, :ptr, name)],
       additionals:
         [
-          record(name, :srv, %{port: 1, target: ["h", "local"]}),
+          record(name, :srv, %{port: 1, target: target}),
           record(name, :txt, Dns.txt_strings(txt_map))
-        ] ++ if(a?, do: [record(["h", "local"], :a, {10, 0, 0, 9})], else: [])
+        ] ++ if(address, do: [record(target, :a, address)], else: [])
     })
   end
+
+  defp answer(query, instance, txt_map, address \\ {10, 0, 0, 9}),
+    do: reply(query, instance, txt_map, ["h", "local"], address)
 
   test "finds the reference responder and returns the exact candidate" do
     target = responder([])
@@ -136,17 +142,80 @@ defmodule Humdinger.FMutate.DiscoveryTest do
 
   test "malformed datagrams and queries are ignored next to a good answer" do
     target =
-      fake(fn _query ->
+      fake(fn query ->
         [
           <<1, 2, 3>>,
           :binary.copy(<<0xFF>>, 9001),
           <<0::16, 0x8400::16, 1::16, 0::16, 0::16, 0::16, 0b11::2, 12::14, 12::16, 1::16>>,
           Dns.encode_query([%{name: @service, type: :ptr}]),
-          answer("FMutate A", txt())
+          answer(query, "FMutate A", txt())
         ]
       end)
 
     assert {:ok, [%{name: "FMutate A", host: "10.0.0.9"}]} = browse([target])
+  end
+
+  test "replies that don't echo a query's id are ignored" do
+    target =
+      fake(fn query ->
+        [
+          answer(%{query | id: Bitwise.bxor(query.id, 1)}, "FMutate A", txt()),
+          answer(%{query | id: 0}, "FMutate A", txt())
+        ]
+      end)
+
+    assert browse([target]) == {:ok, []}
+  end
+
+  # Anyone can answer with FMutate's label, fp and inst. The forged reply
+  # reuses the genuine SRV target name, so neither its PTR, SRV, TXT nor A
+  # may land on the genuine instance, whichever comes first.
+  for forged_first? <- [false, true] do
+    test "a forged reply under the genuine label is a second candidate (forged first: #{forged_first?})" do
+      {genuine_delay, forged_delay} = if unquote(forged_first?), do: {60, 0}, else: {0, 60}
+      target = ["fmutate-a", "local"]
+      forged_txt = txt(%{"node" => "fmutate_a@10.0.0.66", "dport" => "1", "port" => "2"})
+
+      genuine =
+        fake(fn query ->
+          Process.sleep(genuine_delay)
+          [reply(query, "FMutate A", txt(), target, {10, 0, 0, 1})]
+        end)
+
+      forged =
+        fake(fn query ->
+          Process.sleep(forged_delay)
+          [reply(query, "FMutate A", forged_txt, target, {10, 0, 0, 66})]
+        end)
+
+      assert {:ok, candidates} = browse([genuine, forged])
+
+      assert candidates |> Enum.map(&{&1.host, &1.node, &1.port, &1.dist_port}) |> Enum.sort() ==
+               [
+                 {"10.0.0.1", "fmutate_a@192.168.1.23", 45_123, 45_200},
+                 {"10.0.0.66", "fmutate_a@10.0.0.66", 2, 1}
+               ]
+
+      assert Enum.all?(candidates, &(&1.name == "FMutate A" and &1.inst == "a" and &1.fp == @fp))
+    end
+  end
+
+  test "a forged reply for the genuine host with another dport is a second candidate" do
+    target = ["fmutate-a", "local"]
+
+    genuine =
+      fake(fn query -> [reply(query, "FMutate A", txt(), target, {10, 0, 0, 1})] end)
+
+    forged =
+      fake(fn query ->
+        Process.sleep(60)
+        [reply(query, "FMutate A", txt(%{"dport" => "1"}), target, {10, 0, 0, 1})]
+      end)
+
+    assert {:ok, candidates} = browse([genuine, forged])
+
+    assert candidates |> Enum.map(&{&1.host, &1.dist_port}) |> Enum.sort() ==
+             [{"10.0.0.1", 1}, {"10.0.0.1", 45_200}]
   end
 
   test "deduplicates by fp and inst, keeps distinct instances, orders by name" do
@@ -159,11 +228,12 @@ defmodule Humdinger.FMutate.DiscoveryTest do
 
   test "the same fp and inst at two hosts gives two candidates, so a second answer can't hide the first" do
     target =
-      fake(fn _query ->
+      fake(fn query ->
         for {label, ip} <- [{"FMutate A", {10, 0, 0, 1}}, {"FMutate A (2)", {10, 0, 0, 2}}] do
           name = [label | @service]
 
           Dns.encode_response(%{
+            id: query.id,
             answers: [record(@service, :ptr, name)],
             additionals: [
               record(name, :srv, %{port: 1, target: [String.replace(label, " ", "-"), "local"]}),
@@ -180,8 +250,11 @@ defmodule Humdinger.FMutate.DiscoveryTest do
 
   test "the latest answer for the same fp, inst and host wins" do
     target =
-      fake(fn _query ->
-        [answer("Old", txt(%{"fw" => "old"})), answer("New", txt(%{"fw" => "new"}))]
+      fake(fn query ->
+        [
+          answer(query, "Old", txt(%{"fw" => "old"})),
+          answer(query, "New", txt(%{"fw" => "new"}))
+        ]
       end)
 
     assert {:ok, [%{name: "New", firmware: "new"}]} = browse([target])
@@ -191,20 +264,22 @@ defmodule Humdinger.FMutate.DiscoveryTest do
     instance = ["FMutate A" | @service]
 
     target =
-      fake(fn %{questions: questions} ->
+      fake(fn %{questions: questions} = query ->
         Enum.map(questions, fn
           %{type: :ptr} ->
-            Dns.encode_response(%{answers: [record(@service, :ptr, instance)]})
+            Dns.encode_response(%{id: query.id, answers: [record(@service, :ptr, instance)]})
 
           %{type: :srv} ->
             srv = %{port: 1, target: ["far", "local"]}
-            Dns.encode_response(%{answers: [record(instance, :srv, srv)]})
+            Dns.encode_response(%{id: query.id, answers: [record(instance, :srv, srv)]})
 
           %{type: :txt} ->
-            Dns.encode_response(%{answers: [record(instance, :txt, Dns.txt_strings(txt()))]})
+            txt = Dns.txt_strings(txt())
+            Dns.encode_response(%{id: query.id, answers: [record(instance, :txt, txt)]})
 
           %{type: :a} ->
-            Dns.encode_response(%{answers: [record(["far", "local"], :a, {10, 1, 2, 3})]})
+            a = record(["far", "local"], :a, {10, 1, 2, 3})
+            Dns.encode_response(%{id: query.id, answers: [a]})
         end)
       end)
 
@@ -212,7 +287,7 @@ defmodule Humdinger.FMutate.DiscoveryTest do
   end
 
   test "host falls back to the reply's source address without an A record" do
-    target = fake(fn _query -> [answer("FMutate A", txt(), false)] end)
+    target = fake(fn query -> [answer(query, "FMutate A", txt(), nil)] end)
     assert {:ok, [%{host: "127.0.0.1"}]} = browse([target])
   end
 

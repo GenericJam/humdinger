@@ -379,7 +379,9 @@ defmodule Humdinger.FMutate do
   # the pairing's certificate, then the cookie handshake). Loopback and other
   # non-unicast addresses are never taken from mDNS, nor a node name other
   # than the pairing's at the new host. Nothing moves while FMutate's current
-  # address is still among the answers.
+  # address is still among the answers. Each `{host, dist_port}` is tried once
+  # per outage, so a forged answer for the right host can't use up the
+  # genuine one's trial.
   defp follow(%{record: record, conn: nil, trying: nil} = state, candidates) when record != nil do
     ours = Enum.filter(candidates, &(&1.fp == record.fp and &1.inst == record.inst))
 
@@ -403,8 +405,9 @@ defmodule Humdinger.FMutate do
 
   defp movable?(%{record: record, tried: tried}, candidate) do
     [name, _host] = String.split(record.node, "@", parts: 2)
+    trial = {candidate.host, candidate.dist_port || record.dist_port}
 
-    Record.remote_unicast?(candidate.host) and not MapSet.member?(tried, candidate.host) and
+    Record.remote_unicast?(candidate.host) and not MapSet.member?(tried, trial) and
       candidate.node == "#{name}@#{candidate.host}"
   end
 
@@ -420,7 +423,7 @@ defmodule Humdinger.FMutate do
   defp reject_trial(%{trying: nil} = state), do: state
 
   defp reject_trial(%{trying: moved} = state),
-    do: %{state | trying: nil, tried: MapSet.put(state.tried, moved.host)}
+    do: %{state | trying: nil, tried: MapSet.put(state.tried, {moved.host, moved.dist_port})}
 
   defp firmware(transport, conn, inst) do
     case transport.call(conn, inst, {:list_firmware}, @call_timeout) do

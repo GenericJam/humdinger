@@ -42,10 +42,25 @@ defmodule Humdinger.FMutate.Discovery do
   The instance name is the DNS-SD instance label (`FMutate A`, possibly
   suffixed ` (2)` by the responder). `host` is the A record of the SRV
   target, or the source address of the reply when that is missing.
-  Candidates are deduplicated by `{fp, inst, host}` (the latest answer wins:
-  a spoofed answer can't hide FMutate's real address) and ordered by name. Every string is the binary from the packet; no atoms are
-  created from network data. Malformed packets are ignored (see
-  `Humdinger.FMutate.Dns`).
+
+  ## Spoofed answers
+
+  mDNS is unauthenticated: anyone on the LAN can answer with FMutate's
+  instance label, `fp` and `inst`. So nothing one responder says can change
+  what another said: a reply is only taken when its id is one of the
+  queries' ids, and the PTR, SRV, TXT and A records are kept per instance
+  *and* per reply source (`{ip, port}`). SRV and TXT records count only from
+  the source whose PTR named the instance, and A records only for that
+  source's SRV targets. A forged reply under FMutate's label therefore
+  becomes a second candidate next to the genuine one, never a replacement;
+  `Humdinger.FMutate` tries candidates and keeps the one whose TLS
+  fingerprint and cookie handshake succeed.
+
+  Candidates are deduplicated by `{fp, inst, host, dist_port}` (the latest
+  answer wins; anything that changes where Humdinger would connect is a
+  separate candidate) and ordered by name. Every string is the binary from
+  the packet; no atoms are created from network data. Malformed packets are
+  ignored (see `Humdinger.FMutate.Dns`).
   """
 
   alias Humdinger.FMutate.Dns
@@ -93,6 +108,7 @@ defmodule Humdinger.FMutate.Discovery do
 
     with {:ok, sockets} <- open_sockets(Keyword.get(opts, :targets)) do
       now = now()
+      id = query_id()
 
       state = %{
         sockets: Map.new(sockets),
@@ -100,11 +116,10 @@ defmodule Humdinger.FMutate.Discovery do
         service_key: Dns.name_key(service),
         deadline: now + timeout,
         resends: Enum.map(Enum.filter(@resends, &(&1 < timeout)), &(&1 + now)),
-        query: Dns.encode_query([%{name: service, type: :ptr}], :rand.uniform(0xFFFF)),
+        query: Dns.encode_query([%{name: service, type: :ptr}], id),
+        ids: MapSet.new([id]),
         seq: 0,
         instances: %{},
-        srv: %{},
-        txt: %{},
         a: %{},
         asked: MapSet.new()
       }
@@ -195,8 +210,8 @@ defmodule Humdinger.FMutate.Discovery do
     sockets = state.sockets
 
     receive do
-      {:udp, socket, ip, _port, data} when is_map_key(sockets, socket) ->
-        state |> handle_reply(socket, ip, data) |> collect()
+      {:udp, socket, ip, port, data} when is_map_key(sockets, socket) ->
+        state |> handle_reply(socket, {ip, port}, data) |> collect()
     after
       wait -> collect(state)
     end
@@ -210,29 +225,33 @@ defmodule Humdinger.FMutate.Discovery do
     Enum.each(targets, fn {ip, port} -> :gen_udp.send(socket, ip, port, packet) end)
   end
 
-  defp handle_reply(state, _socket, _ip, data) when byte_size(data) > @recv_max, do: state
+  defp handle_reply(state, _socket, _source, data) when byte_size(data) > @recv_max, do: state
 
-  defp handle_reply(state, socket, ip, data) do
+  # A legacy unicast reply echoes its query's id; anything else wasn't asked
+  # for. Everything a reply says is filed under its source, so one responder
+  # can't overwrite another's records.
+  defp handle_reply(state, socket, source, data) do
     with {:ok, message} <- Dns.decode(data),
-         true <- Dns.response?(message) do
+         true <- Dns.response?(message),
+         true <- MapSet.member?(state.ids, message.id) do
       records = message.answers ++ message.additionals
       state = %{state | seq: state.seq + 1}
 
       state
-      |> take_ptrs(records, ip)
-      |> take_instance_records(records, ip)
-      |> take_addresses(records)
+      |> take_ptrs(records, source)
+      |> take_instance_records(records, source)
+      |> take_addresses(records, source)
       |> follow_up(socket)
     else
       _ -> state
     end
   end
 
-  defp take_ptrs(state, records, ip) do
+  defp take_ptrs(state, records, source) do
     Enum.reduce(records, state, fn
       %{type: :ptr, name: name, data: [_label | rest] = instance}, state ->
         if Dns.name_key(name) == state.service_key and Dns.name_key(rest) == state.service_key,
-          do: touch_instance(state, instance, ip),
+          do: touch_instance(state, instance, source),
           else: state
 
       _record, state ->
@@ -240,27 +259,32 @@ defmodule Humdinger.FMutate.Discovery do
     end)
   end
 
-  defp touch_instance(state, [label | _] = instance, ip) do
-    key = Dns.name_key(instance)
+  defp touch_instance(state, [label | _] = instance, source) do
+    key = {source, Dns.name_key(instance)}
 
-    if is_map_key(state.instances, key) or map_size(state.instances) < @max_instances do
-      entry = %{name: label, ip: ip, seq: state.seq}
-      %{state | instances: Map.put(state.instances, key, entry)}
-    else
-      state
+    case state.instances do
+      %{^key => entry} ->
+        entry = %{entry | name: label, seq: state.seq}
+        %{state | instances: Map.put(state.instances, key, entry)}
+
+      instances when map_size(instances) < @max_instances ->
+        entry = %{name: label, seq: state.seq, srv: nil, txt: nil}
+        %{state | instances: Map.put(instances, key, entry)}
+
+      _ ->
+        state
     end
   end
 
-  defp take_instance_records(state, records, ip) do
+  defp take_instance_records(state, records, source) do
     Enum.reduce(records, state, fn
       %{type: type, name: name, data: data}, state when type in [:srv, :txt] ->
-        key = Dns.name_key(name)
+        key = {source, Dns.name_key(name)}
 
         case state.instances do
           %{^key => entry} ->
-            entry = %{entry | ip: ip, seq: state.seq}
-            state = %{state | instances: Map.put(state.instances, key, entry)}
-            Map.update!(state, type, &Map.put(&1, key, data))
+            entry = Map.merge(entry, %{type => data, seq: state.seq})
+            %{state | instances: Map.put(state.instances, key, entry)}
 
           _ ->
             state
@@ -271,15 +295,18 @@ defmodule Humdinger.FMutate.Discovery do
     end)
   end
 
-  defp take_addresses(state, records) do
-    targets = MapSet.new(state.srv, fn {_key, srv} -> Dns.name_key(srv.target) end)
+  defp take_addresses(state, records, source) do
+    targets =
+      for {{^source, _key}, %{srv: %{target: target}}} <- state.instances,
+          into: MapSet.new(),
+          do: Dns.name_key(target)
 
     Enum.reduce(records, state, fn
       %{type: :a, name: name, data: address}, state ->
         key = Dns.name_key(name)
 
         if MapSet.member?(targets, key),
-          do: %{state | a: Map.put(state.a, key, address)},
+          do: %{state | a: Map.put(state.a, {source, key}, address)},
           else: state
 
       _record, state ->
@@ -290,35 +317,43 @@ defmodule Humdinger.FMutate.Discovery do
   defp follow_up(state, socket) do
     questions =
       state.instances
-      |> Enum.flat_map(fn {key, %{name: label}} ->
-        instance_questions(state, key, [label | state.service]) ++ address_question(state, key)
+      |> Enum.flat_map(fn {{source, _key} = key, entry} ->
+        instance_questions(key, entry, [entry.name | state.service]) ++
+          address_question(state, source, entry)
       end)
       |> Enum.reject(fn {asked, _question} -> MapSet.member?(state.asked, asked) end)
 
     if questions == [] do
       state
     else
-      packet = Dns.encode_query(Enum.map(questions, &elem(&1, 1)), :rand.uniform(0xFFFF))
+      id = query_id()
+
+      packet =
+        questions
+        |> Enum.map(&elem(&1, 1))
+        |> Enum.uniq_by(&{&1.type, Dns.name_key(&1.name)})
+        |> Dns.encode_query(id)
+
       send_to(socket, Map.fetch!(state.sockets, socket), packet)
       asked = Enum.reduce(questions, state.asked, &MapSet.put(&2, elem(&1, 0)))
-      %{state | asked: asked}
+      %{state | asked: asked, ids: MapSet.put(state.ids, id)}
     end
   end
 
-  defp instance_questions(state, key, instance) do
-    for type <- [:srv, :txt], not is_map_key(Map.fetch!(state, type), key) do
+  defp instance_questions(key, entry, instance) do
+    for type <- [:srv, :txt], Map.fetch!(entry, type) == nil do
       {{type, key}, %{name: instance, type: type}}
     end
   end
 
-  defp address_question(state, key) do
-    case state.srv do
-      %{^key => %{target: target}} ->
-        target_key = Dns.name_key(target)
+  defp address_question(state, source, entry) do
+    case entry.srv do
+      %{target: target} ->
+        key = {source, Dns.name_key(target)}
 
-        if is_map_key(state.a, target_key),
+        if is_map_key(state.a, key),
           do: [],
-          else: [{{:a, target_key}, %{name: target, type: :a}}]
+          else: [{{:a, key}, %{name: target, type: :a}}]
 
       _ ->
         []
@@ -327,22 +362,22 @@ defmodule Humdinger.FMutate.Discovery do
 
   defp candidates(state) do
     state.instances
-    |> Enum.flat_map(fn {key, entry} ->
-      case candidate(state, key, entry) do
+    |> Enum.flat_map(fn {{source, _key}, entry} ->
+      case candidate(state, source, entry) do
         {:ok, candidate} -> [{entry.seq, candidate}]
         :error -> []
       end
     end)
     |> Enum.sort_by(fn {seq, _candidate} -> seq end)
     |> Map.new(fn {_seq, candidate} ->
-      {{candidate.fp, candidate.inst, candidate.host}, candidate}
+      {{candidate.fp, candidate.inst, candidate.host, candidate.dist_port}, candidate}
     end)
     |> Map.values()
     |> Enum.sort_by(& &1.name)
   end
 
-  defp candidate(state, key, entry) do
-    txt = state.txt |> Map.get(key, []) |> Dns.txt_map()
+  defp candidate(state, source, entry) do
+    txt = Dns.txt_map(entry.txt || [])
 
     with "1" <- Map.get(txt, "v", "1"),
          {:ok, inst} <- required(txt, "inst"),
@@ -354,7 +389,7 @@ defmodule Humdinger.FMutate.Discovery do
          name: entry.name,
          inst: inst,
          node: node,
-         host: host(state, key, entry),
+         host: host(state, source, entry),
          port: port(txt["port"]),
          dist_port: port(txt["dport"]),
          fp: fp,
@@ -373,11 +408,11 @@ defmodule Humdinger.FMutate.Discovery do
     end
   end
 
-  defp host(state, key, entry) do
+  defp host(state, {ip, _port} = source, entry) do
     address =
-      case state.srv do
-        %{^key => %{target: target}} -> Map.get(state.a, Dns.name_key(target), entry.ip)
-        _ -> entry.ip
+      case entry.srv do
+        %{target: target} -> Map.get(state.a, {source, Dns.name_key(target)}, ip)
+        _ -> ip
       end
 
     address |> :inet.ntoa() |> to_string()
@@ -391,6 +426,8 @@ defmodule Humdinger.FMutate.Discovery do
       _ -> nil
     end
   end
+
+  defp query_id, do: :rand.uniform(0xFFFF)
 
   defp now, do: System.monotonic_time(:millisecond)
 end

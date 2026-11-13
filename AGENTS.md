@@ -881,7 +881,10 @@ this implementation, for FMutate to implement the other side).
   pairing (validated by `Record`), and for TLS only after the tunnel checked
   FMutate's certificate; mDNS and pairing input never make atoms.
 - **mDNS.** One-shot legacy unicast queries (from an ephemeral port), so
-  replies come back unicast and Android needs no `MulticastLock`. FMutate on
+  replies come back unicast and Android needs no `MulticastLock`. Replies
+  must echo a query's id; records are kept per instance *and* reply source,
+  so a forged reply under FMutate's label is a second candidate (each tried
+  once per outage by host and dport), never a replacement. FMutate on
   Android should advertise with `NsdManager` (the system responder owns
   5353). A Mac standing in for FMutate: advertise with `dns-sd -R "FMutate
   A" _fmutate._tcp local <port> v=1 inst=a node=… fp=… port=… dport=…`;
