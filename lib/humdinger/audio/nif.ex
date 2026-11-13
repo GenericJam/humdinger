@@ -65,10 +65,20 @@ defmodule Humdinger.Audio.Nif do
 
   @doc """
   Diagnostics: the input stream (`rate`, `burst`, `buffer`, `low_latency`,
-  `xruns`, `device`, `input_latency_ms`), and since the last listen the
-  `callbacks`, `readings`, `batches` and `spectra` sent, and the batches'
+  `xruns`, `device`, `preset`, `input_latency_ms`), and since the last listen
+  the `callbacks`, `readings`, `batches` and `spectra` sent, the batches'
   delivery lag (`lag_mean_ms`, `lag_max_ms`: from the newest analysed
-  sample's arrival to the send).
+  sample's arrival to the send), what one reading and one spectrum column
+  cost (`detect_us_mean`/`_max`, `column_us_mean`/`_max`), and the audio
+  dropped to catch up (`skipped_ms` over `skips` times). `analyses` counts
+  running file analyses.
   """
   def info, do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  The AAudio input preset the next listen opens with: `:voice_recognition`
+  (the default, what the app uses), `:unprocessed`, `:voice_performance` or
+  `:generic`. For comparing presets on a phone (`scripts/realtime_check.exs`).
+  """
+  def set_input_preset(_preset), do: :erlang.nif_error(:nif_not_loaded)
 end

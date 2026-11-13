@@ -146,6 +146,18 @@ defmodule Humdinger.Audio.FakeTest do
       assert Fake.analysing?(second)
     end
 
+    test "a burst of replacements leaves one analysis, and other owners still fit" do
+      refs = for i <- 1..20, do: elem(Fake.analyze_file(self(), "/tmp/#{i}.wav", []), 1)
+      {older, [latest]} = Enum.split(refs, -1)
+      assert Fake.analysing?(latest)
+      refute Enum.any?(older, &Fake.analysing?/1)
+
+      [b, c] = for _ <- 1..2, do: spawn(fn -> receive do: (:go -> :ok) end)
+      assert {:ok, _} = Fake.analyze_file(b, "/tmp/b.wav", [])
+      assert {:error, :busy} = Fake.analyze_file(c, "/tmp/c.wav", [])
+      Enum.each([b, c], &send(&1, :go))
+    end
+
     test "two owners at once; a third is busy until one finishes" do
       owners = for _ <- 1..3, do: spawn(fn -> receive do: (:go -> :ok) end)
       [a, b, c] = owners

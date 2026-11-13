@@ -84,20 +84,32 @@ wait_idle = fn ->
   end)
 end
 
-IO.puts("idle CPU: #{round(cpu.(2_000))}% of a core")
+# The app's own load before any analysis (the Live screen, listening).
+idle = cpu.(2_000)
+IO.puts("idle CPU: #{round(idle)}% of a core")
 
 # ── 1. cancel_analysis ──
 o1 = owner.()
 {:ok, ref} = analyze.(o1)
 Process.sleep(1_000)
 busy = cpu.(2_000)
-check.("decoding: one running, CPU #{round(busy)}% of a core", running.() == 1 and busy > 40)
+
+check.(
+  "decoding: one running, CPU #{round(busy)}% of a core",
+  running.() == 1 and busy > idle + 40
+)
+
 t = System.monotonic_time(:millisecond)
 :ok = cancel.(ref)
 stopped = wait_idle.()
 check.("cancel_analysis: thread gone in #{System.monotonic_time(:millisecond) - t} ms", stopped)
 idle_after = cpu.(2_000)
-check.("after cancel: CPU #{round(idle_after)}% of a core", idle_after < busy / 4)
+
+check.(
+  "after cancel: CPU #{round(idle_after)}% of a core (idle #{round(idle)}%)",
+  idle_after < idle + (busy - idle) / 4
+)
+
 check.("after cancel: no message", got.(o1) == [])
 
 # ── 2. A second analysis by the same owner replaces the first ──
@@ -128,10 +140,48 @@ check.("dead owner: {:error, :owner_dead}", analyze.(o2) == {:error, :owner_dead
 {:ok, ref_b} = analyze.(b)
 check.("third owner: {:error, :busy}", analyze.(c) == {:error, :busy})
 :ok = cancel.(ref_a)
-check.("after one is cancelled the third may start", match?({:ok, _}, analyze.(c)))
+# A cancelled job's thread counts until it notices (one decoder buffer).
+Enum.find_value(1..100, fn _ -> running.() == 1 || (Process.sleep(20) && nil) end)
+check.("after one is cancelled and gone the third may start", match?({:ok, _}, analyze.(c)))
 for p <- [a, b, c, o1], do: send(p, :exit)
 _ = ref_b
 check.("all owners gone: idle", wait_idle.())
+
+# ── 4b. A burst of replacements: still one decoder thread for the owner ──
+threads = fn ->
+  adb.(["shell", "ls /proc/#{app_pid}/task | wc -l"]) |> String.trim() |> String.to_integer()
+end
+
+o3 = owner.()
+before = threads.()
+# One analysis's threads: the decoder's and MediaCodec's own.
+{:ok, one} = analyze.(o3)
+Process.sleep(1_000)
+per_analysis = threads.() - before
+:ok = cancel.(one)
+wait_idle.()
+Process.sleep(500)
+
+{refs, peaks} =
+  Enum.map_reduce(1..20, {0, 0}, fn _, {max_running, max_threads} ->
+    {:ok, ref} = analyze.(o3)
+    {ref, {max(max_running, running.()), max(max_threads, threads.())}}
+  end)
+
+{max_running, max_threads} = peaks
+check.("burst of 20: at most one analysis thread (saw #{max_running})", max_running <= 1)
+
+check.(
+  "burst of 20: threads #{before} → at most #{max_threads} (one analysis adds #{per_analysis})",
+  max_threads <= before + per_analysis + 2
+)
+
+Process.sleep(1_000)
+check.("burst of 20: the latest runs", running.() == 1)
+:ok = cancel.(List.last(refs))
+check.("burst of 20: idle after cancelling the latest", wait_idle.())
+check.("burst of 20: no message for any of them", got.(o3) == [])
+send(o3, :exit)
 
 # ── 5. The Import screen ──
 picked = {:files, :picked, [%{path: file, name: "long.m4a", mime: "audio/mp4", size: 1}]}

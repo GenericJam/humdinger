@@ -55,7 +55,7 @@ typedef struct {
     int window;      /* analysis window = integration + tau_max + 1 */
 
     float fir[YIN_FIR_TAPS];
-    float fir_hist[YIN_FIR_TAPS]; /* last input samples for the low-pass */
+    float fir_hist[2 * YIN_FIR_TAPS]; /* last input samples for the low-pass, twice */
     int fir_pos;
     int phase; /* input samples since the last kept output */
 
@@ -123,28 +123,81 @@ static int pitch_window_input_samples(const pitch_detector *p) { return p->windo
 /* Feed input samples (mono float, ±1). */
 static void pitch_push(pitch_detector *p, const float *in, int n) {
     for (int i = 0; i < n; i++) {
-        p->fir_hist[p->fir_pos] = in[i];
-        p->fir_pos = (p->fir_pos + 1) % YIN_FIR_TAPS;
+        /* Each sample goes in twice, TAPS apart, so the last TAPS samples
+         * are always contiguous: fir_hist[fir_pos .. fir_pos + TAPS). */
+        p->fir_hist[p->fir_pos] = p->fir_hist[p->fir_pos + YIN_FIR_TAPS] = in[i];
+        if (++p->fir_pos == YIN_FIR_TAPS) p->fir_pos = 0;
         if (++p->phase < p->factor) continue;
         p->phase = 0;
 
+        const float *h = p->fir_hist + p->fir_pos; /* oldest first */
         float acc = 0.0f;
-        int k = p->fir_pos; /* oldest sample */
-        for (int t = 0; t < YIN_FIR_TAPS; t++) {
-            acc += p->fir[t] * p->fir_hist[k];
-            k = (k + 1) % YIN_FIR_TAPS;
-        }
+        for (int t = 0; t < YIN_FIR_TAPS; t++) acc += p->fir[t] * h[t];
         p->buf[p->buf_pos] = acc;
-        p->buf_pos = (p->buf_pos + 1) % p->buf_len;
+        if (++p->buf_pos == p->buf_len) p->buf_pos = 0;
     }
 }
+
+/* Σ (x[j] − y[j])², the hot loop (~400 × 270 per reading), in eight
+ * independent partial sums: one running sum is a chain of dependent
+ * multiply-adds, latency-bound (most of a reading on a moto e 2020). The
+ * partial sums change the result only by rounding. On arm64 they are two
+ * NEON registers; on 32-bit ARM, scalar VFP (zig builds armeabi-v7a with the
+ * soft-float calling convention, where NEON vectors don't compile). */
+#if defined(__aarch64__)
+#include <arm_neon.h>
+
+static float pitch_sq_diff(const float *x, const float *y, int n) {
+    float32x4_t a0 = vdupq_n_f32(0.0f), a1 = vdupq_n_f32(0.0f);
+    int j = 0;
+    for (; j + 8 <= n; j += 8) {
+        float32x4_t d0 = vsubq_f32(vld1q_f32(x + j), vld1q_f32(y + j));
+        float32x4_t d1 = vsubq_f32(vld1q_f32(x + j + 4), vld1q_f32(y + j + 4));
+        a0 = vfmaq_f32(a0, d0, d0);
+        a1 = vfmaq_f32(a1, d1, d1);
+    }
+    float d = vaddvq_f32(vaddq_f32(a0, a1));
+    for (; j < n; j++) {
+        float delta = x[j] - y[j];
+        d += delta * delta;
+    }
+    return d;
+}
+#else
+static float pitch_sq_diff(const float *x, const float *y, int n) {
+    /* Separate locals, not an array: at -Os an array stays in memory. */
+    float a0 = 0.0f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f, a4 = 0.0f, a5 = 0.0f, a6 = 0.0f, a7 = 0.0f;
+    int j = 0;
+    for (; j + 8 <= n; j += 8) {
+        float d0 = x[j] - y[j], d1 = x[j + 1] - y[j + 1], d2 = x[j + 2] - y[j + 2], d3 = x[j + 3] - y[j + 3];
+        float d4 = x[j + 4] - y[j + 4], d5 = x[j + 5] - y[j + 5], d6 = x[j + 6] - y[j + 6], d7 = x[j + 7] - y[j + 7];
+        a0 += d0 * d0;
+        a1 += d1 * d1;
+        a2 += d2 * d2;
+        a3 += d3 * d3;
+        a4 += d4 * d4;
+        a5 += d5 * d5;
+        a6 += d6 * d6;
+        a7 += d7 * d7;
+    }
+    float d = ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
+    for (; j < n; j++) {
+        float delta = x[j] - y[j];
+        d += delta * delta;
+    }
+    return d;
+}
+#endif
 
 /* Analyse the most recent window. */
 static pitch_reading pitch_detect(pitch_detector *p) {
     pitch_reading r = {0.0f, 0.0f, YIN_FLOOR_DB};
     int w = p->window;
 
-    for (int i = 0; i < w; i++) p->frame[i] = p->buf[(p->buf_pos + i) % p->buf_len];
+    /* The ring, oldest first. */
+    int head = p->buf_len - p->buf_pos;
+    memcpy(p->frame, p->buf + p->buf_pos, sizeof(float) * (size_t)head);
+    memcpy(p->frame + head, p->buf, sizeof(float) * (size_t)p->buf_pos);
 
     double energy = 0.0;
     for (int i = 0; i < w; i++) energy += (double)p->frame[i] * p->frame[i];
@@ -159,11 +212,7 @@ static pitch_reading pitch_detect(pitch_detector *p) {
     float running = 0.0f;
     p->diff[0] = 1.0f;
     for (int tau = 1; tau <= p->tau_max; tau++) {
-        float d = 0.0f;
-        for (int j = 0; j < n; j++) {
-            float delta = x[j] - x[j + tau];
-            d += delta * delta;
-        }
+        float d = pitch_sq_diff(x, x + tau, n);
         running += d;
         p->diff[tau] = running > 0.0f ? d * tau / running : 1.0f;
     }
