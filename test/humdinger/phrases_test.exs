@@ -5,10 +5,7 @@ defmodule Humdinger.PhrasesTest do
   alias Humdinger.{Phrase, Phrases, Repo, Scale}
 
   setup_all do
-    start_supervised!(Repo)
-    migrations = Application.app_dir(:humdinger, "priv/repo/migrations")
-    Ecto.Migrator.run(Repo, migrations, :up, all: true, log: false)
-    :ok
+    Humdinger.Test.Repo.start()
   end
 
   setup do

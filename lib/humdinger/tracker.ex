@@ -250,7 +250,11 @@ defmodule Humdinger.Tracker do
 
   @doc ~S|The Live screen's tuning line: `cents_label(-12.4)` → "−12¢ · a little flat".|
   @spec cents_label(number()) :: String.t()
-  def cents_label(cents) do
+  def cents_label(cents), do: "#{cents_text(cents)} · #{tuning_label(cents)}"
+
+  @doc ~S|Whole cents with a sign (a real minus): `cents_text(-12.4)` → "−12¢", `cents_text(3)` → "+3¢", 0 → "0¢".|
+  @spec cents_text(number()) :: String.t()
+  def cents_text(cents) do
     rounded = round(cents)
 
     sign =
@@ -260,7 +264,7 @@ defmodule Humdinger.Tracker do
         true -> ""
       end
 
-    "#{sign}#{abs(rounded)}¢ · #{tuning_label(cents)}"
+    "#{sign}#{abs(rounded)}¢"
   end
 
   # ── Settings ──────────────────────────────────────────────────────────
