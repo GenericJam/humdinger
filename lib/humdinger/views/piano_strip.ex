@@ -18,6 +18,11 @@ defmodule Humdinger.Views.PianoStrip do
       bottom corners, a 2 px #0E0D12 outline and a 7-high cap at lightness
       50. The active key (white or black) is filled in its pitch colour;
       a lit white key's name is drawn in ink.
+    * The sung-pitch tick: with `pitch` set, a 3 × 14 r2 bar in `Style.bg/0`
+      on the lit key, at the key's centre plus `(pitch − active)` key widths
+      (±0.5 semitone reaches the key's edges; clamped inside it), its top
+      34 above a white key's bottom (board: y 70 of 104) or 20 above a
+      black key's.
 
   The natural height is `height/0` (129 = 3 + 12 + 10 + 104).
 
@@ -55,13 +60,15 @@ defmodule Humdinger.Views.PianoStrip do
 
   @typedoc """
   `low`/`high`: the visible keyboard window (MIDI, inclusive; default
-  62..76). `active`: the sung note to light, or nil. `range`: the singer's
-  range; overview keys outside it are dimmed (nil: none dimmed).
+  62..76). `active`: the sung note to light, or nil. `pitch`: the sung
+  pitch as fractional MIDI (the tick on the lit key), or nil. `range`: the
+  singer's range; overview keys outside it are dimmed (nil: none dimmed).
   """
   @type data :: %{
           optional(:low) => integer() | nil,
           optional(:high) => integer() | nil,
           optional(:active) => integer() | nil,
+          optional(:pitch) => float() | nil,
           optional(:range) => {integer(), integer()} | nil
         }
 
@@ -108,7 +115,42 @@ defmodule Humdinger.Views.PianoStrip do
       ] ++
       Enum.flat_map(kb.whites, &white_ops(&1, kb, active, w)) ++
       Enum.flat_map(kb.blacks, &black_ops(&1, kb, active, w)) ++
+      pitch_tick(kb, active, Map.get(data, :pitch), w) ++
       corner_masks(w, kb.kh)
+  end
+
+  defp pitch_tick(_kb, active, pitch, _w) when is_nil(active) or is_nil(pitch), do: []
+
+  defp pitch_tick(kb, active, pitch, w) do
+    found =
+      case Enum.find(kb.blacks, &(elem(&1, 0) == active)) do
+        {_, l, kw} ->
+          {l, kw, kb.black_h - 20}
+
+        nil ->
+          with {_, l, kw} <- Enum.find(kb.whites, &(elem(&1, 0) == active)),
+               do: {l, kw, kb.kh - 34}
+      end
+
+    case found do
+      {l, kw, top} ->
+        x = Draw.clamp(l + kw / 2 + (pitch - active) * kw - 1.5, l + 1, l + kw - 4)
+
+        if x >= 0 and x + 3 <= w do
+          [
+            rect(Draw.r1(x), Draw.r1(@kb_top + top), 3, 14,
+              color: Style.bg(),
+              fill: true,
+              radius: 2
+            )
+          ]
+        else
+          []
+        end
+
+      nil ->
+        []
+    end
   end
 
   @doc """

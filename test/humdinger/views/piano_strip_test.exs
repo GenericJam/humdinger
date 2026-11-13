@@ -56,6 +56,19 @@ defmodule Humdinger.Views.PianoStripTest do
              )
     end
 
+    test "the sung-pitch tick sits off the lit key's centre by the pitch offset, clamped inside" do
+      tick = fn pitch ->
+        PianoStrip.ops(Map.put(@board, :pitch, pitch), @w, @h)
+        |> Enum.find(&(&1.op == :rect and &1.color == Style.bg() and &1[:h] == 14))
+      end
+
+      assert %{x: 157.0, y: 95.0, w: 3} = tick.(68.78)
+      assert %{x: 166.0} = tick.(69.0)
+      assert %{x: 148.0} = tick.(67.5)
+      assert %{x: 184.0} = tick.(70.0)
+      assert tick.(nil) == nil
+    end
+
     test "overview keys outside the range are dimmed" do
       overview = PianoStrip.ops(%{@board | range: {40, 84}}, @w, @h) |> Enum.take(88)
       opacity = fn m -> overview |> Enum.at(m - 21) |> Map.get(:opacity, 1) end
