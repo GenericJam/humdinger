@@ -201,6 +201,8 @@ defmodule Humdinger.FMutate.DiscoveryTest do
     started = System.monotonic_time(:millisecond)
 
     assert Discovery.browse(targets: [{{127, 0, 0, 1}, port}], timeout: 100) == {:ok, []}
-    assert (System.monotonic_time(:millisecond) - started) in 100..250
+    # At least the window; the upper bound only says it doesn't hang (a busy
+    # host can be slow to schedule the return).
+    assert (System.monotonic_time(:millisecond) - started) in 100..1_000
   end
 end

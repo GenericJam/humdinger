@@ -39,6 +39,8 @@ defmodule Humdinger.FMutate.Transport do
 
   alias Humdinger.FMutate.{Epmd, Record, Tunnel}
 
+  require Logger
+
   @type conn :: %{node: node(), tunnel: pid() | nil}
 
   @callback connect(Record.t(), owner :: pid()) :: {:ok, conn()} | {:error, term()}
@@ -63,11 +65,20 @@ defmodule Humdinger.FMutate.Transport do
       do: Application.put_env(:humdinger, :fmutate_dev_node, dev_node)
 
     case {:init.get_argument(:epmd_module), :application.get_env(:kernel, :epmd_module)} do
-      {{:ok, _}, _} -> {:error, :epmd_module_argument}
-      {_, {:ok, Epmd}} -> :ok
-      {_, {:ok, other}} -> {:error, {:epmd_module, other}}
-      {_, :undefined} -> :application.set_env(:kernel, :epmd_module, Epmd)
+      {:error, {:ok, Epmd}} -> :ok
+      {:error, :undefined} -> :application.set_env(:kernel, :epmd_module, Epmd)
+      configured -> unusable(configured)
     end
+  end
+
+  # Another port mapper is configured: FMutate can't be routed. The app runs
+  # on; connecting will fail and say so.
+  defp unusable(configured) do
+    Logger.error(
+      "FMutate: another epmd module is configured (#{inspect(configured)}); the link can't route to FMutate"
+    )
+
+    {:error, {:epmd_module, configured}}
   end
 
   @doc """

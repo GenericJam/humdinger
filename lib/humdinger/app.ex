@@ -42,7 +42,7 @@ defmodule Humdinger.App do
 
     # The FMutate link: its port mapper has to be in place before any
     # distribution starts (including Mob.Dist's development node below).
-    :ok = FMutate.Transport.setup(dev_node: @dev_node)
+    FMutate.Transport.setup(dev_node: @dev_node)
     {:ok, _} = FMutate.Supervisor.start_link()
     Mob.Dist.ensure_started(node: @dev_node, cookie: :mob_secret)
   end
