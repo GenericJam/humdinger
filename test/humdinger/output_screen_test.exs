@@ -263,6 +263,12 @@ defmodule Humdinger.OutputScreenTest do
   end
 
   describe "channel and test note" do
+    # An app opens the Humdinger port, so Output sends to it.
+    setup do
+      send(Output, {:humdinger_midi, :port, ~s({"connections":1})})
+      :ok
+    end
+
     test "the test note goes out on the channel, and Last sent follows Output" do
       view = mount() |> press(:test_note)
       assert_receive {:port, <<0x90, 69, 92>>}
