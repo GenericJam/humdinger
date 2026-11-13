@@ -49,6 +49,27 @@ defmodule Humdinger.Test.FakeAudio do
   @impl Humdinger.Audio
   def analyze_file(_owner, _path, _opts), do: {:error, :not_supported}
 
+  # The background service, recorded as `Humdinger.Audio.Fake` does. (The
+  # engine reaches it through `Humdinger.Background`, i.e. the configured
+  # audio module, not this one.)
+  @impl Humdinger.Audio
+  def background_start(owner, notice),
+    do: update(fn s -> {:ok, %{s | background: %{owner: owner, notice: notice}}} end)
+
+  @impl Humdinger.Audio
+  def background_update(notice) do
+    update(fn
+      %{background: nil} = s -> {{:error, :not_running}, s}
+      s -> {:ok, put_in(s.background.notice, notice)}
+    end)
+  end
+
+  @impl Humdinger.Audio
+  def background_stop, do: update(fn s -> {:ok, %{s | background: nil}} end)
+
+  @impl Humdinger.Audio
+  def background_running?, do: update(fn s -> {s.background != nil, s} end)
+
   @doc "Deliver readings to the listener that got `ref` (stale or not)."
   def sing(ref, readings), do: deliver(ref, {:readings, readings})
 
@@ -92,5 +113,5 @@ defmodule Humdinger.Test.FakeAudio do
     end
   end
 
-  defp initial, do: %{current: nil, owners: %{}, spectrum: false, refuse: nil}
+  defp initial, do: %{current: nil, owners: %{}, spectrum: false, refuse: nil, background: nil}
 end

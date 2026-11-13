@@ -152,7 +152,8 @@ boolean, holding: boolean}` (pitch and note after octave/transpose: the
 displayed note is the sent one). `response_ms/1` (Fast 30, Balanced 60,
 Steady 120: the "~xx ms" on the Settings sheet), `hold_ms/0` (250),
 `tuning_label(cents)` ("in tune" < 10¢, "a little flat/sharp" ≤ 30¢, then
-"flat"/"sharp"), `cents_label(cents)` ("−12¢ · a little flat"). Events
+"flat"/"sharp"), `cents_label(cents)` ("−12¢ · a little flat"),
+`cents_text(cents)` ("−12¢"). Events
 carry no channel: `{:note_on, note, velocity}`, `{:note_off, note}`,
 `{:pitch_bend, -8192..8191}`, `{:cc, number, value}` (1 and 11).
 
@@ -197,36 +198,81 @@ merges into the current map. Fields and defaults: `sensitivity_db` −55
 fresh load so neither clobbers the other.
 
 **Engine** (`Humdinger.Engine`, GenServer, started in `App.on_start`
-before the root screen; starts `:off`, the Live screen calls `listen/0`):
-`start_link(audio:, output:, name:)` (defaults `Audio.impl/0`,
-`config :humdinger, :output` or `Humdinger.Output`, `Humdinger.Engine`).
+after Output and before the root screen; starts `:off`, the Live screen
+calls `listen/0`): `start_link(audio:, output:, name:)` (defaults
+`Audio.impl/0`, i.e. the NIF on the phone and `Audio.Fake` in host tests;
+`config :humdinger, :output` or `Humdinger.Output`; `Humdinger.Engine`).
 Every call also takes the server as an optional first argument.
 `subscribe(pid)` (monitored; replies with the current status at once) →
 `{:engine, :frame, frame}` ≤ 30/s while listening (token-guarded 33 ms
 timer, latest state, only when changed; plus one per status change),
 `{:engine, :status, status}` on change, `{:engine, :spectrum, spectrum}`
-for subscribers with `spectrum(pid, true)` (the mic computes it only while
-someone wants it). `listen/0 :: :ok | {:error, reason}`, `pause/0` (note
-off, mic off), `resume/0`, `stop/0`, `status/0` (`:off | :listening |
-:paused | {:error, reason}`; audio errors and refusals land here),
-`settings/0`, `update_settings(map | fun) :: {:ok, settings} | {:error,
-{:invalid, field}}` (saves, then `Tracker.configure/2`; a channel change
-calls `output.configure(channel: n)` after the release's note offs),
+for subscribers with `spectrum(pid, true)` (`t` on the frames' engine
+clock; the mic computes it only while someone wants it),
+`{:engine, :phrase_saved, phrase}` after Stop rec in the notification.
+`listen/0 :: :ok | {:error, reason}`, `pause/0` (note off, mic off,
+service stays), `resume/0` (after a pause or a mic error), `stop/0` (also
+stops the service), `status/0` (`:off | :listening | :paused | {:error,
+reason}`; `listen/2` refusals such as `:permission`,
+`:microphone_unavailable` and stream errors such as `:device_lost`,
+`:input_error` land here, mood `:no_mic`), `settings/0`,
+`update_settings(map | fun) :: {:ok, settings} | {:error, {:invalid,
+field}}` (saves, then `Tracker.configure/2`; a channel change calls
+`output.configure(channel: n)` after the release's note offs),
 `record_start/0`, `record_stop/0 :: {:ok, Take.t()} | {:error, :empty |
-:not_recording}`, `recording?/0`, pure `describe(event, channel)` (same
-wording as `Midi.describe/2`). A frame: `%{t, pitch, note, cents, hz, db,
-velocity, voiced, mood, sent}`; `mood`: `:no_mic` (error), `:paused`,
-`:idle` (off, or nothing voiced for 5 s and quieter than gate − 10 dB),
-`:listening`, `:flat`/`:sharp` (sounding note, voice ≥ 10¢ off),
-`:aria` (≥ gate + 35 dB), `:singing`; `sent` = the last note on/off sent
-(`describe/2`). Readings move onto one engine clock that runs across
+:not_recording}`, `recording?/0`. A frame: `%{t, pitch, note, cents, hz,
+db, velocity, voiced, mood, sent, recording, background}`; `mood`:
+`:no_mic` (error), `:paused`, `:idle` (off, or nothing voiced for 5 s and
+quieter than gate − 10 dB), `:listening`, `:flat`/`:sharp` (sounding note,
+voice ≥ 10¢ off), `:aria` (≥ gate + 35 dB), `:singing`; `sent` = the last
+note on/off sent (`Midi.describe/2`); `background` = `:off | :running |
+{:error, reason}`. Readings move onto one engine clock that runs across
 pause/resume; a hold timer fires `Tracker.tick/2` at `Tracker.deadline/1`.
-A take's notes come from the note on/off pairs sent (ms from
-`record_start`, open notes closed at the stop), its trace is the
-tracker's smoothed (shifted) pitch every ≥ 10 ms with one nil per gap.
-Host tests drive it with `Humdinger.Test.FakeAudio` (test/support, the
-`Audio.Fake` test API) and an output double; host timers can fire late
-(macOS), so tests never depend on a timer being on time.
+A take (`Engine.Recording`, pure) has the notes from the note on/off
+pairs sent (ms from `record_start`, open notes closed at the stop) and
+the tracker's smoothed (shifted) pitch every ≥ 10 ms, one nil per gap.
+
+The engine owns the background notification (`Humdinger.Background`,
+text from the pure `Engine.Notice`): every successful `listen/0`/`resume/0`
+(the app is in front: Android 14 only lets a foreground app start the
+service) starts it unless it runs; text "A4 −12¢ → FMutate A · ch 1" /
+"listening… → …" / "paused → …" (destination = the first enabled and
+available row of Output's `{:output, :destinations, list}`, which the
+engine subscribes to on its first listen; without one, "A4 −12¢ · ch 1"),
+titles "Humdinger · listening / recording / paused / no microphone",
+updated at most 4/s on change (title/buttons at once). Buttons: Pause,
+Resume (also after a mic error), Record, Stop rec (saves the take with
+`Phrase.from_take/2` + `Phrases.save/1`, default name, and sends
+`{:engine, :phrase_saved, phrase}`), Stop (= `stop/0`). A mic error keeps
+the service ("no microphone", Resume). If the service can't start, or
+`{:background, :failed}` arrives, the engine keeps listening in front and
+frames carry `background: {:error, reason}`; the next listen/resume tries
+again. On Android 13+ the notification needs the `:notifications`
+permission, which the engine can't detect (the service runs unseen):
+the Live screen requests it before the first `listen/0`.
+
+Verifying the Engine: host tests `test/humdinger/{engine,tracker,settings}_test.exs`,
+`test/humdinger/engine/` (`Audio.Fake` with an output double; host timers
+can fire late on macOS, so tests never depend on a timer being on time).
+`Humdinger.Test.FakeAudio` (test/support) is an older double some screen
+branches still use. On the phone: deploy, `mix mob.connect --no-iex
+--android-only --device <serial>`, then `SERIAL=<serial> mix run
+--no-start scripts/engine_check.exs` with the phone by the Mac's speaker:
+tones → note ons (and the time from tone start to the first clear reading
+to the note on, from a trace of the engine process), frames and moods, a
+recorded take, Home pressed (frames, events and the notification text keep
+coming), then the notification's buttons through their intents.
+Measured on the moto g power 2021 (Balanced, room −67 dBFS, sensitivity
+−59, `VOLUME=3`): every tone became its note; first clear reading → note
+on 58–65 ms (the 60 ms response plus a reading batch); tone start → note
+on 258–290 ms, about 200 ms of it before the first clear reading (afplay
+start, speaker, the 42 ms YIN window); frames 29.2/s; in the background
+the notification read "A4 0¢ → Humdinger port · ch 1" mid-tone. With the
+tones only 2–5 dB over the gate (`VOLUME=1`) some onsets took 300–400 ms
+(readings dipping under the gate restart the onset), and the first tone
+after a silence sometimes read as its subharmonics (D3 for A4) for
+300–600 ms, which the engine then plays: a detector-level effect at low
+signal, not seen at the louder level.
 
 **Output** (`Humdinger.Output`, GenServer; `Humdinger.Midi` pure
 encoder): `send_events([event])` (cast, on the settings channel),

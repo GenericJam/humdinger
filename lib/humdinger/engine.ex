@@ -4,7 +4,8 @@ defmodule Humdinger.Engine do
   readings through a `Humdinger.Tracker`, sends the events to the output
   (`Humdinger.Output.send_events/1`) and tells subscribed screens what is
   happening. One per app, started from `Humdinger.App.on_start/0`, so it
-  keeps listening while the singer plays FMutate in the foreground.
+  keeps listening while the singer plays FMutate in the foreground (with
+  the background service, below).
 
   ## Time
 
@@ -22,14 +23,18 @@ defmodule Humdinger.Engine do
   `{:engine, :frame, frame}` at most 30 times a second while listening (a
   token-guarded timer sends the latest state, not every reading; one more
   frame follows each status change so Mimi's mood updates). A subscriber
-  that asks with `spectrum/2` also gets `{:engine, :spectrum, spectrum}`;
-  the microphone computes the spectrum only while someone wants it.
+  that asks with `spectrum/2` also gets `{:engine, :spectrum, spectrum}`,
+  its `t` on engine time like the frames'; the microphone computes the
+  spectrum only while someone wants it. `{:engine, :phrase_saved, phrase}`
+  follows a recording stopped from the notification.
 
   A frame is `%{t, pitch, note, cents, hz, db, velocity, voiced, mood,
-  sent}`: the tracker's display (`Humdinger.Tracker.display/1`), the
-  engine time `t` of the latest reading, Mimi's `mood` and `sent`, the
-  last note on or off sent (`describe/2`, e.g. "A4 on · vel 92 · ch 1"),
-  or nil.
+  sent, recording, background}`: the tracker's display
+  (`Humdinger.Tracker.display/1`), the engine time `t` of the latest
+  reading, Mimi's `mood`, `sent` (the last note on or off sent, as
+  `Humdinger.Midi.describe/2` words it, or nil), whether a take is being
+  recorded, and the background service: `:off`, `:running` or `{:error,
+  reason}` (see below).
 
   Moods: `:no_mic` (the microphone failed or was refused), `:paused`,
   `:idle` (off, or nothing voiced for 5 s and the room quieter than 10 dB
@@ -37,6 +42,42 @@ defmodule Humdinger.Engine do
   sound near the gate), `:flat` / `:sharp` (a note sounds and the voice is
   10 cents or more off it, `Humdinger.Tracker.tuning_label/1`), `:aria`
   (singing 35 dB or more above the gate), `:singing`.
+
+  ## Microphone errors
+
+  A `listen/0` that fails (`:permission`, `:microphone_unavailable`, …) or
+  an `{:error, reason}` while listening (`:device_lost`, `:input_error`, …)
+  ends the sounding note and becomes status `{:error, reason}`, mood
+  `:no_mic`. `listen/0` or `resume/0` tries again.
+
+  ## In the background
+
+  Android silences a backgrounded app's microphone unless a foreground
+  service runs, and Android 14 lets an app start one only from the
+  foreground. So every successful `listen/0` or `resume/0` (the singer
+  pressed something: the app is in front) starts `Humdinger.Background`
+  unless it already runs. The notification (`Humdinger.Engine.Notice`)
+  follows the engine: its text at most 4 times a second and only when it
+  changes, its title and buttons at once.
+
+  - `pause/0` keeps the service (and the notification, with Resume), so
+    the singer can resume from the shade without opening the app: a
+    running service lets the microphone start from the background.
+  - `stop/0` stops it. So does the notification's Stop.
+  - A microphone error keeps it, showing "no microphone" and Resume.
+  - The buttons: Pause, Resume (also after an error), Record, Stop rec and
+    Stop act as the functions of those names; Stop rec saves the take as a
+    phrase (`Humdinger.Phrase.from_take/2`, `Humdinger.Phrases.save/1`),
+    since no screen is there to review it, and sends subscribers
+    `{:engine, :phrase_saved, phrase}`.
+  - If the service can't start (`Background.start/2` errors, or
+    `{:background, :failed}` arrives: Android refused the foreground
+    service) the engine keeps listening in the foreground and the frames'
+    `background` is `{:error, reason}`, so Live can say listening will stop
+    when the app leaves the screen. The next `listen/0`/`resume/0` tries
+    again. On Android 13+ the notification needs the `:notifications`
+    permission: without it the service still runs, unseen (the Live screen
+    asks for it before the first listen; the engine can't tell).
 
   ## Settings
 
@@ -50,25 +91,27 @@ defmodule Humdinger.Engine do
   ## Recording
 
   `record_start/0` begins a take at the current engine time;
-  `record_stop/0` returns a `Humdinger.Take`: the notes the engine sent
-  (from note on/off pairs, ms from the start; a note sounding at the start
-  begins at 0, one still sounding at the stop ends there), the sung pitch
-  trace (`{t_ms, pitch}`, the tracker's smoothed pitch after octave and
-  transpose so it lines up with the notes, at most one every 10 ms, a
-  single nil where the voice stops), the scale in Scale mode (nil in
-  Open), `source: :hum` and `recorded_at`. A take without notes is
+  `record_stop/0` returns a `Humdinger.Take` (`Humdinger.Engine.Recording`):
+  the notes the engine sent (from note on/off pairs, ms from the start; a
+  note sounding at the start begins at 0, one still sounding at the stop
+  ends there), the sung pitch trace (the tracker's smoothed pitch after
+  octave and transpose, so it lines up with the notes, at most one every
+  10 ms, a single nil where the voice stops), the scale in Scale mode (nil
+  in Open), `source: :hum` and `recorded_at`. A take without notes is
   `{:error, :empty}`.
   """
 
   use GenServer
+  require Logger
 
-  alias Humdinger.{Audio, Music, Settings, Take, Tracker}
+  alias Humdinger.{Audio, Background, Midi, Phrase, Phrases, Settings, Take, Tracker}
+  alias Humdinger.Engine.{Notice, Recording}
 
   @frame_ms 33
+  @notice_every_ms 250
   @idle_after_ms 5_000
   @near_gate_db 10
   @aria_above_gate_db 35
-  @trace_every_ms 10
 
   @type status :: :off | :listening | :paused | {:error, term()}
   @type frame :: %{
@@ -81,17 +124,20 @@ defmodule Humdinger.Engine do
           velocity: 1..127 | nil,
           voiced: boolean(),
           mood: :idle | :listening | :singing | :aria | :flat | :sharp | :paused | :no_mic,
-          sent: String.t() | nil
+          sent: String.t() | nil,
+          recording: boolean(),
+          background: :off | :running | {:error, term()}
         }
 
   # ── API ───────────────────────────────────────────────────────────────
 
   @doc """
-  Start the engine. Options: `audio:` (default `Humdinger.Audio.impl/0`),
-  `output:` (default `config :humdinger, :output`, else
-  `Humdinger.Output`), `name:` (default `Humdinger.Engine`). Settings come
-  from `Humdinger.Settings.load/0`. The engine starts `:off`; `listen/0`
-  turns the microphone on.
+  Start the engine. Options: `audio:` (default `Humdinger.Audio.impl/0`:
+  the NIF on the phone, `Humdinger.Audio.Fake` in host tests), `output:`
+  (default `config :humdinger, :output`, else `Humdinger.Output`), `name:`
+  (default `Humdinger.Engine`). Settings come from
+  `Humdinger.Settings.load/0`. The engine starts `:off`; `listen/0` turns
+  the microphone on.
   """
   def start_link(opts \\ []) do
     {name, opts} = Keyword.pop(opts, :name, __MODULE__)
@@ -107,19 +153,27 @@ defmodule Humdinger.Engine do
   def spectrum(server \\ __MODULE__, pid, on?) when is_boolean(on?),
     do: GenServer.call(server, {:spectrum, pid, on?})
 
-  @doc "Turn the microphone on. `{:error, reason}` when it can't (e.g. `:permission`)."
+  @doc """
+  Turn the microphone on, and the background service with it. `{:error,
+  reason}` when the microphone can't (e.g. `:permission`). Call it from the
+  foreground.
+  """
   @spec listen(GenServer.server()) :: :ok | {:error, term()}
   def listen(server \\ __MODULE__), do: GenServer.call(server, :listen)
 
-  @doc "Stop sending: the sounding note ends and the microphone turns off. Only while listening."
+  @doc """
+  Stop sending: the sounding note ends and the microphone turns off; the
+  background service stays, so Resume works from the notification. Only
+  while listening.
+  """
   @spec pause(GenServer.server()) :: :ok
   def pause(server \\ __MODULE__), do: GenServer.call(server, :pause)
 
-  @doc "Listen again after `pause/0`. Does nothing unless paused."
+  @doc "Listen again after `pause/0` or a microphone error. Does nothing otherwise."
   @spec resume(GenServer.server()) :: :ok | {:error, term()}
   def resume(server \\ __MODULE__), do: GenServer.call(server, :resume)
 
-  @doc "Everything off: the sounding note ends and the microphone turns off."
+  @doc "Everything off: the sounding note, the microphone and the background service."
   @spec stop(GenServer.server()) :: :ok
   def stop(server \\ __MODULE__), do: GenServer.call(server, :stop)
 
@@ -153,33 +207,18 @@ defmodule Humdinger.Engine do
   @spec recording?(GenServer.server()) :: boolean()
   def recording?(server \\ __MODULE__), do: GenServer.call(server, :recording?)
 
-  @doc ~S"""
-  A one-line summary of an event on a channel, as the Live and Output
-  screens show it: "A4 on · vel 92 · ch 1", "A4 off · ch 1",
-  "bend +1234 · ch 1", "CC 11 = 80 · ch 1". The same wording as
-  `Humdinger.Midi.describe/2`.
-  """
-  @spec describe(Tracker.event(), 1..16) :: String.t()
-  def describe({:note_on, note, velocity}, channel),
-    do: "#{Music.note_name(note)} on · vel #{velocity} · ch #{channel}"
-
-  def describe({:note_off, note}, channel), do: "#{Music.note_name(note)} off · ch #{channel}"
-
-  def describe({:pitch_bend, value}, channel) when value > 0, do: "bend +#{value} · ch #{channel}"
-  def describe({:pitch_bend, value}, channel), do: "bend #{value} · ch #{channel}"
-  def describe({:cc, number, value}, channel), do: "CC #{number} = #{value} · ch #{channel}"
-
   # ── Server ────────────────────────────────────────────────────────────
 
   @impl GenServer
   def init(opts) do
     settings = Settings.load()
-    output = Keyword.get_lazy(opts, :output, &default_output/0)
 
     {:ok,
      %{
        audio: Keyword.get_lazy(opts, :audio, &Audio.impl/0),
-       output: output,
+       output: Keyword.get_lazy(opts, :output, &default_output/0),
+       output_subscribed: false,
+       destination: nil,
        settings: settings,
        tracker: Tracker.new(settings),
        status: :off,
@@ -194,7 +233,10 @@ defmodule Humdinger.Engine do
        dirty: false,
        hold_timer: nil,
        sent: nil,
-       record: nil
+       record: nil,
+       background: :off,
+       notice: nil,
+       notice_at: nil
      }}
   end
 
@@ -215,21 +257,10 @@ defmodule Humdinger.Engine do
   end
 
   def handle_call(:listen, _from, %{status: :listening} = state), do: {:reply, :ok, state}
-  def handle_call(:listen, _from, state), do: start_listening(state)
-
-  def handle_call(:pause, _from, %{status: :listening} = state),
-    do: {:reply, :ok, state |> stop_listening() |> set_status(:paused)}
-
-  def handle_call(:pause, _from, state), do: {:reply, :ok, state}
-
-  def handle_call(:resume, _from, %{status: :paused} = state), do: start_listening(state)
-  def handle_call(:resume, _from, state), do: {:reply, :ok, state}
-
-  def handle_call(:stop, _from, %{status: :off} = state), do: {:reply, :ok, state}
-
-  def handle_call(:stop, _from, state),
-    do: {:reply, :ok, state |> stop_listening() |> set_status(:off)}
-
+  def handle_call(:listen, _from, state), do: reply(start_listening(state))
+  def handle_call(:pause, _from, state), do: {:reply, :ok, pause_listening(state)}
+  def handle_call(:resume, _from, state), do: reply(resume_listening(state))
+  def handle_call(:stop, _from, state), do: {:reply, :ok, stop_all(state)}
   def handle_call(:status, _from, state), do: {:reply, state.status, state}
   def handle_call(:settings, _from, state), do: {:reply, state.settings, state}
 
@@ -248,58 +279,11 @@ defmodule Humdinger.Engine do
     end
   end
 
-  def handle_call(:record_start, _from, %{record: nil} = state) do
-    t0 = now_t(state)
-    display = Tracker.display(state.tracker)
+  def handle_call(:record_start, _from, state), do: {:reply, :ok, start_recording(state)}
 
-    open =
-      if display.note,
-        do: %{display.note => {0, display.velocity}},
-        else: %{}
-
-    record = %{
-      t0: t0,
-      open: open,
-      notes: [],
-      trace: [],
-      trace_t: nil,
-      scale: if(state.settings.mode == :scale, do: state.settings.scale),
-      recorded_at: DateTime.utc_now()
-    }
-
-    {:reply, :ok, %{state | record: record}}
-  end
-
-  def handle_call(:record_start, _from, state), do: {:reply, :ok, state}
-
-  def handle_call(:record_stop, _from, %{record: nil} = state),
-    do: {:reply, {:error, :not_recording}, state}
-
-  def handle_call(:record_stop, _from, %{record: record} = state) do
-    end_ms = max(now_t(state) - record.t0, 0)
-
-    notes =
-      Enum.reduce(record.open, record.notes, fn {midi, {start, velocity}}, notes ->
-        [take_note(midi, start, end_ms, velocity) | notes]
-      end)
-      |> Enum.sort_by(&{&1.start_ms, &1.midi})
-
-    reply =
-      if notes == [] do
-        {:error, :empty}
-      else
-        {:ok,
-         %Take{
-           notes: notes,
-           trace: Enum.reverse(record.trace),
-           duration_ms: end_ms,
-           scale: record.scale,
-           source: :hum,
-           recorded_at: record.recorded_at
-         }}
-      end
-
-    {:reply, reply, %{state | record: nil}}
+  def handle_call(:record_stop, _from, state) do
+    {reply, state} = stop_recording(state)
+    {:reply, reply, state}
   end
 
   def handle_call(:recording?, _from, state), do: {:reply, state.record != nil, state}
@@ -311,9 +295,15 @@ defmodule Humdinger.Engine do
   # A message from an earlier listen (stale) or a reference we don't hold.
   def handle_info({:hum_audio, _ref, _message}, state), do: {:noreply, state}
 
+  def handle_info({:background, action}, state), do: {:noreply, background(action, state)}
+
+  def handle_info({:output, :destinations, destinations}, state) do
+    {:noreply, %{state | destination: Notice.destination(destinations)}}
+  end
+
   def handle_info({:frame, token}, %{frame_token: token} = state) when token != nil do
     state = if state.dirty, do: broadcast_frame(state), else: state
-    {:noreply, schedule_frame(state)}
+    {:noreply, state |> sync_notice(false) |> schedule_frame()}
   end
 
   def handle_info({:frame, _stale}, state), do: {:noreply, state}
@@ -341,15 +331,78 @@ defmodule Humdinger.Engine do
 
   def handle_info(_message, state), do: {:noreply, state}
 
+  defp reply({result, state}), do: {:reply, result, state}
+
+  # ── Listening ─────────────────────────────────────────────────────────
+
+  defp start_listening(state) do
+    case state.audio.listen(self(), spectrum: wants_spectrum?(state)) do
+      {:ok, ref} ->
+        offset = max(now_ms() - state.base, (state.last_t || -1) + 1)
+        state = %{state | ref: ref, offset: offset, last_t: nil, last_at: nil}
+
+        state =
+          state
+          |> subscribe_output()
+          |> start_background()
+          |> set_status(:listening)
+          |> schedule_frame()
+
+        {:ok, state}
+
+      {:error, reason} = error ->
+        {error, set_status(state, {:error, reason})}
+    end
+  end
+
+  defp resume_listening(%{status: status} = state) when status == :paused or is_tuple(status),
+    do: start_listening(state)
+
+  defp resume_listening(state), do: {:ok, state}
+
+  defp pause_listening(%{status: :listening} = state),
+    do: state |> stop_listening() |> set_status(:paused)
+
+  defp pause_listening(state), do: state
+
+  defp stop_all(%{status: :off} = state), do: stop_background(state)
+  defp stop_all(state), do: state |> stop_listening() |> stop_background() |> set_status(:off)
+
+  # Ends the sounding note and turns the microphone off. The engine clock
+  # carries on from the last reading.
+  defp stop_listening(state) do
+    t = now_t(state)
+    if state.ref, do: state.audio.stop(state.ref)
+    {tracker, events} = Tracker.release(state.tracker)
+
+    %{state | tracker: tracker, ref: nil, frame_token: nil, last_t: t, last_at: now_ms()}
+    |> emit(events, t)
+    |> cancel_hold()
+  end
+
+  # Output tells the engine where the notes go (for the notification). A
+  # double without `subscribe/1` is fine: the notice leaves the name out.
+  defp subscribe_output(%{output_subscribed: false, output: output} = state) do
+    if Code.ensure_loaded?(output) and function_exported?(output, :subscribe, 1) do
+      :ok = output.subscribe(self())
+      %{state | output_subscribed: true}
+    else
+      state
+    end
+  end
+
+  defp subscribe_output(state), do: state
+
   # ── Audio ─────────────────────────────────────────────────────────────
 
   defp audio({:readings, readings}, state) do
     state = Enum.reduce(readings, state, &reading/2)
-    received = now_ms()
-    {:noreply, %{state | last_at: received, dirty: true} |> arm_hold()}
+    {:noreply, %{state | last_at: now_ms(), dirty: true} |> arm_hold()}
   end
 
   defp audio({:spectrum, spectrum}, state) do
+    spectrum = %{spectrum | t: spectrum.t + state.offset}
+
     for {pid, %{spectrum: true}} <- state.subscribers,
         do: send(pid, {:engine, :spectrum, spectrum})
 
@@ -366,34 +419,12 @@ defmodule Humdinger.Engine do
     {tracker, events} = Tracker.push(state.tracker, %{reading | t: t})
     display = Tracker.display(tracker)
     last_voiced_t = if display.voiced, do: t, else: state.last_voiced_t
+    state = %{state | tracker: tracker, last_t: t, last_voiced_t: last_voiced_t}
+    state = emit(state, events, t)
 
-    %{state | tracker: tracker, last_t: t, last_voiced_t: last_voiced_t}
-    |> emit(events, t)
-    |> trace(t, display.pitch)
-  end
-
-  defp start_listening(state) do
-    case state.audio.listen(self(), spectrum: wants_spectrum?(state)) do
-      {:ok, ref} ->
-        offset = max(now_ms() - state.base, (state.last_t || -1) + 1)
-        state = %{state | ref: ref, offset: offset, last_t: nil, last_at: nil}
-        {:reply, :ok, state |> set_status(:listening) |> schedule_frame()}
-
-      {:error, reason} = error ->
-        {:reply, error, set_status(state, {:error, reason})}
-    end
-  end
-
-  # Ends the sounding note and turns the microphone off. The engine clock
-  # carries on from the last reading.
-  defp stop_listening(state) do
-    t = now_t(state)
-    if state.ref, do: state.audio.stop(state.ref)
-    {tracker, events} = Tracker.release(state.tracker)
-
-    %{state | tracker: tracker, ref: nil, frame_token: nil, last_t: t, last_at: now_ms()}
-    |> emit(events, t)
-    |> cancel_hold()
+    if state.record,
+      do: %{state | record: Recording.trace(state.record, t, display.pitch)},
+      else: state
   end
 
   # ── Events and recording ──────────────────────────────────────────────
@@ -402,66 +433,123 @@ defmodule Humdinger.Engine do
 
   defp emit(state, events, t) do
     state.output.send_events(events)
-    state = %{state | record: record_events(state.record, events, t)}
+
+    state =
+      if state.record,
+        do: %{state | record: Recording.events(state.record, events, t)},
+        else: state
 
     case events |> Enum.filter(&note_event?/1) |> List.last() do
       nil -> state
-      event -> %{state | sent: describe(event, state.settings.channel)}
+      event -> %{state | sent: Midi.describe(event, state.settings.channel)}
     end
   end
 
   defp note_event?({kind, _note, _velocity}), do: kind == :note_on
   defp note_event?({kind, _note}), do: kind == :note_off
 
-  defp record_events(nil, _events, _t), do: nil
-
-  defp record_events(record, events, t) do
-    at = max(t - record.t0, 0)
-
-    Enum.reduce(events, record, fn
-      {:note_on, midi, velocity}, record ->
-        put_in(record.open[midi], {at, velocity})
-
-      {:note_off, midi}, record ->
-        case Map.pop(record.open, midi) do
-          {{start, velocity}, open} ->
-            %{record | open: open, notes: [take_note(midi, start, at, velocity) | record.notes]}
-
-          {nil, _open} ->
-            record
-        end
-
-      _other, record ->
-        record
-    end)
+  defp start_recording(%{record: nil} = state) do
+    display = Tracker.display(state.tracker)
+    sounding = if display.note, do: {display.note, display.velocity}
+    scale = if state.settings.mode == :scale, do: state.settings.scale
+    record = Recording.start(now_t(state), sounding, scale)
+    %{state | record: record, dirty: true} |> sync_notice(true)
   end
 
-  defp take_note(midi, start, stop, velocity),
-    do: %{
-      start_ms: start,
-      dur_ms: max(stop - start, 1),
-      midi: midi,
-      velocity: velocity,
-      unsure: false
-    }
+  defp start_recording(state), do: state
 
-  # A pitch sample every 10 ms; one nil where the voice stops.
-  defp trace(%{record: nil} = state, _t, _pitch), do: state
+  defp stop_recording(%{record: nil} = state), do: {{:error, :not_recording}, state}
 
-  defp trace(%{record: record} = state, t, pitch) do
-    at = max(t - record.t0, 0)
-    last = List.first(record.trace)
+  defp stop_recording(state) do
+    reply = Recording.finish(state.record, now_t(state))
+    {reply, %{state | record: nil, dirty: true} |> sync_notice(true)}
+  end
+
+  # Stop rec in the notification: no screen is there to review the take, so
+  # it is saved as a phrase.
+  defp save_recording(state) do
+    {result, state} = stop_recording(state)
+
+    with {:ok, take} <- result,
+         {:ok, phrase} <- Phrases.save(Phrase.from_take(take)) do
+      for {pid, _} <- state.subscribers, do: send(pid, {:engine, :phrase_saved, phrase})
+    else
+      {:error, :empty} -> :ok
+      {:error, reason} -> Logger.warning("Engine: couldn't save the take: #{inspect(reason)}")
+    end
+
+    state
+  end
+
+  # ── Background service ────────────────────────────────────────────────
+
+  defp background(:pause, state), do: pause_listening(state)
+  defp background(:resume, state), do: state |> resume_listening() |> elem(1)
+  defp background(:record, state), do: start_recording(state)
+  defp background(:record_stop, state), do: save_recording(state)
+  defp background(:stop, state), do: stop_all(state)
+
+  # A late report about a service already stopped changes nothing.
+  defp background(:failed, %{background: :running} = state) do
+    :ok = Background.stop()
+    Logger.warning("Engine: Android refused the background service")
+    broadcast_frame(%{state | background: {:error, :failed}, notice: nil})
+  end
+
+  defp background(_other, state), do: state
+
+  defp start_background(%{background: :running} = state), do: state
+
+  defp start_background(state) do
+    notice = notice(%{state | status: :listening})
+
+    case Background.start(self(), notice) do
+      :ok ->
+        %{state | background: :running, notice: notice, notice_at: now_ms()}
+
+      {:error, reason} ->
+        Logger.warning("Engine: no background service: #{inspect(reason)}")
+        %{state | background: {:error, reason}}
+    end
+  end
+
+  defp stop_background(%{background: :running} = state) do
+    :ok = Background.stop()
+    %{state | background: :off, notice: nil}
+  end
+
+  defp stop_background(state), do: %{state | background: :off}
+
+  # The notification follows the engine: forced for a change of status or
+  # recording (title and buttons), else at most every 250 ms on a change.
+  defp sync_notice(%{background: :running} = state, force?) do
+    notice = notice(state)
 
     cond do
-      pitch == nil and (last == nil or elem(last, 1) == nil) ->
+      notice == state.notice ->
         state
 
-      pitch != nil and record.trace_t != nil and at - record.trace_t < @trace_every_ms ->
-        state
+      force? or now_ms() - state.notice_at >= @notice_every_ms ->
+        case Background.update(notice) do
+          :ok -> %{state | notice: notice, notice_at: now_ms()}
+          {:error, :not_running} -> %{state | background: :off, notice: nil}
+        end
 
       true ->
-        %{state | record: %{record | trace: [{at, pitch} | record.trace], trace_t: at}}
+        state
     end
+  end
+
+  defp sync_notice(state, _force?), do: state
+
+  defp notice(state) do
+    Notice.build(
+      state.status,
+      state.record != nil,
+      Tracker.display(state.tracker),
+      state.destination,
+      state.settings.channel
+    )
   end
 
   # ── Hold timer ────────────────────────────────────────────────────────
@@ -512,7 +600,7 @@ defmodule Humdinger.Engine do
   defp set_status(state, status) do
     state = %{state | status: status}
     for {pid, _} <- state.subscribers, do: send(pid, {:engine, :status, status})
-    broadcast_frame(state)
+    state |> broadcast_frame() |> sync_notice(true)
   end
 
   defp schedule_frame(state) do
@@ -535,7 +623,13 @@ defmodule Humdinger.Engine do
 
     display
     |> Map.take([:pitch, :note, :cents, :hz, :db, :velocity, :voiced])
-    |> Map.merge(%{t: state.last_t, mood: mood(state, display), sent: state.sent})
+    |> Map.merge(%{
+      t: state.last_t,
+      mood: mood(state, display),
+      sent: state.sent,
+      recording: state.record != nil,
+      background: state.background
+    })
   end
 
   defp mood(%{status: {:error, _}}, _display), do: :no_mic
