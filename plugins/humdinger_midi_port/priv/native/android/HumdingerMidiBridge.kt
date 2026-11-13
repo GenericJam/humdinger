@@ -46,6 +46,7 @@ import android.os.ParcelUuid
 import java.io.IOException
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import org.json.JSONArray
@@ -59,10 +60,11 @@ object HumdingerMidiBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPe
     @JvmStatic external fun nativeDeliver(pid: Long, tag: String, json: ByteArray)
 
     // portSend() results; humdinger_midi_port_nif.zig maps them to
-    // :ok / {:error, :no_client} / {:error, :send_failed}.
+    // :ok / {:error, :no_client} / {:error, :send_failed} / {:error, :queue_full}.
     private const val SEND_OK = 0
     private const val SEND_NO_CLIENT = 1
     private const val SEND_FAILED = 2
+    private const val SEND_QUEUE_FULL = 3
 
     // The Bluetooth-SIG BLE-MIDI service (MIDI over Bluetooth LE spec).
     private const val BLE_MIDI_SERVICE = "03B80E5A-EDE8-4B33-A751-6CE34EC4C700"
@@ -148,6 +150,8 @@ object HumdingerMidiBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPe
     internal fun setConnections(count: Int) {
         if (count == connections) return
         connections = count
+        // With nobody left there's nothing to drain into.
+        if (count == 0) refusing = false
         deliver("port", JSONObject().put("connections", count))
     }
 
@@ -156,26 +160,43 @@ object HumdingerMidiBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPe
 
     // Writes to the port happen on one thread of their own: MidiReceiver.send
     // writes to a socket per connected app and blocks while a client stops
-    // reading, which must not hold up the BEAM. A full queue (a client stuck
-    // for 512 messages) drops the newest bytes, as a cable would.
-    private val portWriter = ThreadPoolExecutor(
-        1, 1, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue(512), ThreadPoolExecutor.DiscardPolicy(),
-    )
+    // reading, which must not hold up the BEAM. Nothing is dropped silently:
+    // when the queue is full (a client stuck for 512 messages) the queued
+    // messages are stale, so they are dropped, portSend answers
+    // SEND_QUEUE_FULL and keeps refusing until the writer has finished the
+    // blocked write; then a "drained" port event tells Output to release
+    // what the clients may hold before sending anything new.
+    private val portQueue = ArrayBlockingQueue<Runnable>(512)
+    private val portWriter = ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, portQueue)
+    @Volatile private var refusing = false
 
     @JvmStatic
     fun portSend(bytes: ByteArray): Int {
         val s = service ?: return SEND_NO_CLIENT
         if (connections == 0) return SEND_NO_CLIENT
+        if (refusing) return SEND_QUEUE_FULL
         val receiver = s.outputPortReceivers?.firstOrNull() ?: return SEND_NO_CLIENT
         val timestamp = System.nanoTime()
-        portWriter.execute {
-            try {
-                receiver.send(bytes, 0, bytes.size, timestamp)
-            } catch (e: IOException) {
-                // The client went away mid-send; the status callback follows.
-            }
+        return try {
+            portWriter.execute { write(receiver, bytes, timestamp) }
+            SEND_OK
+        } catch (e: RejectedExecutionException) {
+            refusing = true
+            portQueue.clear()
+            SEND_QUEUE_FULL
         }
-        return SEND_OK
+    }
+
+    private fun write(receiver: MidiReceiver, bytes: ByteArray, timestamp: Long) {
+        try {
+            receiver.send(bytes, 0, bytes.size, timestamp)
+        } catch (e: IOException) {
+            // The client went away mid-send; the status callback follows.
+        }
+        if (refusing && portQueue.isEmpty()) {
+            refusing = false
+            deliver("port", JSONObject().put("connections", connections).put("drained", true))
+        }
     }
 
     // ── Devices ─────────────────────────────────────────────────────────────

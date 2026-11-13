@@ -22,8 +22,12 @@ defmodule Humdinger.Output.Port do
   @doc """
   Sends MIDI bytes (whole messages) to the apps connected to the port.
   `{:error, :no_client}` means nobody is listening and the bytes were dropped.
+  `{:error, :queue_full}` means a client stopped reading: the writer dropped
+  what it had queued and refuses bytes until it has drained, which arrives
+  as a `:port` event with `"drained": true` (see `Humdinger.Output`).
   """
-  @spec send(binary()) :: :ok | {:error, :no_client | :send_failed | :unavailable | :failed}
+  @spec send(binary()) ::
+          :ok | {:error, :no_client | :queue_full | :send_failed | :unavailable | :failed}
   def send(bytes) when is_binary(bytes), do: :humdinger_midi_port_nif.port_send(bytes)
 
   @doc "How many apps have the port open (0 where it doesn't exist)."

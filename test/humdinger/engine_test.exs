@@ -253,6 +253,76 @@ defmodule Humdinger.EngineTest do
     assert output_events() == [{:note_off, 69}]
   end
 
+  describe "one source at a time" do
+    test "a player holds the engine: the singer's note ends first, listening comes back after" do
+      ref = listening()
+      deliver(ref, sing(0, 300, 69.0))
+      output_events()
+      {:ok, player} = Humdinger.Player.start_link(output: FakeOutput)
+
+      :ok =
+        Humdinger.Player.play(
+          player,
+          [%{start_ms: 0, dur_ms: 100, midi: 69, velocity: 90}],
+          :riff
+        )
+
+      # The same pitch: the singer's note-off can't end the played note.
+      assert output_events() == [{:note_off, 69}, {:note_on, 69, 90}]
+      assert Engine.status() == :paused
+      # The old listen's readings don't reach the output.
+      deliver(ref, sing(300, 100, 72.0))
+      assert output_events() == []
+
+      assert_receive {:player, :finished, :riff}, 2_000
+      assert output_events() == [{:note_off, 69}]
+      assert Engine.status() == :listening
+      deliver(Fake.current(), sing(0, 300, 72.0))
+      assert {:note_on, 72, _} = Enum.find(output_events(), &(elem(&1, 0) == :note_on))
+    end
+
+    test "listen while held waits for the player; a player killed outright still lets go" do
+      {:ok, player} = Humdinger.Player.start_link(output: FakeOutput)
+      Process.unlink(player)
+
+      :ok =
+        Humdinger.Player.play(
+          player,
+          [%{start_ms: 0, dur_ms: 60_000, midi: 60, velocity: 90}],
+          :long
+        )
+
+      :ok = Engine.listen()
+      assert Engine.status() == :off
+
+      # No terminate/2: the engine's monitor on its holder ends the hold.
+      Process.exit(player, :kill)
+      assert eventually(fn -> Engine.status() == :listening end)
+    end
+
+    test "test taps while singing: the engine stays held across a restarted test note" do
+      ref = listening()
+      deliver(ref, sing(0, 300, 69.0))
+      output_events()
+      {:ok, player} = Humdinger.Player.start_link(output: FakeOutput)
+      note = [%{start_ms: 0, dur_ms: 300, midi: 69, velocity: 92}]
+
+      :ok = Humdinger.Player.play(player, note, :test_note)
+      :ok = Humdinger.Player.play(player, note, :test_note)
+      assert Engine.status() == :paused
+
+      assert output_events() == [
+               {:note_off, 69},
+               {:note_on, 69, 92},
+               {:note_off, 69},
+               {:note_on, 69, 92}
+             ]
+
+      assert_receive {:player, :finished, :test_note}, 2_000
+      assert Engine.status() == :listening
+    end
+  end
+
   test "a hold ends on the timer with no more readings" do
     {:ok, _} = Engine.update_settings(on_stop: :hold)
     ref = listening()

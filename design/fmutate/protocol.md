@@ -295,6 +295,20 @@ Remote and touch input merge by HANDOFF §6 rule 7. Keys pressed remotely light 
 (`agent` token), and the menu button shows a violet ring + "driven by <app>" for 2 s after the
 last remote input.
 
+MIDI over a lossy cast. Siblings send `{:midi, bytes}` without suspending (`nosuspend`), so a
+busy connection can drop a message, including a note-off. Two rules keep a synth from hanging
+on a note:
+
+- **FMutate releases a sibling's notes when its node goes.** It tracks the notes that
+  `{:midi, …}` started and, when the connection to the sibling's node is lost (the
+  sibling's `:status` subscriber's monitor reports `:noconnection`), sends the firmware a
+  note-off for each and CC 123 on each channel used. (`Humdinger.FMutate.Reference.Instance`
+  does this.)
+- **A sibling resynchronises.** After a dropped `{:midi, …}` it sends no more MIDI until a
+  panic gets through (CC 123, pitch bend centre, CC 1 = 0 and CC 11 = 127 on all 16
+  channels), and it starts every connection with that panic. If the panic can't get through
+  for 2 s it drops the connection, which falls under the first rule.
+
 ### 4.2 Subscriptions (FMutate → sibling)
 
 ```elixir

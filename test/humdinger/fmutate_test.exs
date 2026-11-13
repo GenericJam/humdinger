@@ -12,7 +12,10 @@ defmodule Humdinger.FMutateTest do
     @behaviour Humdinger.FMutate.Transport
 
     def start(test, connect),
-      do: Agent.start_link(fn -> %{test: test, connect: connect} end, name: __MODULE__)
+      do: Agent.start_link(fn -> %{test: test, connect: connect, drops: 0} end, name: __MODULE__)
+
+    # The next `n` casts are dropped, as `nosuspend` does on a busy connection.
+    def drop(n), do: Agent.update(__MODULE__, &%{&1 | drops: n})
 
     def script(connect), do: Agent.update(__MODULE__, &%{&1 | connect: connect})
     defp test, do: Agent.get(__MODULE__, & &1.test)
@@ -30,7 +33,21 @@ defmodule Humdinger.FMutateTest do
     def revoke(node), do: send(test(), {:revoke, node}) && :ok
 
     @impl true
-    def cast(_conn, _inst, payload), do: send(test(), {:cast, payload}) && :ok
+    def cast(_conn, _inst, payload) do
+      dropped? =
+        Agent.get_and_update(__MODULE__, fn
+          %{drops: 0} = s -> {false, s}
+          s -> {true, %{s | drops: s.drops - 1}}
+        end)
+
+      if dropped? do
+        send(test(), {:dropped, payload})
+        :dropped
+      else
+        send(test(), {:cast, payload})
+        :ok
+      end
+    end
 
     @impl true
     def call(_conn, _inst, {:list_firmware}, _timeout),
@@ -161,6 +178,45 @@ defmodule Humdinger.FMutateTest do
 
     FMutate.send_midi(<<0x90, 60, 100>>, link)
     assert_receive {:cast, {:midi, <<0x90, 60, 100>>}}, 1_000
+  end
+
+  @connected {:connected, %{name: "FMutate A", firmware: "X0X", device: "Pixel 7", emulator: nil}}
+
+  test "a dropped MIDI message stops MIDI until a panic gets through", ctx do
+    link = start_link(ctx)
+    :ok = FMutate.install(record(), link)
+    await_status(@connected)
+    panic = IO.iodata_to_binary(Humdinger.Midi.panic())
+    assert_receive {:cast, {:midi, ^panic}}
+
+    # The note-off is lost, and so is the first panic.
+    ScriptedTransport.drop(2)
+    FMutate.send_midi(<<0x80, 60, 64>>, link)
+    assert_receive {:dropped, {:midi, <<0x80, 60, 64>>}}
+    assert_receive {:fmutate, :midi, :resyncing}
+
+    # Nothing new goes out until the synth is silenced.
+    FMutate.send_midi(<<0x90, 62, 100>>, link)
+    assert_receive {:dropped, {:midi, ^panic}}, 1_000
+    assert_receive {:cast, {:midi, ^panic}}, 1_000
+    refute_received {:cast, {:midi, <<0x90, 62, 100>>}}
+    assert_receive {:fmutate, :midi, :ready}
+
+    FMutate.send_midi(<<0x90, 62, 100>>, link)
+    assert_receive {:cast, {:midi, <<0x90, 62, 100>>}}
+  end
+
+  test "when the panic can't get through for 2 s the connection is dropped", ctx do
+    link = start_link(ctx)
+    :ok = FMutate.install(record(), link)
+    await_status(@connected)
+
+    ScriptedTransport.drop(1_000)
+    FMutate.send_midi(<<0x80, 60, 64>>, link)
+    assert_receive {:fmutate, :midi, :resyncing}
+    assert_receive {:disconnect, @conn}, 4_000
+    await_status(:disconnected)
+    assert_receive {:fmutate, :midi, :ready}
   end
 
   test "retries with backoff, then follows FMutate to its new address found over mDNS", ctx do
@@ -358,6 +414,9 @@ defmodule Humdinger.FMutateTest do
     )
 
     assert_received {:connect, _, _}
+    # Every connection starts with a panic, before any other MIDI.
+    panic = IO.iodata_to_binary(Humdinger.Midi.panic())
+    assert_receive {:cast, {:midi, ^panic}}
 
     assert FMutate.forget(link) == :ok
     assert_receive {:call, {:unpair, _me}}, 1_000

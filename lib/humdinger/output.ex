@@ -17,6 +17,28 @@ defmodule Humdinger.Output do
   needs, `panic/0` silences everything (those note-offs plus CC 123 on each
   channel used), and a channel change can't strand a note on the old one.
 
+  Output never leaves a receiver stuck:
+
+  * It traps exits; `terminate/2` (a crash, or its supervisor stopping it)
+    sends the panic to every destination directly. The Engine's own
+    release in its `terminate/2` reaches a running Output only: when
+    Output is the one that died, this is what silences the notes.
+  * A destination that comes back (the first app opens the port again, a
+    USB or Bluetooth device's output opens) gets CC 123 and the controller
+    resets on every channel Output has used before any new note. FMutate
+    does this itself on (re)connect (`Humdinger.FMutate`).
+  * The port refuses bytes while its writer is stuck behind a client that
+    stopped reading (`{:error, :queue_full}`): Output stops sending to it,
+    and when the writer has drained (`:port` event with `drained`) sends
+    the note-offs, CC 123 and resets before anything new.
+  * FMutate dropping MIDI (`{:fmutate, :midi, :resyncing}`) takes it out
+    until it has resynced (`:ready`); its notes are FMutate's to release.
+
+  One source plays at a time: the singer (the Engine) or a `Humdinger.Player`
+  (phrase playback, the test note). A player holds the Engine
+  (`Humdinger.Engine.hold/2`) while it plays, so their notes and
+  controllers never interleave on a channel.
+
   Settings: the channel and the enabled flags are read once at start from
   `Humdinger.Settings.load/0`; the Engine sends channel changes with
   `configure/1` (after the note-offs for the old channel, which the cast
@@ -51,8 +73,7 @@ defmodule Humdinger.Output do
 
   @ids [:fmutate, :port, :usb, :bt]
   @default_enabled %{fmutate: true, port: true, usb: false, bt: false}
-  @test_note {:note_on, 69, 92}
-  @test_note_ms 300
+  @test_note %{start_ms: 0, dur_ms: 300, midi: 69, velocity: 92}
   @scan_ms 10_000
   @sent_interval_ms 100
   @fmutate_retry_ms 1_000
@@ -77,6 +98,9 @@ defmodule Humdinger.Output do
     :fmutate,
     # Monitor on the FMutate process: its subscribers die with it.
     :fmutate_ref,
+    # The Player that plays test notes (started on the first one).
+    :test_player,
+    :engine,
     :settings,
     :port,
     :device,
@@ -90,8 +114,14 @@ defmodule Humdinger.Output do
     channel: 1,
     enabled: @default_enabled,
     fmutate_status: :unpaired,
+    # FMutate dropped MIDI and is resynchronising (see the moduledoc).
+    fmutate_resync: false,
     port_available: false,
     port_connections: 0,
+    # The port refused bytes; waiting for its writer to drain.
+    port_resync: false,
+    # Every channel sent on: a destination that comes back is reset on these.
+    channels_used: MapSet.new(),
     # id => Device.t(): the USB and Bluetooth devices Humdinger can send to.
     devices: %{},
     # id => :opening | :open | {:failed, reason}: outputs asked of mob_midi.
@@ -143,9 +173,25 @@ defmodule Humdinger.Output do
   def set_enabled(id, enabled, server \\ __MODULE__) when id in @ids and is_boolean(enabled),
     do: GenServer.call(server, {:set_enabled, id, enabled})
 
-  @doc "Plays A4 at velocity 92 for 300 ms on every enabled, available destination."
+  @doc """
+  Plays A4 at velocity 92 for 300 ms on every enabled, available destination,
+  through a `Humdinger.Player` (so it holds the Engine while it sounds). A
+  tap while it sounds starts it again: the note is struck anew and lasts 300
+  ms from the last tap.
+  """
   @spec test_note(GenServer.server()) :: :ok
-  def test_note(server \\ __MODULE__), do: GenServer.cast(server, :test_note)
+  def test_note(server \\ __MODULE__) do
+    player = GenServer.call(server, :test_player)
+    Humdinger.Player.play(player, [@test_note], :test_note)
+  end
+
+  @doc """
+  Returns once Output has handled everything the caller sent it before. The
+  Engine and the Player call it after their last events, before handing the
+  output to the other.
+  """
+  @spec sync(GenServer.server()) :: :ok
+  def sync(server \\ __MODULE__), do: GenServer.call(server, :sync)
 
   @doc """
   Silences every enabled, available destination: note-offs for the notes Output knows
@@ -198,6 +244,8 @@ defmodule Humdinger.Output do
   @impl GenServer
   def init({opts, callers}) do
     Process.put(:"$callers", callers)
+    # Exits from the supervisor reach terminate/2, which silences everything.
+    Process.flag(:trap_exit, true)
 
     state =
       load_settings(%__MODULE__{
@@ -205,7 +253,8 @@ defmodule Humdinger.Output do
         settings: module_opt(opts, :settings, Humdinger.Settings),
         port: Keyword.get(opts, :port, Port),
         device: Keyword.get(opts, :device, Device),
-        sent_interval: Keyword.get(opts, :sent_interval_ms, @sent_interval_ms)
+        sent_interval: Keyword.get(opts, :sent_interval_ms, @sent_interval_ms),
+        engine: Keyword.get(opts, :engine, :default)
       })
 
     {:ok, state, {:continue, :connect}}
@@ -246,12 +295,16 @@ defmodule Humdinger.Output do
 
   def handle_cast({:configure, _}, state), do: {:noreply, state}
 
-  def handle_cast(:test_note, state) do
-    Process.send_after(self(), {:test_note_off, state.channel}, @test_note_ms)
-    {:noreply, state |> deliver_events([@test_note], state.channel) |> changed()}
+  @impl GenServer
+  def handle_call(:sync, _from, state), do: {:reply, :ok, state}
+
+  def handle_call(:test_player, _from, %{test_player: nil} = state) do
+    {:ok, player} = Humdinger.Player.start_link(test_player_opts(state))
+    {:reply, player, %{state | test_player: player}}
   end
 
-  @impl GenServer
+  def handle_call(:test_player, _from, state), do: {:reply, state.test_player, state}
+
   def handle_call(:destinations, _from, state), do: {:reply, destination_list(state), state}
   def handle_call(:last_sent, _from, state), do: {:reply, state.last_sent, state}
   def handle_call(:bluetooth, _from, state), do: {:reply, bluetooth_view(state), state}
@@ -320,10 +373,22 @@ defmodule Humdinger.Output do
   end
 
   @impl GenServer
-  def handle_info({:test_note_off, channel}, state) do
-    {:note_on, note, _} = @test_note
-    {:noreply, state |> deliver_events([{:note_off, note}], channel) |> changed()}
+  # The test player crashed: the next test note starts another.
+  def handle_info({:EXIT, pid, _reason}, %{test_player: pid} = state),
+    do: {:noreply, %{state | test_player: nil}}
+
+  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
+  def handle_info({:player, :finished, _tag}, state), do: {:noreply, state}
+
+  # FMutate dropped MIDI: it panics its synth itself and says when it can
+  # take MIDI again; until then nothing goes to it.
+  def handle_info({:fmutate, :midi, :resyncing}, state) do
+    state = put_in(state.sounding[:fmutate], MapSet.new())
+    {:noreply, changed(%{state | fmutate_resync: true})}
   end
+
+  def handle_info({:fmutate, :midi, :ready}, state),
+    do: {:noreply, changed(%{state | fmutate_resync: false})}
 
   def handle_info(:flush_sent, state) do
     broadcast(state, {:output, :sent, state.last_sent})
@@ -342,11 +407,15 @@ defmodule Humdinger.Output do
     end
   end
 
+  # The output is open: reset the device before the first note, since it may
+  # still hold notes from before it was closed or Humdinger restarted.
   def handle_info({:midi, :opened, %{device: id}}, state) do
-    opened =
-      if Map.has_key?(state.opened, id), do: Map.put(state.opened, id, :open), else: state.opened
-
-    {:noreply, changed(%{state | opened: opened})}
+    if Map.has_key?(state.opened, id) do
+      for bytes <- Midi.panic(panic_channels(state)), do: state.device.send(id, bytes)
+      {:noreply, changed(%{state | opened: Map.put(state.opened, id, :open)})}
+    else
+      {:noreply, state}
+    end
   end
 
   def handle_info({:midi, :error, %{device: id, op: :open_output, reason: reason}}, state) do
@@ -372,6 +441,19 @@ defmodule Humdinger.Output do
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state),
     do: {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
 
+  # Crashed or stopped by its supervisor: silence every destination directly
+  # (best effort; a destination that fails is skipped).
+  @impl GenServer
+  def terminate(_reason, state) do
+    panic_all(state)
+    :ok
+  end
+
+  defp test_player_opts(state) do
+    opts = [owner: self(), output: {__MODULE__, self()}]
+    if state.engine == :default, do: opts, else: Keyword.put(opts, :engine, state.engine)
+  end
+
   # ── Sending ──────────────────────────────────────────────────────────────
 
   defp deliver_events(state, [], _channel), do: state
@@ -389,14 +471,19 @@ defmodule Humdinger.Output do
 
   defp deliver(state, targets, event, channel) do
     bytes = Midi.encode(event, channel)
-    Enum.each(targets, &write(state, &1, bytes))
+    state = %{state | channels_used: MapSet.put(state.channels_used, channel)}
 
-    sounding =
-      Enum.reduce(targets, state.sounding, fn id, sounding ->
-        Map.update!(sounding, id, &track(&1, bytes, channel))
-      end)
-
-    %{state | sounding: sounding}
+    Enum.reduce(targets, state, fn id, state ->
+      # The port may have refused an earlier message of this batch, or this
+      # one: a refused note-off leaves its note sounding (released on drain).
+      with true <- sendable?(state, id),
+           %{port_resync: false} = sent <- write_all(state, id, [bytes]) do
+        update_in(sent, [Access.key(:sounding), id], &track(&1, bytes, channel))
+      else
+        false -> state
+        refused -> refused
+      end
+    end)
   end
 
   # The note is read back from the bytes, so it is the clamped one.
@@ -412,7 +499,18 @@ defmodule Humdinger.Output do
   defp write(state, :port, bytes), do: state.port.send(bytes)
 
   defp write(state, id, bytes) do
-    for device_id <- sendable_devices(state, id), do: state.device.send(device_id, bytes)
+    for device_id <- open_devices(state, id), do: state.device.send(device_id, bytes)
+  end
+
+  # Writes in order. The port answering `{:error, :queue_full}` stops the
+  # rest: it has dropped its queue and refuses bytes until it has drained.
+  defp write_all(state, id, messages) do
+    Enum.reduce_while(messages, state, fn bytes, state ->
+      case write(state, id, bytes) do
+        {:error, :queue_full} -> {:halt, %{state | port_resync: true}}
+        _ -> {:cont, state}
+      end
+    end)
   end
 
   defp targets(state), do: Enum.filter(@ids, &(state.enabled[&1] and sendable?(state, &1)))
@@ -441,30 +539,32 @@ defmodule Humdinger.Output do
   # the controllers back to rest on each channel it played on and the current
   # one, so turning it back on later doesn't start out bent or faded.
   defp release(state, id) do
-    if sendable?(state, id) do
-      for {channel, note} <- state.sounding[id],
-          do: write(state, id, Midi.encode({:note_off, note}, channel))
+    state =
+      if sendable?(state, id) do
+        offs =
+          for {channel, note} <- state.sounding[id], do: Midi.encode({:note_off, note}, channel)
 
-      for channel <- channels(state, id),
-          bytes <- Midi.reset_controllers(channel),
-          do: write(state, id, bytes)
-    end
+        resets = Enum.flat_map(channels(state, id), &Midi.reset_controllers/1)
+        write_all(state, id, offs ++ resets)
+      else
+        state
+      end
 
     put_in(state.sounding[id], MapSet.new())
   end
 
   defp panic_all(state) do
-    for id <- targets(state) do
-      notes = Enum.group_by(state.sounding[id], &elem(&1, 0), &elem(&1, 1))
-
-      for channel <- channels(state, id),
-          bytes <-
-            Midi.all_notes_off(channel, Map.get(notes, channel, [])) ++
-              Midi.reset_controllers(channel),
-          do: write(state, id, bytes)
-    end
-
+    state = Enum.reduce(targets(state), state, &write_all(&2, &1, panic_messages(&2, &1)))
     %{state | sounding: Map.new(@ids, &{&1, MapSet.new()})}
+  end
+
+  # Note-offs, CC 123 and the controller resets for `id`, per channel.
+  defp panic_messages(state, id) do
+    notes = Enum.group_by(state.sounding[id], &elem(&1, 0), &elem(&1, 1))
+
+    Enum.flat_map(channels(state, id), fn channel ->
+      Midi.all_notes_off(channel, Map.get(notes, channel, [])) ++ Midi.reset_controllers(channel)
+    end)
   end
 
   defp channels(state, id),
@@ -474,6 +574,10 @@ defmodule Humdinger.Output do
       |> Enum.concat([state.channel])
       |> Enum.uniq()
       |> Enum.sort()
+
+  # Every channel Output has sent on, and the current one.
+  defp panic_channels(state),
+    do: state.channels_used |> MapSet.put(state.channel) |> Enum.sort()
 
   defp toggle(state, id, false) do
     state
@@ -487,37 +591,54 @@ defmodule Humdinger.Output do
     if id == :bt, do: reconnect_bluetooth(state), else: state
   end
 
-  # A destination that can't be reached has nothing sounding any more.
+  # A destination that can't be reached has nothing sounding any more. The
+  # port waiting to drain keeps its notes: they are released once it has.
   defp prune_sounding(state) do
     sounding =
       Map.new(state.sounding, fn {id, set} ->
-        {id, if(sendable?(state, id), do: set, else: MapSet.new())}
+        {id, if(sendable?(state, id) or resyncing_port?(state, id), do: set, else: MapSet.new())}
       end)
 
     %{state | sounding: sounding}
   end
 
+  defp resyncing_port?(state, :port), do: state.port_resync and listened?(state)
+  defp resyncing_port?(_state, _id), do: false
+
   # ── Availability and the board's rows ─────────────────────────────────────
 
   defp available?(state, :fmutate), do: match?({:connected, _}, state.fmutate_status)
   defp available?(state, :port), do: state.port_available
-  defp available?(state, id), do: sendable_devices(state, id) != []
+  defp available?(state, id), do: usable_devices(state, id) != []
 
   # Whether sending reaches anyone. The port exists (its row is available)
   # whether or not an app listens, but with no app connected every send would
-  # be a JNI round trip that drops the bytes.
-  defp sendable?(state, :port), do: state.port_available and state.port_connections > 0
-  defp sendable?(state, id), do: available?(state, id)
+  # be a JNI round trip that drops the bytes; while it drains nothing goes to
+  # it. FMutate resynchronising takes no MIDI. A device takes MIDI once its
+  # output is open.
+  defp sendable?(state, :port), do: listened?(state) and not state.port_resync
+
+  defp sendable?(state, :fmutate),
+    do: available?(state, :fmutate) and not state.fmutate_resync
+
+  defp sendable?(state, id), do: open_devices(state, id) != []
+
+  defp listened?(state), do: state.port_available and state.port_connections > 0
 
   defp devices_for(state, id) do
     for {_, device} <- state.devices, destination(device) == id, do: device
   end
 
-  defp sendable_devices(state, id) do
+  # Devices not known to have failed to open (the row's "available").
+  defp usable_devices(state, id) do
     for device <- devices_for(state, id), not match?({:failed, _}, state.opened[device.id]) do
       device.id
     end
   end
+
+  # Devices whose output is open: the ones sent to.
+  defp open_devices(state, id),
+    do: for(device <- devices_for(state, id), state.opened[device.id] == :open, do: device.id)
 
   defp destination(%{type: :usb}), do: :usb
   defp destination(%{type: :bluetooth}), do: :bt
@@ -643,8 +764,32 @@ defmodule Humdinger.Output do
     end
   end
 
-  defp native_event(state, :port, %{"connections" => n}) when is_integer(n),
-    do: prune_sounding(%{state | port_connections: n})
+  # The writer drained after refusing bytes: what the clients may still hold
+  # is released before anything new goes out.
+  defp native_event(%{port_resync: true} = state, :port, %{"drained" => true} = payload) do
+    state = %{state | port_resync: false, port_connections: payload["connections"] || 0}
+
+    if listened?(state) do
+      offs =
+        for {channel, note} <- state.sounding[:port], do: Midi.encode({:note_off, note}, channel)
+
+      state = write_all(state, :port, offs ++ Midi.panic(panic_channels(state)))
+      put_in(state.sounding[:port], MapSet.new())
+    else
+      prune_sounding(state)
+    end
+  end
+
+  defp native_event(state, :port, %{"connections" => n}) when is_integer(n) do
+    before = listened?(state)
+    # With no client left the writer has nothing to drain into.
+    state = %{state | port_connections: n, port_resync: state.port_resync and n > 0}
+
+    # The first app to open the port (again) starts from silence.
+    if not before and listened?(state),
+      do: write_all(state, :port, Midi.panic(panic_channels(state))),
+      else: prune_sounding(state)
+  end
 
   defp native_event(state, :device_added, payload) when is_map(payload),
     do: state |> add_devices([Device.from_json(payload)]) |> sync_devices()

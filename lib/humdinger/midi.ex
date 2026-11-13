@@ -91,6 +91,16 @@ defmodule Humdinger.Midi do
     ]
   end
 
+  @doc """
+  Silences and resets every channel in `channels` (default all 16): CC 123
+  and `reset_controllers/1` per channel, one binary per message. For a
+  receiver whose sounding notes aren't known, e.g. after a connection
+  dropped messages or was re-established.
+  """
+  @spec panic(Enumerable.t()) :: [binary()]
+  def panic(channels \\ 1..16),
+    do: Enum.flat_map(channels, &(all_notes_off(&1) ++ reset_controllers(&1)))
+
   @doc "The channel clamped to 1..16."
   @spec channel(integer()) :: channel()
   def channel(channel), do: clamp(channel, 1, 16)

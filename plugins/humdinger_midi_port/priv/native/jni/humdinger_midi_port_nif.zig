@@ -159,6 +159,7 @@ export fn nif_port_send(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.
     return switch (code) {
         0 => erts.ok(env),
         1 => erts.errorTuple(env, erts.atom(env, "no_client")),
+        3 => erts.errorTuple(env, erts.atom(env, "queue_full")),
         else => erts.errorTuple(env, erts.atom(env, "send_failed")),
     };
 }

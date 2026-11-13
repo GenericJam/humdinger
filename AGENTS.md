@@ -559,6 +559,34 @@ centre, CC 1 = 0 and CC 11 = 127 on each channel it used and the current one
 a device is unplugged, the last app leaves the port) forgets its notes.
 Nothing is sent to the port while no app has it open.
 
+Never a stuck note:
+
+- **One source at a time.** A `Humdinger.Player` (phrase playback, Import's
+  "Play out", Output's test note) holds the Engine while it plays
+  (`Engine.hold/2` / `unhold/2`, monitored): a listening engine pauses, its
+  release reaches Output first (`Output.sync/0`), and it listens again when
+  the player finishes, stops or dies. `listen`/`resume` while held only
+  mark that listening should follow. The test note is a Player Output owns,
+  so a tap while it sounds restarts it (300 ms from the last tap).
+- **Output exits** trap and `terminate/2` panics every destination
+  directly. The Engine's `terminate/2` sends its release and syncs; when
+  Output is the one that died nothing can be sent, and Output's own
+  terminate covered it (a `:kill` skips both: the receivers' own rules
+  below remain).
+- **A destination that comes back is reset before any note**: the first
+  app to open the port again, and a USB/Bluetooth output once mob_midi
+  reports it open, get CC 123 + resets on every channel Output has used;
+  FMutate sends its own panic on every (re)connection.
+- **The port never drops silently**: a full writer queue answers
+  `{:error, :queue_full}`, drops the stale queued bytes and refuses until
+  the blocked write finishes; then a `drained` port event makes Output send
+  the note-offs it still knows of, CC 123 and resets, before anything new.
+- **FMutate** treats a dropped (`nosuspend`) MIDI cast as a resync: no more
+  MIDI (`{:fmutate, :midi, :resyncing}`), a full panic retried every 50 ms
+  until it goes through (`:ready`), the connection dropped after 2 s.
+  `design/fmutate/protocol.md` §4.1 now requires FMutate to release a
+  sibling's notes when its node goes (`Reference.Instance` does).
+
 | Row (board `output`) | `detail` |
 |---|---|
 | FMutate (`FMutate A` once connected: the status `name`) | `sibling app · connected · X0X` (firmware), `sibling app · not connected`, `sibling app · not paired` |
@@ -585,9 +613,10 @@ holds:
   `Humdinger.Output.Port.send/1` → `portSend` (a dirty IO NIF whose thread
   stays attached to the JVM) → queued for the port's own writer thread,
   which calls `getOutputPortReceivers()[0].send(bytes, 0, n, timestamp)`, so
-  a client that stops reading can't block the BEAM (a full queue of 512
-  drops). With no app connected it returns `{:error, :no_client}`. JSON from
-  the bridge travels as UTF-8 `byte[]`, not as a JNI String (modified UTF-8).
+  a client that stops reading can't block the BEAM (a full queue of 512:
+  `{:error, :queue_full}` and a `drained` event, above). With no app
+  connected it returns `{:error, :no_client}`. JSON from the bridge travels
+  as UTF-8 `byte[]`, not as a JNI String (modified UTF-8).
   `connections/0` comes from `onDeviceStatusChanged`
   (`getOutputPortOpenCount(0)`).
 - **Device watcher** (`MidiManager.DeviceCallback`) and the device list
@@ -630,6 +659,12 @@ subscribes again.
   over dist: `Humdinger.Output.Port.connections()` is 1 and
   `Humdinger.Output.Port.send(<<0x90, 69, 92>>)` (or `Output.test_note()`)
   shows up as `RECV` lines.
+- A stuck client: `midi_probe.sh <serial> Humdinger 40 10` stops reading
+  for 10 s at the first message. Flood the port over dist
+  (`Output.send_events/1` with a few thousand bends): the probe prints
+  `STALL`, `Output.Port.send/1` answers `{:error, :queue_full}` once the
+  writer is full, and after `RESUME` the probe receives what was in the
+  socket, then the note-offs, CC 123 and resets, then new notes.
 - USB/Bluetooth need hardware: plug a USB-MIDI synth (OTG) or scan for a
   BLE-MIDI one; the `:usb` / `:bt` rows should change at once.
 
