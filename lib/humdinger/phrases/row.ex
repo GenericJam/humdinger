@@ -23,6 +23,7 @@ defmodule Humdinger.Phrases.Row do
     field(:source, :string)
     field(:created_at, :utc_datetime)
     field(:updated_at, :utc_datetime)
+    field(:format, :integer, default: 1)
   end
 
   @fields [
@@ -38,7 +39,8 @@ defmodule Humdinger.Phrases.Row do
     :quantize,
     :source,
     :created_at,
-    :updated_at
+    :updated_at,
+    :format
   ]
 
   @doc false

@@ -4,9 +4,12 @@ defmodule Humdinger.Export do
   (`Humdinger.MusicXml`) and sheet-music PDF (`Humdinger.Export.Pdf`), and
   handing them to the phone's share sheet or print dialog.
 
-  Files go to the export directory, overwritten per phrase name and kind;
-  exports older than a day are removed when a new one is written. On Android
-  that is `cache/exports` next to the app's files directory: the app's
+  Each export gets a directory of its own under the export directory
+  (`exports/<unique>/Bus stop riff.mid`), so two phrases with the same name
+  never overwrite each other's file while a share target is still reading
+  it, and the file keeps the phrase's name. Exports older than a day are
+  removed when a new one is written. On Android the export directory is
+  `cache/exports` next to the app's files directory: the app's
   `FileProvider` (`res/xml/file_provider_paths.xml`, `<cache-path
   path=".">`) can grant other apps access to anything under the cache
   directory.
@@ -29,6 +32,9 @@ defmodule Humdinger.Export do
     pdf: "application/pdf"
   }
   @max_age_s 24 * 60 * 60
+  # A file name component is at most 255 bytes on Android's file systems;
+  # leave room under it.
+  @max_name_bytes 200
 
   @doc "The file's bytes. Options: `clef:`, `rhythm:` (MusicXML, PDF), `note_names:` (PDF)."
   @spec render(Phrase.t(), kind(), keyword()) :: binary()
@@ -41,36 +47,60 @@ defmodule Humdinger.Export do
     do: Pdf.render(phrase, Keyword.take(opts, [:clef, :rhythm, :note_names]))
 
   @doc """
-  Writes the phrase as `kind` into the export directory (or `dir:`), and
-  returns the file's path. Options as `render/3`.
+  Writes the phrase as `kind` into a new directory of its own under the
+  export directory (or `dir:`), and returns the file's path. Options as
+  `render/3`.
   """
   @spec write(Phrase.t(), kind(), keyword()) :: {:ok, Path.t()} | {:error, File.posix()}
   def write(%Phrase{} = phrase, kind, opts \\ []) when is_map_key(@extensions, kind) do
-    dir = Keyword.get_lazy(opts, :dir, &dir/0)
+    root = Keyword.get_lazy(opts, :dir, &dir/0)
+    dir = Path.join(root, unique())
     path = Path.join(dir, file_name(phrase, kind))
 
-    with :ok <- File.mkdir_p(dir),
-         :ok <- remove_stale(dir),
+    with :ok <- File.mkdir_p(root),
+         :ok <- remove_stale(root),
+         :ok <- File.mkdir_p(dir),
          :ok <- File.write(path, render(phrase, kind, opts)) do
       {:ok, path}
     end
   end
 
+  defp unique do
+    "#{System.os_time(:millisecond)}-#{System.unique_integer([:positive])}"
+  end
+
   @doc """
   The file name for a phrase: its name without characters file systems or
-  share targets choke on, plus the extension ("Bus stop riff.mid").
+  share targets choke on, cut on a character boundary to at most
+  #{@max_name_bytes} bytes with the extension ("Bus stop riff.mid").
   """
   @spec file_name(Phrase.t(), kind()) :: String.t()
   def file_name(%Phrase{name: name}, kind) do
+    ext = Map.fetch!(@extensions, kind)
+
     base =
       name
-      |> String.replace(~r{[/\\:*?"<>|\x00-\x1F]}u, "")
+      |> String.replace(~r{[/\\:*?"<>|\x00-\x1F\x7F]}u, "")
       |> String.trim()
       |> String.trim_leading(".")
-      |> String.slice(0, 80)
+      |> take_bytes(@max_name_bytes - byte_size(ext))
+      |> String.trim()
 
     base = if base == "", do: "phrase", else: base
-    base <> Map.fetch!(@extensions, kind)
+    base <> ext
+  end
+
+  # The longest prefix of whole graphemes within `budget` bytes.
+  defp take_bytes(string, budget) do
+    string
+    |> String.graphemes()
+    |> Enum.reduce_while({[], 0}, fn g, {acc, used} ->
+      size = byte_size(g)
+      if used + size <= budget, do: {:cont, {[g | acc], used + size}}, else: {:halt, {acc, used}}
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+    |> IO.iodata_to_binary()
   end
 
   @doc "The MIME type of an export kind."
@@ -98,15 +128,16 @@ defmodule Humdinger.Export do
 
   defp default_dir(nil), do: Path.join(Mob.data_dir(), "exports")
 
-  defp remove_stale(dir) do
+  # Removes exports (each in its own directory) last written over a day ago.
+  defp remove_stale(root) do
     cutoff = System.os_time(:second) - @max_age_s
 
-    with {:ok, files} <- File.ls(dir) do
-      for file <- files,
-          path = Path.join(dir, file),
-          {:ok, %File.Stat{type: :regular, mtime: mtime}} <- [File.stat(path, time: :posix)],
+    with {:ok, entries} <- File.ls(root) do
+      for entry <- entries,
+          path = Path.join(root, entry),
+          {:ok, %File.Stat{mtime: mtime}} <- [File.stat(path, time: :posix)],
           mtime < cutoff,
-          do: File.rm(path)
+          do: File.rm_rf(path)
 
       :ok
     end

@@ -24,7 +24,16 @@ defmodule Humdinger.PhraseScreen do
   1/4 1/8 1/16 Off, Tempo − / + (1 bpm). Actions: "Play out to <the
   destination>" (stop while playing), Save (`Humdinger.Phrases.save/1`;
   "Saved" until the next edit), Export .mid (the share sheet), Discard
-  (asks first when there is something unsaved). Back asks the same.
+  (asks first when there is something unsaved). The header's back asks the
+  same.
+
+  **System Back** (Android's back gesture) can't be intercepted: Mob's
+  router pops the screen without asking it (`Mob.Router`, `{:mob, :back}`).
+  So a screen that leaves any other way than through Discard, back with
+  nothing unsaved, or Hum again saves its phrase as it is in `terminate/2`
+  (and tells `notify:`): a new phrase lands in the Phrases list, edits to a
+  saved one are kept. Work is never lost silently; Discard stays the way
+  to drop it.
 
   **Staff**: `Humdinger.Views.Staff` of `Humdinger.Notation.layout/2`, Clef
   Auto/Treble/Bass, Rhythm As sung / Simpler (1/4), Note names, the key
@@ -37,6 +46,8 @@ defmodule Humdinger.PhraseScreen do
   use Mob.Screen
 
   import Humdinger.Controls
+
+  require Logger
 
   alias Humdinger.{Notation, Phrase, PhraseActions, Phrases, Player, Style}
   alias Humdinger.Views.{Draw, PianoRoll, Staff}
@@ -66,7 +77,8 @@ defmodule Humdinger.PhraseScreen do
         sheet: nil,
         notice: nil,
         notify: Map.get(params, :notify),
-        return_to: Map.get(params, :return_to)
+        return_to: Map.get(params, :return_to),
+        left: false
       )
 
     socket =
@@ -383,10 +395,13 @@ defmodule Humdinger.PhraseScreen do
   def handle_info({:tap, :back}, socket), do: discard(socket)
   def handle_info({:tap, :discard}, socket), do: discard(socket)
 
+  # Recording again is the user's choice to drop this take: not autosaved.
   def handle_info({:tap, :hum_again}, socket) do
     if pid = socket.assigns.return_to, do: send(pid, :hum_again)
     stop(socket)
-    {:noreply, Mob.Socket.pop_to(socket, Humdinger.LiveScreen)}
+
+    {:noreply,
+     socket |> Mob.Socket.assign(:left, true) |> Mob.Socket.pop_to(Humdinger.LiveScreen)}
   end
 
   def handle_info({:tap, {:tab, tab}}, socket),
@@ -563,8 +578,29 @@ defmodule Humdinger.PhraseScreen do
 
   defp leave(socket) do
     stop(socket)
-    socket |> Mob.Socket.assign(:sheet, nil) |> Mob.Socket.pop_screen()
+    socket |> Mob.Socket.assign(sheet: nil, left: true) |> Mob.Socket.pop_screen()
   end
 
   defp stop(socket), do: Player.stop(socket.assigns.player)
+
+  # Popped by system Back (or the app going away) with unsaved work: keep it.
+  @impl true
+  def terminate(_reason, %{assigns: %{left: false, phrase: %Phrase{}} = assigns}) do
+    if dirty?(assigns), do: autosave(assigns)
+    :ok
+  end
+
+  def terminate(_reason, _socket), do: :ok
+
+  defp autosave(%{phrase: phrase, notify: notify}) do
+    case Phrases.save(phrase) do
+      {:ok, _} ->
+        if notify, do: send(notify, :phrases_changed)
+
+      {:error, reason} ->
+        Logger.warning(
+          "Humdinger.PhraseScreen: couldn't keep the phrase on leaving: #{inspect(reason)}"
+        )
+    end
+  end
 end
