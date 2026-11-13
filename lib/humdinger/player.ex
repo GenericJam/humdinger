@@ -2,8 +2,9 @@ defmodule Humdinger.Player do
   @moduledoc """
   Plays notes out through the output (`Humdinger.Output`, or `config
   :humdinger, :output`) at their times: the Phrases list's play buttons,
-  Review's "Play out" and "Play back", Import's "Play out". Humdinger makes
-  no sound itself; the synth at the other end does.
+  Review's "Play out" and "Play back", Import's "Play out", and Output's
+  test note. Humdinger makes no sound itself; the synth at the other end
+  does.
 
   A screen starts its own player with `start_link/1`. It is linked to the
   screen: when the screen goes (popped, crashed) the player stops and sends
@@ -16,14 +17,25 @@ defmodule Humdinger.Player do
   owner gets `{:player, :finished, tag}`; `stop/1` ends early (note-offs, no
   message).
 
+  One source at a time: while it plays, the player holds the Engine
+  (`Humdinger.Engine.hold/2`), which releases the singer's note and stops
+  listening until the player lets go (finished, stopped, or the player gone),
+  then listens again if it was. Playback and the singer never share notes
+  or controllers on a channel. The player waits for Output to have its
+  last note-offs (`sync`) before letting go.
+
   Timing: on every tick the player reads its clock, sends everything due
   and sets a timer for the next event. A late timer only delays the batch;
   nothing is skipped or drifts, because times are measured from the start
   on the clock. Options for tests: `clock:` (a zero-arity function → ms),
-  `output:` (a module with `send_events/1`).
+  `output:` (a module with `send_events/1`, or `{module, server}` for
+  `send_events/2`), `engine:` (the Engine to hold, default `config
+  :humdinger, :engine` else `Humdinger.Engine`; nil for none).
   """
 
   use GenServer
+
+  alias Humdinger.Engine
 
   @typedoc "A note to play; extra keys are ignored."
   @type note :: %{
@@ -83,6 +95,11 @@ defmodule Humdinger.Player do
          Keyword.get_lazy(opts, :output, fn ->
            Application.get_env(:humdinger, :output, Humdinger.Output)
          end),
+       engine:
+         Keyword.get_lazy(opts, :engine, fn ->
+           Application.get_env(:humdinger, :engine, Engine)
+         end),
+       held: false,
        clock: Keyword.get(opts, :clock, fn -> System.monotonic_time(:millisecond) end),
        tag: nil,
        t0: nil,
@@ -94,7 +111,7 @@ defmodule Humdinger.Player do
 
   @impl true
   def handle_call({:play, notes, tag}, _from, state) do
-    state = silence(state)
+    state = state |> silence() |> hold()
 
     state = %{
       state
@@ -107,7 +124,7 @@ defmodule Humdinger.Player do
     {:reply, :ok, advance(state)}
   end
 
-  def handle_call(:stop, _from, state), do: {:reply, :ok, silence(state)}
+  def handle_call(:stop, _from, state), do: {:reply, :ok, finish(state)}
   def handle_call(:playing, _from, state), do: {:reply, state.tag, state}
 
   @impl true
@@ -120,7 +137,7 @@ defmodule Humdinger.Player do
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
 
   @impl true
-  def terminate(_reason, state), do: silence(state)
+  def terminate(_reason, state), do: finish(state)
 
   # Sends everything due, then waits for the next event or finishes.
   defp advance(%{tag: nil} = state), do: state
@@ -133,7 +150,7 @@ defmodule Humdinger.Player do
     case rest do
       [] ->
         send(state.owner, {:player, :finished, state.tag})
-        %{state | tag: nil, pending: [], token: nil}
+        finish(state)
 
       [{t, _} | _] ->
         Process.send_after(self(), {:tick, state.token}, max(ceil(t - elapsed), 0))
@@ -141,10 +158,13 @@ defmodule Humdinger.Player do
     end
   end
 
+  # Silence, then hand the output back to the Engine.
+  defp finish(state), do: state |> silence() |> unhold()
+
   # Note-offs for what's sounding; forget the rest.
   defp silence(state) do
     offs = for m <- Enum.sort(state.sounding), do: {:note_off, m}
-    if offs != [], do: state.output.send_events(offs)
+    if offs != [], do: out(state, offs)
     %{state | tag: nil, pending: [], sounding: MapSet.new(), token: nil}
   end
 
@@ -160,7 +180,45 @@ defmodule Humdinger.Player do
           if MapSet.member?(s, m), do: {[off], MapSet.delete(s, m)}, else: {[], s}
       end)
 
-    if out != [], do: state.output.send_events(out)
+    if out != [], do: out(state, out)
     %{state | sounding: sounding}
+  end
+
+  defp out(%{output: {module, server}}, events), do: module.send_events(events, server)
+  defp out(%{output: module}, events), do: module.send_events(events)
+
+  # Holding is best effort: no Engine (host tests, being restarted) means
+  # there is no singer to keep out.
+  defp hold(%{held: true} = state), do: state
+  defp hold(%{engine: nil} = state), do: state
+
+  defp hold(state) do
+    case GenServer.whereis(state.engine) do
+      nil -> state
+      _pid -> %{state | held: Engine.hold(state.engine, self()) == :ok}
+    end
+  catch
+    :exit, _ -> state
+  end
+
+  defp unhold(%{held: false} = state), do: state
+
+  defp unhold(state) do
+    safely(fn -> sync_output(state) end)
+    safely(fn -> Engine.unhold(state.engine, self()) end)
+    %{state | held: false}
+  end
+
+  # Output or the Engine may be gone (being restarted, or stopping with us).
+  defp safely(fun) do
+    fun.()
+  catch
+    :exit, _ -> :gone
+  end
+
+  defp sync_output(%{output: {module, server}}), do: module.sync(server)
+
+  defp sync_output(%{output: module}) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :sync, 0), do: module.sync()
   end
 end

@@ -15,6 +15,13 @@ defmodule Humdinger.FMutate.Reference.Instance do
 
   Events go to subscribers as plain messages `{:fmutate, 1, inst, event}`.
   The last 64 inputs are kept for inspection (`inputs/1`).
+
+  Notes started by `{:midi, bytes}` are tracked (note on/off, CC 123 per
+  channel). When a subscriber's node goes (its monitor reports
+  `:noconnection`), the sibling can't send the note-offs any more, so the
+  instance releases them itself: a `{:midi, bytes}` input with a note-off
+  for each sounding note and CC 123 on each channel used (§4.1). The
+  reference assumes one sibling sends MIDI at a time.
   """
 
   use GenServer
@@ -55,7 +62,9 @@ defmodule Humdinger.FMutate.Reference.Instance do
       status: Keyword.get(opts, :status, :running),
       sink: Keyword.get(opts, :sink),
       subscribers: %{},
-      inputs: []
+      inputs: [],
+      # {channel 0..15, note} started by {:midi, bytes} and not yet ended.
+      sounding: MapSet.new()
     }
 
     {:ok, state}
@@ -99,10 +108,12 @@ defmodule Humdinger.FMutate.Reference.Instance do
   end
 
   @impl true
-  def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
+  def handle_info({:DOWN, ref, :process, pid, reason}, state) do
     case state.subscribers do
       %{^pid => %{ref: ^ref}} ->
-        {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
+        state = %{state | subscribers: Map.delete(state.subscribers, pid)}
+        state = if reason == :noconnection, do: release_midi(state), else: state
+        {:noreply, state}
 
       _ ->
         {:noreply, state}
@@ -124,10 +135,42 @@ defmodule Humdinger.FMutate.Reference.Instance do
 
   defp cast(payload, state) do
     if input?(payload) do
-      if state.sink, do: send(state.sink, {:fmutate_input, payload})
-      %{state | inputs: Enum.take([payload | state.inputs], @history)}
+      state |> deliver(payload) |> track(payload)
     else
       state
+    end
+  end
+
+  defp deliver(state, payload) do
+    if state.sink, do: send(state.sink, {:fmutate_input, payload})
+    %{state | inputs: Enum.take([payload | state.inputs], @history)}
+  end
+
+  defp track(state, {:midi, bytes}),
+    do: %{state | sounding: Enum.reduce(MobMidi.parse(bytes), state.sounding, &track_event/2)}
+
+  defp track(state, _payload), do: state
+
+  defp track_event(%{type: :note_on, channel: ch, note: note}, set),
+    do: MapSet.put(set, {ch, note})
+
+  defp track_event(%{type: :note_off, channel: ch, note: note}, set),
+    do: MapSet.delete(set, {ch, note})
+
+  defp track_event(%{type: :cc, channel: ch, controller: 123}, set),
+    do: MapSet.reject(set, &(elem(&1, 0) == ch))
+
+  defp track_event(_event, set), do: set
+
+  # The sibling's node is gone: release what its MIDI left sounding.
+  defp release_midi(%{sounding: sounding} = state) do
+    if MapSet.size(sounding) == 0 do
+      state
+    else
+      offs = for {ch, note} <- Enum.sort(sounding), do: <<0x80 + ch, note, 64>>
+      channels = sounding |> Enum.map(&elem(&1, 0)) |> Enum.uniq() |> Enum.sort()
+      all_off = for ch <- channels, do: <<0xB0 + ch, 123, 0>>
+      deliver(%{state | sounding: MapSet.new()}, {:midi, IO.iodata_to_binary(offs ++ all_off)})
     end
   end
 

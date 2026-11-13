@@ -29,6 +29,24 @@ defmodule Humdinger.OutputTest do
     def send(bytes), do: Humdinger.OutputTest.report_from_double({:port, bytes})
   end
 
+  # A port whose writer is stuck behind a client: refuses while the test has
+  # set {RefusingPort, test} in persistent_term.
+  defmodule RefusingPort do
+    def available?, do: true
+    def connections, do: 1
+
+    def send(bytes) do
+      [test | _] = Process.get(:"$callers")
+
+      if :persistent_term.get({__MODULE__, test}, false) do
+        Humdinger.OutputTest.report_from_double({:refused, bytes})
+        {:error, :queue_full}
+      else
+        Humdinger.OutputTest.report_from_double({:port, bytes})
+      end
+    end
+  end
+
   # A registered FMutate process, so Output can monitor it and see it restart.
   defmodule FMutateProc do
     def start(status), do: Agent.start(fn -> status end, name: __MODULE__)
@@ -114,8 +132,13 @@ defmodule Humdinger.OutputTest do
     })
   end
 
+  # Plugs a device in; mob_midi reports its output open unless `opened: false`.
   defp plug(output, id, type, opts \\ []) do
     send(output, {:humdinger_midi, :device_added, device_json(id, type, opts)})
+
+    if Keyword.get(opts, :opened, true),
+      do: send(output, {:midi, :opened, %{device: id, direction: :output}})
+
     Output.destinations(output)
   end
 
@@ -276,6 +299,108 @@ defmodule Humdinger.OutputTest do
     assert System.monotonic_time(:millisecond) - started >= 300
   end
 
+  test "a second test note restarts the first instead of being cut short by it" do
+    output = start()
+    Output.test_note(output)
+    assert_receive {:port, <<0x90, 69, 92>>}, 1_000
+    Process.sleep(150)
+    second = System.monotonic_time(:millisecond)
+    Output.test_note(output)
+
+    # Struck again: the first ends, the second starts, and it lasts its own 300 ms.
+    assert_receive {:port, <<0x80, 69, 64>>}, 1_000
+    assert_receive {:port, <<0x90, 69, 92>>}, 1_000
+    assert_receive {:port, <<0x80, 69, 64>>}, 1_000
+    assert System.monotonic_time(:millisecond) - second >= 300
+    refute_receive {:port, _}, 400
+  end
+
+  describe "never leaving a receiver stuck" do
+    test "stopping Output silences what it left sounding" do
+      output = start()
+      Output.send_events([{:note_on, 60, 100}, {:pitch_bend, 900}], output)
+      flush_port()
+
+      Process.unlink(output)
+      :ok = GenServer.stop(output, :shutdown)
+
+      assert port_messages() ==
+               MapSet.new([
+                 <<0x80, 60, 64>>,
+                 <<0xB0, 123, 0>> | Humdinger.Midi.reset_controllers(1)
+               ])
+    end
+
+    test "the first app to open the port again starts from silence, before any note" do
+      output = start()
+      Output.configure([channel: 2], output)
+      Output.send_events([{:note_on, 60, 100}], output)
+      send(output, {:humdinger_midi, :port, ~s({"connections":0})})
+      flush_port()
+
+      send(output, {:humdinger_midi, :port, ~s({"connections":1})})
+      Output.send_events([{:note_on, 64, 100}], output)
+
+      panic = Humdinger.Midi.panic([2])
+      for bytes <- panic, do: assert_receive({:port, ^bytes})
+      assert_receive {:port, <<0x91, 64, 100>>}
+    end
+
+    test "a port that refuses bytes gets nothing until it drains, then the releases first" do
+      key = {RefusingPort, self()}
+      on_exit(fn -> :persistent_term.erase(key) end)
+      output = start(port: RefusingPort)
+      Output.send_events([{:note_on, 60, 100}], output)
+      assert_receive {:port, <<0x90, 60, 100>>}
+
+      :persistent_term.put(key, true)
+      Output.send_events([{:note_off, 60}, {:note_on, 62, 100}], output)
+      assert_receive {:refused, <<0x80, 60, 64>>}
+      # Refused once, it isn't sent to again until it has drained.
+      refute_receive {:refused, _}
+      :persistent_term.put(key, false)
+      Output.send_events([{:note_on, 64, 100}], output)
+      refute_receive {:port, _}
+
+      send(output, {:humdinger_midi, :port, ~s({"connections":1,"drained":true})})
+      assert_receive {:port, <<0x80, 60, 64>>}
+
+      for bytes <- Humdinger.Midi.panic([1]), do: assert_receive({:port, ^bytes})
+      Output.send_events([{:note_on, 65, 100}], output)
+      assert_receive {:port, <<0x90, 65, 100>>}
+    end
+
+    test "FMutate resynchronising gets no MIDI, and its notes are its own to release" do
+      output = start()
+      connect_fmutate(output)
+      Output.send_events([{:note_on, 60, 100}], output)
+      assert_receive {:fmutate, <<0x90, 60, 100>>}
+
+      send(output, {:fmutate, :midi, :resyncing})
+      Output.send_events([{:note_off, 60}, {:note_on, 62, 100}], output)
+      Output.set_enabled(:fmutate, false, output)
+      refute_receive {:fmutate, _}
+
+      Output.set_enabled(:fmutate, true, output)
+      send(output, {:fmutate, :midi, :ready})
+      Output.send_events([{:note_on, 64, 100}], output)
+      assert_receive {:fmutate, <<0x90, 64, 100>>}
+    end
+
+    test "a device whose output opens is reset before its first note" do
+      output = start()
+      plug(output, 7, "usb", opened: false)
+      Output.send_events([{:note_on, 60, 100}], output)
+      refute_receive {:device, 7, _}
+
+      send(output, {:midi, :opened, %{device: 7, direction: :output}})
+      Output.send_events([{:note_on, 62, 100}], output)
+
+      for bytes <- Humdinger.Midi.panic([1]), do: assert_receive({:device, 7, ^bytes})
+      assert_receive {:device, 7, <<0x90, 62, 100>>}
+    end
+  end
+
   describe "subscribe/1" do
     test "sends the destinations at once and on every change" do
       output = start()
@@ -425,7 +550,7 @@ defmodule Humdinger.OutputTest do
     @tag :capture_log
     test "a device that fails to open is shown and not sent to" do
       output = start()
-      plug(output, 7, "usb", name: "Volca Keys")
+      plug(output, 7, "usb", name: "Volca Keys", opened: false)
 
       send(
         output,

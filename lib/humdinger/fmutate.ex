@@ -23,10 +23,18 @@ defmodule Humdinger.FMutate do
       (`:booting | :running | :crashed | :safe_mode | {:slow, pct}`, or nil
       before the first).
     * `subscribe(pid)`: `pid` (monitored) gets `{:fmutate, :status, status}`
-      now and on every change.
+      now and on every change, and `{:fmutate, :midi, :resyncing | :ready}`
+      around a resync (below).
     * `send_midi(bytes)`: raw MIDI into FMutate's firmware (`{:midi, bytes}`);
-      dropped while not connected, and when the connection's buffer is full
-      (late notes are worse than lost ones).
+      dropped while not connected. A message the connection drops (its
+      buffer is full: late notes are worse than lost ones) may have been a
+      note-off, so MIDI stops there: subscribers get `:resyncing`, MIDI is
+      refused, and a panic (CC 123 and the controller resets on all 16
+      channels, `Humdinger.Midi.panic/0`) is retried every 50 ms until it
+      goes through (`:ready`). After 2 s of failures the connection is
+      dropped; FMutate releases the notes of a sibling whose node goes
+      (protocol §4.1). Every (re)connection starts with that panic, before
+      any other MIDI.
     * `forget/0`: tells FMutate (when connected), drops the connection,
       revokes the cookie on this side and deletes the pairing.
     * `install/1`: the hand-off from `Humdinger.FMutate.Pairing`: store a new
@@ -44,6 +52,11 @@ defmodule Humdinger.FMutate do
   require Logger
 
   @backoff [1_000, 2_000, 5_000, 10_000, 30_000]
+  # After a dropped MIDI message: CC 123 and controller resets on every
+  # channel, retried every 50 ms, 40 times (2 s), then the connection goes.
+  @panic IO.iodata_to_binary(Humdinger.Midi.panic())
+  @resync_ms 50
+  @resync_tries 40
   # Mob.Dist starts the development node 3 s after boot and waits up to 10 s
   # for the Mac's epmd; the link waits that long (or until the node is up)
   # before starting its own.
@@ -129,7 +142,10 @@ defmodule Humdinger.FMutate do
       # Hosts from mDNS that failed since the last connection.
       tried: MapSet.new(),
       attempt: 0,
-      timer: nil
+      timer: nil,
+      # nil, or the failed panics since MIDI was dropped (see the moduledoc).
+      resync: nil,
+      resync_timer: nil
     }
 
     {:ok, state, {:continue, {:load, Keyword.get_lazy(opts, :grace_ms, &default_grace/0)}}}
@@ -184,7 +200,10 @@ defmodule Humdinger.FMutate do
     reply = store.delete(store_opts)
 
     {:reply, reply,
-     notify(%{state | record: nil, conn: nil, node: nil, info: nil, attempt: 0}, state)}
+     state
+     |> end_resync()
+     |> Map.merge(%{record: nil, conn: nil, node: nil, info: nil, attempt: 0})
+     |> notify(state)}
   end
 
   def handle_call({:install, record}, _from, %{store: {store, store_opts}} = state) do
@@ -196,7 +215,7 @@ defmodule Humdinger.FMutate do
         if state.node && Atom.to_string(state.node) != record.node,
           do: state.transport.revoke(state.node)
 
-        state = %{state | record: record, conn: nil, info: nil, attempt: 0}
+        state = end_resync(%{state | record: record, conn: nil, info: nil, attempt: 0})
         {:reply, :ok, state |> connect() |> notify(old)}
 
       {:error, _} = error ->
@@ -205,9 +224,18 @@ defmodule Humdinger.FMutate do
   end
 
   @impl true
+  def handle_cast({:midi, _bytes}, %{resync: n} = state) when n != nil, do: {:noreply, state}
+
   def handle_cast({:midi, bytes}, %{conn: conn} = state) when conn != nil do
-    state.transport.cast(conn, state.record.inst, {:midi, bytes})
-    {:noreply, state}
+    case state.transport.cast(conn, state.record.inst, {:midi, bytes}) do
+      :dropped ->
+        Logger.warning("FMutate: MIDI dropped (connection busy); resynchronising")
+        notify_midi(state, :resyncing)
+        {:noreply, schedule_resync(%{state | resync: 0})}
+
+      _ok ->
+        {:noreply, state}
+    end
   end
 
   def handle_cast({:midi, _bytes}, state), do: {:noreply, state}
@@ -234,6 +262,9 @@ defmodule Humdinger.FMutate do
     record = remember_firmware(state, firmware)
     # Subscribed only now, so FMutate's first status event can't overtake this.
     state.transport.cast(conn, record.inst, {:subscribe, self(), [:status]})
+    # FMutate may still hold notes from before (a dropped connection, a
+    # restarted Humdinger): silence it before any other MIDI.
+    _ = state.transport.cast(conn, record.inst, {:midi, @panic})
     info = %{name: record.name, firmware: record.firmware, device: record.device, emulator: nil}
 
     state = %{
@@ -247,8 +278,29 @@ defmodule Humdinger.FMutate do
         tried: MapSet.new()
     }
 
-    {:noreply, notify(state, old)}
+    {:noreply, state |> end_resync() |> notify(old)}
   end
+
+  def handle_info(:resync, %{resync: n, conn: conn} = state) when n != nil and conn != nil do
+    state = %{state | resync_timer: nil}
+
+    case state.transport.cast(conn, state.record.inst, {:midi, @panic}) do
+      :ok ->
+        {:noreply, end_resync(state)}
+
+      _dropped when n + 1 >= @resync_tries ->
+        Logger.warning("FMutate: still can't send MIDI; dropping the connection")
+        old = state
+        state.transport.disconnect(conn)
+        state = end_resync(%{state | conn: nil, info: nil})
+        {:noreply, state |> notify(old) |> retry()}
+
+      _dropped ->
+        {:noreply, schedule_resync(%{state | resync: n + 1})}
+    end
+  end
+
+  def handle_info(:resync, state), do: {:noreply, %{state | resync_timer: nil}}
 
   def handle_info({:connect_failed, pid, reason}, %{connecting: {pid, _}} = state) do
     Logger.debug("FMutate: connect failed: #{inspect(reason)}")
@@ -276,7 +328,7 @@ defmodule Humdinger.FMutate do
   def handle_info({:nodedown, node, _info}, %{conn: %{node: node}} = state) do
     old = state
     state.transport.disconnect(state.conn)
-    state = %{state | conn: nil, info: nil}
+    state = end_resync(%{state | conn: nil, info: nil})
     {:noreply, state |> notify(old) |> retry()}
   end
 
@@ -475,6 +527,21 @@ defmodule Humdinger.FMutate do
 
     state
   end
+
+  defp schedule_resync(state),
+    do: %{state | resync_timer: Process.send_after(self(), :resync, @resync_ms)}
+
+  # MIDI flows again (or the connection it was about is gone).
+  defp end_resync(%{resync: nil} = state), do: state
+
+  defp end_resync(state) do
+    if state.resync_timer, do: Process.cancel_timer(state.resync_timer)
+    notify_midi(state, :ready)
+    %{state | resync: nil, resync_timer: nil}
+  end
+
+  defp notify_midi(state, what),
+    do: for(pid <- Map.keys(state.subscribers), do: send(pid, {:fmutate, :midi, what}))
 
   defp default_grace do
     if Application.get_env(:humdinger, :fmutate_dev_node) && System.get_env("MOB_BEAMS_DIR") &&

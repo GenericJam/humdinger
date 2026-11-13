@@ -8,6 +8,10 @@
 // Build and run with tools/midi_probe.sh. It runs under app_process, so it
 // has no Context: it reaches the platform MidiManager through its (hidden)
 // IMidiManager constructor, which app_process code may call.
+//
+// A third argument, stall seconds, makes it a stuck client: it stops reading
+// on the first message for that long (prints STALL / RESUME), so the app's
+// writer fills up behind it.
 import android.media.midi.MidiDevice;
 import android.media.midi.MidiDeviceInfo;
 import android.media.midi.MidiManager;
@@ -25,6 +29,8 @@ public final class MidiProbe {
     public static void main(String[] args) throws Exception {
         String wanted = args.length > 0 ? args[0] : "Humdinger";
         long seconds = args.length > 1 ? Long.parseLong(args[1]) : 30;
+        final long stallMs = args.length > 2 ? Long.parseLong(args[2]) * 1000 : 0;
+        final boolean[] stalled = {false};
 
         MidiManager mm = midiManager();
         MidiDeviceInfo info = null;
@@ -65,6 +71,16 @@ public final class MidiProbe {
         port.connect(new MidiReceiver() {
             @Override
             public void onSend(byte[] msg, int offset, int count, long timestamp) {
+                if (stallMs > 0 && !stalled[0]) {
+                    stalled[0] = true;
+                    say("STALL " + stallMs + "ms");
+                    try {
+                        Thread.sleep(stallMs);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    say("RESUME");
+                }
                 StringBuilder line = new StringBuilder("RECV");
                 for (int i = offset; i < offset + count; i++) {
                     line.append(String.format(" %02x", msg[i] & 0xff));

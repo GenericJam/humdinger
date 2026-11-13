@@ -54,6 +54,9 @@ defmodule Humdinger.Test.FakeOutput do
 
   def configure(opts), do: Listener.tell({:configure, opts})
 
+  # Messages to the listener are sent directly, so there is nothing to wait for.
+  def sync, do: :ok
+
   def destinations, do: get(& &1.destinations)
 
   def subscribe(pid) do
