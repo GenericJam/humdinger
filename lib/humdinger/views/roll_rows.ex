@@ -122,7 +122,10 @@ defmodule Humdinger.Views.RollRows do
 
   @doc """
   Ops for trace runs: a path per run of two or more points, a dot for a
-  lone point; runs entirely outside the `w`×`h` canvas are dropped.
+  lone point. Runs are cut at the `w`×`h` canvas edges (segments crossing
+  an edge end on it, parts outside are dropped), so nothing is drawn
+  outside the canvas: Android's canvas would otherwise pin far-off points
+  to its edge.
   """
   @spec trace_ops([[Draw.point()]], number(), number(), keyword()) :: [map()]
   def trace_ops(runs, w, h, opts) do
@@ -130,14 +133,76 @@ defmodule Humdinger.Views.RollRows do
     style = [color: Style.text(), width: width, cap: :round, join: :round]
     style = if o = opts[:opacity], do: Keyword.put(style, :opacity, o), else: style
 
-    for run <- runs, visible?(run, w, h, width) do
-      case run do
+    for run <- runs, piece <- clip_run(run, w, h), visible?(piece, w, h, width) do
+      case piece do
         [{x, y}] ->
           circle(x, y, width / 2, [{:fill, true} | style])
 
         pts ->
           path(pts, style)
       end
+    end
+  end
+
+  @doc "A polyline cut to the `w`×`h` box: the pieces inside it, in order."
+  @spec clip_run([Draw.point()], number(), number()) :: [[Draw.point()]]
+  def clip_run([{x, y}], w, h) do
+    if x >= 0 and x <= w and y >= 0 and y <= h, do: [[{x, y}]], else: []
+  end
+
+  def clip_run(points, w, h) do
+    {pieces, current} =
+      points
+      |> Enum.chunk_every(2, 1, :discard)
+      |> Enum.reduce({[], []}, fn [a, b], acc -> add_segment(acc, clip_segment(a, b, w, h)) end)
+
+    pieces |> close(current) |> Enum.reverse() |> Enum.map(&Enum.dedup/1)
+  end
+
+  defp add_segment({pieces, current}, nil), do: {close(pieces, current), []}
+
+  defp add_segment({pieces, current}, {p, q, b_inside?}) do
+    current = if current == [], do: [p, q], else: current ++ [q]
+    if b_inside?, do: {pieces, current}, else: {close(pieces, current), []}
+  end
+
+  defp close(pieces, []), do: pieces
+  defp close(pieces, current), do: [current | pieces]
+
+  defp clip_edge({p, q}, acc) when p == 0, do: if(q < 0, do: {:halt, nil}, else: {:cont, acc})
+
+  defp clip_edge({p, q}, {t0, t1}) do
+    r = q / p
+
+    cond do
+      p < 0 and r > t1 -> {:halt, nil}
+      p > 0 and r < t0 -> {:halt, nil}
+      p < 0 -> {:cont, {max(t0, r), t1}}
+      true -> {:cont, {t0, min(t1, r)}}
+    end
+  end
+
+  # Liang–Barsky: the part of a→b inside the box, and whether b is inside.
+  defp clip_segment({x0, y0} = a, {x1, y1} = b, w, h) do
+    dx = x1 - x0
+    dy = y1 - y0
+
+    result =
+      Enum.reduce_while(
+        [{-dx, x0}, {dx, w - x0}, {-dy, y0}, {dy, h - y0}],
+        {0.0, 1.0},
+        &clip_edge/2
+      )
+
+    case result do
+      nil ->
+        nil
+
+      {t0, t1} ->
+        at = fn t -> {Draw.r1(x0 + t * dx), Draw.r1(y0 + t * dy)} end
+        p = if t0 == 0.0, do: a, else: at.(t0)
+        q = if t1 == 1.0, do: b, else: at.(t1)
+        {p, q, t1 == 1.0}
     end
   end
 

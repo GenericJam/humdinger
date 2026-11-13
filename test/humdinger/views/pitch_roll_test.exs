@@ -126,7 +126,8 @@ defmodule Humdinger.Views.PitchRollTest do
       [path] = ops(%{trace: [{5000, 60}, {7000, 60}, {9000, 60}]}) |> trace_paths()
 
       assert [[x0, _] | _] = path.points
-      assert x0 < 0
+      # Cut at the edge, so the line starts exactly on it.
+      assert x0 == 0
     end
   end
 

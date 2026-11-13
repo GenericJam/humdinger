@@ -138,11 +138,19 @@ defmodule Humdinger.Views.PitchRoll do
       corner = max(RollRows.inset(y, h, @radius), RollRows.inset(y + @block_h, h, @radius))
       left = max(x1, corner)
 
+      # Cut at the top and bottom edges rather than drawing past them.
+      top = max(y, 0)
+      bottom = min(y + @block_h, h)
+
       [
-        rect(Draw.r1(left), Draw.r1(y), Draw.r1(max(x2 - left, 2)), @block_h,
+        rect(
+          Draw.r1(left),
+          Draw.r1(top),
+          Draw.r1(max(min(x2, w) - left, 2)),
+          Draw.r1(bottom - top),
           color: Style.pitch_color(m),
           fill: true,
-          radius: 5,
+          radius: min(5, (bottom - top) / 2),
           opacity: if(end_ms, do: 0.55, else: 1.0)
         )
       ]
