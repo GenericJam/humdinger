@@ -136,6 +136,10 @@ FMutate A · ch 1"}`); `state` picks the buttons. Taps arrive at `owner` as
 `{:background, :pause | :resume | :record | :record_stop | :stop}`, or
 `{:background, :failed}` if Android refused the service after `start`.
 The buttons only report: the owner acts and then `update/1`s or `stop/0`s.
+The owner is monitored: when it exits the service stops (a dead owner
+gets `{:error, :owner_dead}`). `stop/0` right after `start` is safe: the
+service stops as soon as it has reached the foreground (stopping it before
+crashes the app on Android).
 Tests: `Fake.background/0` (`%{owner, notice} | nil`),
 `Fake.tap_background(action)`.
 
@@ -779,6 +783,12 @@ How to check it:
   app's uid through `run-as`, the path a tap in the shade takes),
   listening from the background, update and stop.
   `Humdinger.Audio.Native.info/0` reports the stream and delivery counters.
+- Device, the service's lifecycle: `SERIAL=<serial> mix run --no-start
+  scripts/background_check.exs` (grant POST_NOTIFICATIONS on Android 13+):
+  20 × start then immediate stop, start/stop/start, 30 updates then stop,
+  owner death, a dead owner; each checks the notification list, the app's
+  pid and logcat. The build before these fixes crashed on Android 15
+  (`ForegroundServiceDidNotStartInTimeException`) at the first check.
 
 ## FMutate link
 
