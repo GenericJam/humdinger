@@ -59,6 +59,18 @@ defmodule Humdinger.FirstRunScreenTest do
     assert_every_tap_held(view)
   end
 
+  test "a microphone granted before (the engine listens) isn't asked for again" do
+    :ok = Engine.listen()
+    view = mount_screen(FirstRunScreen, %{return_to: self()})
+    assert assigns(view).mic == :granted
+    assert "Mimi can hear you" in texts(view)
+    refute :allow_mic in tap_tags(view)
+    assert_every_tap_held(view)
+
+    view = render_info(view, {:tap, :next})
+    assert assigns(view).step == :headphones
+  end
+
   test "a refused microphone offers Settings and another try" do
     view = mount_screen(FirstRunScreen)
     view = render_info(view, {:permission, :microphone, :denied})
