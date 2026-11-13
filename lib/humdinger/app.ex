@@ -3,6 +3,11 @@ defmodule Humdinger.App do
 
   use Mob.App
 
+  alias Humdinger.FMutate
+
+  # The development node mob.connect attaches to (Mob.Dist, Android).
+  @dev_node :"humdinger_android@127.0.0.1"
+
   @impl Mob.App
   def navigation(_platform) do
     stack(:main, root: Humdinger.LiveScreen)
@@ -34,7 +39,12 @@ defmodule Humdinger.App do
     # Humdinger is held in portrait, like a phone normally is.
     Mob.Device.lock_orientation(:portrait)
     Mob.Screen.start_root(Humdinger.LiveScreen)
-    Mob.Dist.ensure_started(node: :"humdinger_android@127.0.0.1", cookie: :mob_secret)
+
+    # The FMutate link: its port mapper has to be in place before any
+    # distribution starts (including Mob.Dist's development node below).
+    :ok = FMutate.Transport.setup(dev_node: @dev_node)
+    {:ok, _} = FMutate.Supervisor.start_link()
+    Mob.Dist.ensure_started(node: @dev_node, cookie: :mob_secret)
   end
 
   # Returns the path to the migrations directory for the current environment.

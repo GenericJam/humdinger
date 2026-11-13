@@ -16,3 +16,9 @@ config :humdinger, device_calls: config_env() != :test
 # The microphone: the hum_audio NIF on the phone, a scripted fake in host tests.
 config :humdinger,
   audio: if(config_env() == :test, do: Humdinger.Audio.Fake, else: Humdinger.Audio.Native)
+
+# Host tests keep secure-store values (the FMutate pairing) in a scratch
+# directory instead of the developer's data dir.
+if config_env() == :test do
+  config :mob_secure_store, dir: Path.join(System.tmp_dir!(), "humdinger_test_secure_store")
+end

@@ -45,7 +45,15 @@ config :mob_dev,
 # mob_midi: USB-MIDI and Bluetooth-MIDI output (Output screen).
 # mob_camera + mob_scanner: scanning FMutate's pairing QR code (mob_scanner
 # needs mob_camera, which owns the :camera permission).
-config :mob, :plugins, [:mob_midi, :mob_camera, :mob_scanner]
+# mob_secure_store: the FMutate pairing (cookie, client key) in the Android
+# Keystore / iOS Keychain.
+config :mob, :plugins, [:mob_midi, :mob_camera, :mob_scanner, :mob_secure_store]
+
+# mob_secure_store isn't released yet, so its checkout carries no signature
+# for the trust gate below. It is a git dependency pinned to a commit (mix.lock)
+# of the same first-party repo; once it is on Hex, drop this line and add it
+# to :trusted_plugins with the shared release key like the others.
+config :mob, :acknowledge_unsafe_plugins, [:mob_secure_store]
 
 # Trust gate for the first-party plugins. Each is signed in CI with the shared
 # mob release key; this is that key's public fingerprint. The build refuses an

@@ -1,0 +1,431 @@
+defmodule Humdinger.FMutate do
+  @moduledoc """
+  The link to the paired FMutate: keeps the distribution connection up and
+  carries Humdinger's MIDI to it (`design/fmutate/protocol.md`).
+
+  Long-lived (started from `App.on_start`), so it keeps going while the singer
+  plays FMutate in the foreground. On start it loads the pairing
+  (`Humdinger.FMutate.Store`) and connects (`Humdinger.FMutate.Transport`).
+  Once connected it subscribes to FMutate's `:status` and asks for its
+  firmware list (`{:list_firmware}`) for the name the boards show ("X0X").
+
+  When the connection drops or can't be made it retries with backoff (1, 2,
+  5, 10, then every 30 s). For an FMutate on another phone it also looks it
+  up over mDNS from the second failed attempt, and follows a new address (the
+  same certificate fingerprint and instance) without pairing again.
+
+  ## API
+
+    * `status/0`: `:unpaired | :disconnected | {:connected, %{name, firmware,
+      device, emulator}}`. `emulator` is FMutate's last `:status` event
+      (`:booting | :running | :crashed | :safe_mode | {:slow, pct}`, or nil
+      before the first).
+    * `subscribe(pid)`: `pid` (monitored) gets `{:fmutate, :status, status}`
+      now and on every change.
+    * `send_midi(bytes)`: raw MIDI into FMutate's firmware (`{:midi, bytes}`);
+      dropped while not connected, and when the connection's buffer is full
+      (late notes are worse than lost ones).
+    * `forget/0`: tells FMutate (when connected), drops the connection,
+      revokes the cookie on this side and deletes the pairing.
+    * `install/1`: the hand-off from `Humdinger.FMutate.Pairing`: store a new
+      pairing and connect to it.
+    * `reconnect/0`: retry now (e.g. when the app returns to the foreground).
+
+  Every function takes the server as an optional last argument (tests run
+  their own).
+  """
+
+  use GenServer
+
+  alias Humdinger.FMutate.{Discovery, Record, Store, Transport}
+
+  require Logger
+
+  @backoff [1_000, 2_000, 5_000, 10_000, 30_000]
+  # Mob.Dist starts the development node 3 s after boot and waits up to 10 s
+  # for the Mac's epmd; the link waits that long before starting its own.
+  @dev_grace 15_000
+  @call_timeout 5_000
+
+  @type info :: %{
+          name: String.t() | nil,
+          firmware: String.t() | nil,
+          device: String.t() | nil,
+          emulator: term()
+        }
+  @type status :: :unpaired | :disconnected | {:connected, info()}
+
+  @doc """
+  Options (for tests): `:name`, `:store` (`{module, opts}`, default
+  `{Humdinger.FMutate.Store, []}`), `:transport` (default
+  `Humdinger.FMutate.Transport`), `:discovery` (a function of browse options,
+  default `Humdinger.FMutate.Discovery.browse/1`), `:backoff` (ms list, the
+  last repeats), `:grace_ms` (delay before the first connection when the link
+  would start distribution itself).
+  """
+  @spec start_link(keyword()) :: GenServer.on_start()
+  def start_link(opts \\ []) do
+    case Keyword.get(opts, :name, __MODULE__) do
+      nil -> GenServer.start_link(__MODULE__, opts)
+      name -> GenServer.start_link(__MODULE__, opts, name: name)
+    end
+  end
+
+  @doc "The link's status."
+  @spec status(GenServer.server()) :: status()
+  def status(server \\ __MODULE__), do: GenServer.call(server, :status)
+
+  @doc "Sends `{:fmutate, :status, status}` to `pid` now and on every change."
+  @spec subscribe(pid(), GenServer.server()) :: :ok
+  def subscribe(pid \\ self(), server \\ __MODULE__),
+    do: GenServer.call(server, {:subscribe, pid})
+
+  @doc "Stops status messages to `pid`."
+  @spec unsubscribe(pid(), GenServer.server()) :: :ok
+  def unsubscribe(pid \\ self(), server \\ __MODULE__),
+    do: GenServer.call(server, {:unsubscribe, pid})
+
+  @doc "Sends raw MIDI to FMutate; dropped while not connected."
+  @spec send_midi(binary(), GenServer.server()) :: :ok
+  def send_midi(bytes, server \\ __MODULE__) when is_binary(bytes),
+    do: GenServer.cast(server, {:midi, bytes})
+
+  @doc "Forgets the pairing (see the moduledoc). `{:error, reason}` if the store couldn't delete it."
+  @spec forget(GenServer.server()) :: :ok | {:error, term()}
+  def forget(server \\ __MODULE__), do: GenServer.call(server, :forget)
+
+  @doc "Stores a new pairing and connects to it."
+  @spec install(Record.t(), GenServer.server()) :: :ok | {:error, term()}
+  def install(%Record{} = record, server \\ __MODULE__),
+    do: GenServer.call(server, {:install, record})
+
+  @doc "Retries the connection now if paired and not connected."
+  @spec reconnect(GenServer.server()) :: :ok
+  def reconnect(server \\ __MODULE__), do: GenServer.cast(server, :reconnect)
+
+  @impl true
+  def init(opts) do
+    :ok = :net_kernel.monitor_nodes(true, node_type: :all)
+
+    state = %{
+      store: Keyword.get(opts, :store, {Store, []}),
+      transport: Keyword.get(opts, :transport, Transport),
+      discovery: Keyword.get(opts, :discovery, &Discovery.browse/1),
+      backoff: Keyword.get(opts, :backoff, @backoff),
+      record: nil,
+      conn: nil,
+      # FMutate's node atom once connected, kept after a disconnect so
+      # forget/0 can revoke its cookie.
+      node: nil,
+      info: nil,
+      subscribers: %{},
+      connecting: nil,
+      looking: nil,
+      attempt: 0,
+      timer: nil
+    }
+
+    {:ok, state, {:continue, {:load, Keyword.get_lazy(opts, :grace_ms, &default_grace/0)}}}
+  end
+
+  @impl true
+  def handle_continue({:load, grace}, %{store: {store, store_opts}} = state) do
+    case store.load(store_opts) do
+      {:ok, record} ->
+        delay = if Node.alive?(), do: 0, else: grace
+        {:noreply, schedule(%{state | record: record}, delay)}
+
+      :none ->
+        {:noreply, state}
+
+      {:error, reason} ->
+        Logger.error("FMutate: can't read the pairing: #{inspect(reason)}")
+        {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_call(:status, _from, state), do: {:reply, status_of(state), state}
+
+  def handle_call({:subscribe, pid}, _from, state) do
+    state =
+      if Map.has_key?(state.subscribers, pid),
+        do: state,
+        else: put_in(state.subscribers[pid], Process.monitor(pid))
+
+    send(pid, {:fmutate, :status, status_of(state)})
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:unsubscribe, pid}, _from, state) do
+    {ref, subscribers} = Map.pop(state.subscribers, pid)
+    if ref, do: Process.demonitor(ref, [:flush])
+    {:reply, :ok, %{state | subscribers: subscribers}}
+  end
+
+  def handle_call(:forget, _from, %{store: {store, store_opts}} = state) do
+    # A call, so FMutate has dropped the pairing before the connection goes
+    # (its answer may be cut off by that revocation: either is fine).
+    if state.conn,
+      do: state.transport.call(state.conn, state.record.inst, {:unpair, node()}, @call_timeout)
+
+    state = drop(state)
+    state.transport.revoke(state.node)
+    reply = store.delete(store_opts)
+
+    {:reply, reply,
+     notify(%{state | record: nil, conn: nil, node: nil, info: nil, attempt: 0}, state)}
+  end
+
+  def handle_call({:install, record}, _from, %{store: {store, store_opts}} = state) do
+    case store.save(record, store_opts) do
+      :ok ->
+        old = state
+        state = drop(state)
+
+        if state.node && Atom.to_string(state.node) != record.node,
+          do: state.transport.revoke(state.node)
+
+        state = %{state | record: record, conn: nil, info: nil, attempt: 0}
+        {:reply, :ok, state |> connect() |> notify(old)}
+
+      {:error, _} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  @impl true
+  def handle_cast({:midi, bytes}, %{conn: conn} = state) when conn != nil do
+    state.transport.cast(conn, state.record.inst, {:midi, bytes})
+    {:noreply, state}
+  end
+
+  def handle_cast({:midi, _bytes}, state), do: {:noreply, state}
+
+  def handle_cast(:reconnect, %{record: record, conn: nil, connecting: nil} = state)
+      when record != nil do
+    {:noreply, state |> cancel_timer() |> connect()}
+  end
+
+  def handle_cast(:reconnect, state), do: {:noreply, state}
+
+  @impl true
+  def handle_info(:connect, state), do: {:noreply, connect(%{state | timer: nil})}
+
+  def handle_info({:connected, pid, conn, firmware}, %{connecting: {pid, _}} = state) do
+    old = state
+    record = remember_firmware(state, firmware)
+    # Subscribed only now, so FMutate's first status event can't overtake this.
+    state.transport.cast(conn, record.inst, {:subscribe, self(), [:status]})
+    info = %{name: record.name, firmware: record.firmware, device: record.device, emulator: nil}
+
+    state = %{
+      state
+      | record: record,
+        conn: conn,
+        node: conn.node,
+        info: info,
+        connecting: nil,
+        attempt: 0
+    }
+
+    {:noreply, notify(state, old)}
+  end
+
+  def handle_info({:connect_failed, pid, reason}, %{connecting: {pid, _}} = state) do
+    Logger.debug("FMutate: connect failed: #{inspect(reason)}")
+    {:noreply, retry(%{state | connecting: nil})}
+  end
+
+  def handle_info({:DOWN, _ref, :process, pid, reason}, %{connecting: {pid, _}} = state) do
+    Logger.warning("FMutate: connect crashed: #{inspect(reason)}")
+    {:noreply, retry(%{state | connecting: nil})}
+  end
+
+  def handle_info({:found, pid, candidates}, %{looking: pid} = state) do
+    {:noreply, follow(%{state | looking: nil}, candidates)}
+  end
+
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, %{looking: pid} = state) do
+    {:noreply, %{state | looking: nil}}
+  end
+
+  def handle_info({:DOWN, _ref, :process, pid, _reason}, state)
+      when is_map_key(state.subscribers, pid) do
+    {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
+  end
+
+  def handle_info({:nodedown, node, _info}, %{conn: %{node: node}} = state) do
+    old = state
+    state.transport.disconnect(state.conn)
+    state = %{state | conn: nil, info: nil}
+    {:noreply, state |> notify(old) |> retry()}
+  end
+
+  def handle_info(
+        {:fmutate, 1, inst, {:status, emulator}},
+        %{conn: conn, record: %{inst: inst}} = state
+      )
+      when conn != nil do
+    old = state
+    if emulator == :running, do: refresh_firmware(state)
+    {:noreply, notify(put_in(state.info.emulator, emulator), old)}
+  end
+
+  def handle_info({:firmware, conn, firmware}, %{conn: conn} = state) when firmware != nil do
+    old = state
+    record = remember_firmware(state, firmware)
+
+    {:noreply,
+     notify(%{state | record: record, info: %{state.info | firmware: record.firmware}}, old)}
+  end
+
+  # Node events for other nodes, FMutate events for an old connection,
+  # results of replaced attempts.
+  def handle_info(_other, state), do: {:noreply, state}
+
+  defp connect(%{record: nil} = state), do: state
+  defp connect(%{connecting: {_, _}} = state), do: state
+  defp connect(%{conn: conn} = state) when conn != nil, do: state
+
+  defp connect(state) do
+    link = self()
+    %{record: record, transport: transport} = state
+
+    {pid, ref} =
+      spawn_monitor(fn ->
+        case transport.connect(record, link) do
+          {:ok, conn} ->
+            send(link, {:connected, self(), conn, firmware(transport, conn, record.inst)})
+
+          {:error, reason} ->
+            send(link, {:connect_failed, self(), reason})
+        end
+      end)
+
+    %{state | connecting: {pid, ref}}
+  end
+
+  defp retry(%{record: nil} = state), do: state
+
+  defp retry(state) do
+    attempt = state.attempt + 1
+    delay = Enum.at(state.backoff, attempt - 1, List.last(state.backoff))
+    state = schedule(%{state | attempt: attempt}, delay)
+    if attempt >= 2 and not Record.loopback?(state.record), do: look_up(state), else: state
+  end
+
+  defp schedule(state, delay) do
+    state = cancel_timer(state)
+    %{state | timer: Process.send_after(self(), :connect, delay)}
+  end
+
+  defp cancel_timer(%{timer: nil} = state), do: state
+
+  defp cancel_timer(state) do
+    Process.cancel_timer(state.timer)
+    %{state | timer: nil}
+  end
+
+  # An FMutate on another phone may have a new address: ask mDNS.
+  defp look_up(%{looking: pid} = state) when is_pid(pid), do: state
+
+  defp look_up(state) do
+    link = self()
+    browse = state.discovery
+
+    {pid, _ref} =
+      spawn_monitor(fn ->
+        case browse.([]) do
+          {:ok, candidates} -> send(link, {:found, self(), candidates})
+          {:error, _} -> :ok
+        end
+      end)
+
+    %{state | looking: pid}
+  end
+
+  # Takes a candidate with the pairing's certificate and instance at a new
+  # address, saves it and connects now.
+  defp follow(%{record: record, conn: nil, store: {store, store_opts}} = state, candidates)
+       when record != nil do
+    with %{} = found <- Enum.find(candidates, &(&1.fp == record.fp and &1.inst == record.inst)),
+         moved = %{
+           record
+           | host: found.host,
+             node: found.node,
+             dist_port: found.dist_port || record.dist_port
+         },
+         true <- moved != record,
+         {:ok, moved} <- Record.validate(moved),
+         :ok <- store.save(moved, store_opts) do
+      Logger.info("FMutate: moved to #{moved.host}")
+      %{state | record: moved, attempt: 0} |> cancel_timer() |> connect()
+    else
+      _ -> state
+    end
+  end
+
+  defp follow(state, _candidates), do: state
+
+  defp firmware(transport, conn, inst) do
+    case transport.call(conn, inst, {:list_firmware}, @call_timeout) do
+      {:ok, {:ok, list}} when is_list(list) -> active_firmware(list)
+      _ -> nil
+    end
+  end
+
+  defp refresh_firmware(%{conn: conn, transport: transport, record: record}) do
+    link = self()
+    spawn(fn -> send(link, {:firmware, conn, firmware(transport, conn, record.inst)}) end)
+  end
+
+  # The running firmware's name: the entry whose status says so, else the first.
+  defp active_firmware(list) do
+    entries = Enum.filter(list, &(is_map(&1) and is_binary(Map.get(&1, :name))))
+    running = Enum.find(entries, &(Map.get(&1, :status) in [:running, :active]))
+
+    case running || List.first(entries) do
+      %{name: name} -> name
+      nil -> nil
+    end
+  end
+
+  defp remember_firmware(%{record: record}, firmware) when firmware in [nil, record.firmware],
+    do: record
+
+  defp remember_firmware(%{record: record, store: {store, store_opts}}, firmware) do
+    record = %{record | firmware: firmware}
+    store.save(record, store_opts)
+    record
+  end
+
+  # Cancels pending attempts and closes the connection.
+  defp drop(state) do
+    if state.connecting, do: Process.exit(elem(state.connecting, 0), :kill)
+    if state.looking, do: Process.exit(state.looking, :kill)
+    if state.conn, do: state.transport.disconnect(state.conn)
+    %{cancel_timer(state) | connecting: nil, looking: nil}
+  end
+
+  defp status_of(%{record: nil}), do: :unpaired
+  defp status_of(%{conn: nil}), do: :disconnected
+  defp status_of(%{info: info}), do: {:connected, info}
+
+  defp notify(state, old) do
+    status = status_of(state)
+
+    if status != status_of(old) do
+      for pid <- Map.keys(state.subscribers), do: send(pid, {:fmutate, :status, status})
+    end
+
+    state
+  end
+
+  defp default_grace do
+    if Application.get_env(:humdinger, :fmutate_dev_node) && System.get_env("MOB_BEAMS_DIR") &&
+         not Mob.Dist.release_mode?(),
+       do: @dev_grace,
+       else: 0
+  end
+end

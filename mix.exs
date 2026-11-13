@@ -15,7 +15,9 @@ defmodule Humdinger.MixProject do
   end
 
   def application do
-    [extra_applications: [:logger]]
+    # crypto, public_key and ssl: the FMutate link's TLS (pairing, TLS
+    # distribution). The Android OTP runtime ships all three.
+    [extra_applications: [:logger, :crypto, :public_key, :ssl]]
   end
 
   defp deps do
@@ -28,6 +30,11 @@ defmodule Humdinger.MixProject do
       # Scanning FMutate's pairing QR code (mob_scanner needs mob_camera).
       {:mob_camera, "~> 0.1.15"},
       {:mob_scanner, "~> 0.1.8"},
+      # The FMutate pairing (cookie, client key) in the Android Keystore /
+      # iOS Keychain. Not on Hex yet: pinned to a commit (see mob.exs for
+      # its trust entry).
+      {:mob_secure_store,
+       github: "GenericJam/mob_secure_store", ref: "99a94bcbdfb4ed6f57c2286e994f885488e5886a"},
       # Code quality — Credo + ex_slop (catches AI-generated patterns
       # like blanket rescue, narrator docs, redundant Enum chains, etc).
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
