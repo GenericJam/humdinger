@@ -14,7 +14,8 @@ config :mob_dev,
   mob_dir: Path.join(File.cwd!(), "deps/mob"),
 
   # Path to your Elixir lib dir (e.g. ~/.local/share/mise/installs/elixir/1.18.4-otp-28/lib).
-  elixir_lib: System.get_env("MOB_ELIXIR_LIB", :code.lib_dir(:elixir) |> to_string() |> Path.dirname()),
+  elixir_lib:
+    System.get_env("MOB_ELIXIR_LIB", :code.lib_dir(:elixir) |> to_string() |> Path.dirname()),
 
   # App identity: one id on both platforms (no "_", so Apple accepts it).
   bundle_id: "com.genericjam.humdinger",
@@ -51,25 +52,35 @@ config :mob_dev,
 # humdinger_midi_port: the virtual "Humdinger" MIDI port, the MIDI device
 # watcher and Bluetooth-MIDI connect (plugins/humdinger_midi_port, Kotlin + a
 # Zig NIF), part of this repo.
+# humdinger_file_share: sharing an exported phrase file and printing its PDF
+# (plugins/humdinger_file_share, Kotlin + a Zig NIF), part of this repo.
 # mob_camera + mob_scanner: scanning FMutate's pairing QR code (mob_scanner
 # needs mob_camera, which owns the :camera permission).
 # mob_secure_store: the FMutate pairing (cookie, client key) in the Android
 # Keystore / iOS Keychain.
+# humdinger_file_share: sharing and printing exported phrases (plugins/
+# humdinger_file_share, Kotlin + a Zig NIF), part of this repo.
 config :mob, :plugins, [
   :mob_midi,
   :humdinger_midi_port,
+  :humdinger_file_share,
   :mob_camera,
   :mob_scanner,
   :mob_secure_store
 ]
 
-# humdinger_midi_port is this app's own code, reviewed with it, so it builds
-# unsigned instead of carrying a signing key (mob_dev prints a banner).
+# humdinger_midi_port and humdinger_file_share are this app's own code,
+# reviewed with it, so they build unsigned instead of carrying a signing key
+# (mob_dev prints a banner).
 # mob_secure_store isn't released yet, so its checkout carries no signature
 # for the trust gate below. It is a git dependency pinned to a commit (mix.lock)
 # of the same first-party repo; once it is on Hex, drop it from this list and
 # add it to :trusted_plugins with the shared release key like the others.
-config :mob, :acknowledge_unsafe_plugins, [:humdinger_midi_port, :mob_secure_store]
+config :mob, :acknowledge_unsafe_plugins, [
+  :humdinger_midi_port,
+  :humdinger_file_share,
+  :mob_secure_store
+]
 
 # Trust gate for the first-party plugins. Each is signed in CI with the shared
 # mob release key; this is that key's public fingerprint. The build refuses an
