@@ -13,6 +13,7 @@ defmodule Humdinger.GalleryScreen do
   use Mob.Screen
 
   alias Humdinger.{Mimi, Style}
+  alias Humdinger.Views.{PianoStrip, RangeBar, TuningMeter}
 
   @typedoc "A labelled canvas: name, width, height, ops."
   @type scene :: {String.t(), number(), number(), [map()]}
@@ -41,7 +42,20 @@ defmodule Humdinger.GalleryScreen do
   @doc "Every scene, in gallery order."
   @spec scenes() :: [scene()]
   def scenes do
-    mimi_scenes()
+    mimi_scenes() ++ live_scenes()
+  end
+
+  # Boards 02-live (top) and 05-first_run.
+  defp live_scenes do
+    strip = %{low: 62, high: 76, active: 69, pitch: 68.78, range: {40, 84}}
+    black = %{low: 62, high: 76, active: 66, pitch: 66.2, range: nil}
+
+    [
+      {"PianoStrip: A4, a little flat", 334, 129, PianoStrip.ops(strip, 334, 129)},
+      {"PianoStrip: F#4 lit", 334, 129, PianoStrip.ops(black, 334, 129)},
+      {"TuningMeter: −12¢", 213, 22, TuningMeter.ops(%{cents: -12.0, tolerance: 10}, 213, 22)},
+      {"RangeBar: choosing the lowest", 342, 46, RangeBar.ops(%{pitch: 40.0, low: 40, high: nil}, 342, 46)}
+    ]
   end
 
   # The identity board's mood grid: each mood on its board note.
