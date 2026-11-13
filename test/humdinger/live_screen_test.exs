@@ -483,4 +483,24 @@ defmodule Humdinger.LiveScreenTest do
     assert LiveScreen.ease_center(60.0, 64) == 61.0
     assert LiveScreen.ease_center(63.995, 64) == 64.0
   end
+
+  test "the roll follows the voice with hysteresis and never leaves it off the rows" do
+    alias Humdinger.LiveFeed
+
+    feed = fn pitch, note ->
+      LiveFeed.push(LiveFeed.new(), %{t: 1_000, pitch: pitch, note: note})
+    end
+
+    # Within the inner rows: stay.
+    assert LiveScreen.roll_target(60.0, feed.(62.0, 62)) == nil
+    # Past them: head for the voice; the sounding note when the pitch is gone.
+    assert LiveScreen.roll_target(58.5, feed.(64.0, 64)) == 64.0
+    assert LiveScreen.roll_target(58.5, feed.(nil, 64)) == 64.0
+    assert LiveScreen.roll_target(58.5, feed.(nil, nil)) == nil
+
+    # A small step eases, a leap off the rows jumps.
+    assert LiveScreen.follow_center(58.0, 63.0) == 59.25
+    assert LiveScreen.follow_center(58.0, 76.0) == 76.0
+    assert LiveScreen.follow_center(58.0, nil) == 58.0
+  end
 end

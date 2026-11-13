@@ -75,6 +75,8 @@ defmodule Humdinger.LiveScreen do
   @frame_ms 33
   @roll_window_ms 4_000
   @roll {350, 256}
+  @roll_row_h 22
+  @follow_margin 2
   @strip_w 334
   @mimi {112, 106}
   @meter_w 206
@@ -669,7 +671,7 @@ defmodule Humdinger.LiveScreen do
       Mob.Socket.assign(socket,
         tick_token: nil,
         shown: frame,
-        center: ease_center(a.center, roll_target(a.feed)),
+        center: follow_center(a.center, roll_target(a.center, a.feed)),
         window: follow_window(a.window, frame.note)
       )
 
@@ -1015,28 +1017,41 @@ defmodule Humdinger.LiveScreen do
   # ── The view's geometry ───────────────────────────────────────────────
 
   @doc """
-  Where the roll's centre heads: the middle of what the last 4 s sang and
-  sent, held within 4 semitones of the voice so the newest pitch stays in
-  view. Nil (stay put) when nothing is in the window.
+  Where the roll's centre heads, given where it is: nil (stay) while the
+  voice (the newest sung pitch, else the sounding note) sits within the
+  inner rows, `follow_margin/0` rows from either edge; once it leaves them,
+  the voice itself. Hysteresis like the board: small moves inside the
+  window don't scroll it.
   """
-  def roll_target(feed) do
-    from = (feed.now || 0) - @roll_window_ms
-    sung = for {t, p} <- LiveFeed.trace(feed), p != nil, t >= from, do: p
-    sent = for n <- LiveFeed.notes(feed), n.end_ms == nil or n.end_ms >= from, do: n.midi
+  def roll_target(center, feed) do
+    voice = LiveFeed.pitch(feed) || sounding(feed)
+    {_w, h} = @roll
+    inner = h / 2 / @roll_row_h - @follow_margin
 
-    case sung ++ sent do
-      [] ->
-        nil
+    if voice && abs(voice - center) > inner, do: voice * 1.0, else: nil
+  end
 
-      pitches ->
-        {lo, hi} = Enum.min_max(pitches)
-        mid = (lo + hi) / 2
+  @doc "How many rows from an edge the voice may come before the roll scrolls."
+  def follow_margin, do: @follow_margin
 
-        case LiveFeed.pitch(feed) do
-          nil -> mid
-          p -> min(max(mid, p - 4), p + 4)
-        end
+  defp sounding(feed) do
+    case Enum.find(LiveFeed.notes(feed), &(&1.end_ms == nil)) do
+      %{midi: midi} -> midi
+      nil -> nil
     end
+  end
+
+  @doc """
+  The next centre: a quarter of the way to `target` each tick, but never
+  leaving the voice off the visible rows (a leap jumps straight there).
+  """
+  def follow_center(center, nil), do: center
+
+  def follow_center(center, target) do
+    {_w, h} = @roll
+    visible = h / 2 / @roll_row_h - 0.5
+    next = ease_center(center, target)
+    if abs(target - next) > visible, do: target, else: next
   end
 
   @doc false
