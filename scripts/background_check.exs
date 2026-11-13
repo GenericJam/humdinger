@@ -36,7 +36,7 @@ end
 
 running? = fn -> :rpc.call(node, Humdinger.Background, :running?, []) end
 app_pid = pid_of_app.()
-since = String.trim(adb.(["shell", "date", "+%m-%d %H:%M:%S.000"]))
+since = String.trim(adb.(["shell", "date '+%m-%d %H:%M:%S.000'"]))
 results = :ets.new(:results, [:ordered_set, :public])
 
 check = fn name, ok? ->
@@ -106,7 +106,7 @@ check.(
 Process.sleep(500)
 check.("dead owner: notification not shown", not posted?.())
 
-log = adb.(["shell", "logcat", "-d", "-T", since])
+log = adb.(["shell", "logcat -d -T '#{since}'"])
 
 check.(
   "no startForeground crash in logcat",

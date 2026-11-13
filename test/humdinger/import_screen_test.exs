@@ -107,6 +107,28 @@ defmodule Humdinger.ImportScreenTest do
     assert text_of(view, "using") == "using 0:00 – 0:06"
   end
 
+  test "another file during the analysis cancels the first" do
+    view = ImportScreen |> mount_screen() |> render_info({:files, :picked, [item()]})
+    first = analysis_ref()
+    view = render_info(view, {:files, :picked, [item("other.mp3", "audio/mpeg")]})
+    second = analysis_ref("/tmp/other.mp3")
+    refute Fake.analysing?(first)
+    assert Fake.analysing?(second)
+    assert assigns(view).ref == second
+  end
+
+  test "leaving the screen cancels the analysis, by Back or otherwise" do
+    view = ImportScreen |> mount_screen() |> render_info({:files, :picked, [item()]})
+    ref = analysis_ref()
+    render_info(view, {:tap, :back})
+    refute Fake.analysing?(ref)
+
+    view = ImportScreen |> mount_screen() |> render_info({:files, :picked, [item()]})
+    ref = analysis_ref()
+    ImportScreen.terminate(:shutdown, view.socket)
+    refute Fake.analysing?(ref)
+  end
+
   test "the result says what it heard, with the clear chip and the notes" do
     view = ready()
     %{stats: stats, take: take} = assigns(view)

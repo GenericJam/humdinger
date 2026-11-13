@@ -130,5 +130,42 @@ defmodule Humdinger.Audio.FakeTest do
       {:ok, _} = Fake.analyze_file(self(), "/tmp/a.wav", [])
       assert Fake.listening?(listen)
     end
+
+    test "cancel ends it; an unknown reference is ignored" do
+      {:ok, ref} = Fake.analyze_file(self(), "/tmp/a.wav", [])
+      assert Fake.analysing?(ref)
+      assert :ok = Fake.cancel_analysis(ref)
+      refute Fake.analysing?(ref)
+      assert :ok = Fake.cancel_analysis(make_ref())
+    end
+
+    test "one per owner: a newer analysis cancels the older" do
+      {:ok, first} = Fake.analyze_file(self(), "/tmp/a.wav", [])
+      {:ok, second} = Fake.analyze_file(self(), "/tmp/b.wav", [])
+      refute Fake.analysing?(first)
+      assert Fake.analysing?(second)
+    end
+
+    test "two owners at once; a third is busy until one finishes" do
+      owners = for _ <- 1..3, do: spawn(fn -> receive do: (:go -> :ok) end)
+      [a, b, c] = owners
+      {:ok, ref_a} = Fake.analyze_file(a, "/tmp/a.wav", [])
+      {:ok, _} = Fake.analyze_file(b, "/tmp/b.wav", [])
+      assert {:error, :busy} = Fake.analyze_file(c, "/tmp/c.wav", [])
+
+      :ok = Fake.analysis_error(ref_a, :decode_error)
+      assert {:ok, _} = Fake.analyze_file(c, "/tmp/c.wav", [])
+      Enum.each(owners, &send(&1, :go))
+    end
+
+    test "it is cancelled when its owner exits; a dead owner can't start one" do
+      owner = spawn(fn -> receive do: (:go -> :ok) end)
+      {:ok, ref} = Fake.analyze_file(owner, "/tmp/a.wav", [])
+      mon = Process.monitor(owner)
+      send(owner, :go)
+      assert_receive {:DOWN, ^mon, :process, ^owner, _}
+      assert Enum.any?(1..200, fn _ -> not Fake.analysing?(ref) or Process.sleep(1) == :never end)
+      assert {:error, :owner_dead} = Fake.analyze_file(owner, "/tmp/a.wav", [])
+    end
   end
 end

@@ -753,7 +753,13 @@ only), `ERL_NIF_INIT(Elixir.Humdinger.Audio.Nif, …)`. It includes
   readings every 10 ms, a peak byte per 50 ms. A container longer than
   10 min is refused before decoding (`:too_long`). `Mob.Files.pick/2` hands
   over a copied local path (never a `content://` URI), so paths are all it
-  takes.
+  takes. A job ends early and sends nothing on `cancel_analysis/1`, on a
+  newer analysis by the same owner (one per owner), or when the owner
+  exits (monitored); the decoder checks its cancel flag every buffer. At
+  most two owners analyse at once (a third gets `{:error, :busy}`).
+  `info/0`'s `analyses` counts the threads still running. The Import
+  screen cancels its analysis on Back, on `terminate/2` and before another
+  file.
 - **Background.** `HumListenService` (host package,
   `android/app/src/main/java/com/genericjam/humdinger/HumListenService.kt`)
   is a foreground service of type microphone; `HumListenBridge` is its JNI
@@ -819,6 +825,11 @@ How to check it:
   owner death, a dead owner; each checks the notification list, the app's
   pid and logcat. The build before these fixes crashed on Android 15
   (`ForegroundServiceDidNotStartInTimeException`) at the first check.
+- Device, file analyses ending: `SERIAL=<serial> mix run --no-start
+  scripts/analysis_check.exs` with a long (< 10 min) file pushed into the
+  app's `files/`: cancel_analysis, a second analysis by the same owner, the
+  owner's death, the two-owner cap, and the Import screen (another file,
+  Back, pop); each checks the running count, the app's CPU and logcat.
 
 ## FMutate link
 

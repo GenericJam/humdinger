@@ -14,6 +14,9 @@
  *   file threads     analyze_file/3: AMediaExtractor + AMediaCodec decode a
  *                    file, mixed down to mono and analysed as it decodes
  *                    (nothing but the readings is kept), one thread per file.
+ *                    A job ends early, silently, on cancel_analysis/1, on a
+ *                    newer analysis by the same owner, or when the owner
+ *                    dies; at most MAX_ANALYSES owners analyse at once.
  *
  * Messages are built here in their final shape (see Humdinger.Audio), so the
  * BEAM does no per-reading work beyond receiving them:
@@ -988,12 +991,55 @@ static void bg_remember(const ErlNifBinary *title, const ErlNifBinary *text, int
 
 /* ── File analysis ───────────────────────────────────────────────────────── */
 
-typedef struct {
+/* One analyze_file/3 job. It is in FJ.jobs while its thread runs.
+ * `cancelled` is set (under FJ.lock) by cancel_analysis/1, by a newer
+ * analysis from the same owner, or by the owner's death; the decoder then
+ * stops at its next buffer and nothing is sent. */
+typedef struct file_job {
     char *path;
     ErlNifPid owner;
     ErlNifEnv *env; /* holds ref */
     ERL_NIF_TERM ref;
+    uint64_t id;
+    _Atomic bool cancelled;
+    struct analysis_watch *watch; /* monitors owner */
+    struct file_job *next;
 } file_job;
+
+/* Monitors a job's owner; `id` names the job. */
+typedef struct analysis_watch {
+    uint64_t id;
+} analysis_watch;
+
+static ErlNifResourceType *analysis_watch_type;
+
+/* Analyses running at once for different owners (each decodes a whole file
+ * on a core of its own; the import screen needs one). */
+#define MAX_ANALYSES 2
+
+/* FJ.lock is taken alone, never with the other locks. */
+static struct {
+    pthread_mutex_t lock;
+    file_job *jobs;
+    uint64_t next_id;
+} FJ;
+
+/* Caller holds FJ.lock. */
+static void cancel_job_locked(file_job *job) {
+    if (!atomic_exchange(&job->cancelled, true)) LOGI("analyze_file %s: cancelling", job->path);
+}
+
+/* A job's owner died: cancel the job if it still runs. */
+static void analysis_owner_down(ErlNifEnv *env, void *obj, ErlNifPid *pid, ErlNifMonitor *mon) {
+    (void)env;
+    (void)pid;
+    (void)mon;
+    analysis_watch *w = obj;
+    pthread_mutex_lock(&FJ.lock);
+    for (file_job *j = FJ.jobs; j; j = j->next)
+        if (j->id == w->id) cancel_job_locked(j);
+    pthread_mutex_unlock(&FJ.lock);
+}
 
 typedef struct {
     pitch_detector *p;
@@ -1073,7 +1119,8 @@ static bool fa_push(file_analysis *a, float x) {
 static int64_t fa_total_frames(const file_analysis *a) { return a->frames + a->chunk_n; }
 
 /* Decode `path` into `a`. NULL or an error reason. */
-static const char *decode_file(const char *path, file_analysis *a) {
+static const char *decode_file(file_job *job, file_analysis *a) {
+    const char *path = job->path;
     int fd = open(path, O_RDONLY);
     if (fd < 0) return "not_found";
     struct stat st;
@@ -1128,6 +1175,10 @@ static const char *decode_file(const char *path, file_analysis *a) {
     int64_t max_frames = 0;
 
     while (!failure) {
+        if (atomic_load_explicit(&job->cancelled, memory_order_relaxed)) {
+            failure = "cancelled";
+            break;
+        }
         if (!input_done) {
             ssize_t in = md.codecDequeueInputBuffer(codec, 5000);
             if (in >= 0) {
@@ -1213,11 +1264,14 @@ static void *file_main(void *arg) {
     file_job *job = arg;
     file_analysis a;
     memset(&a, 0, sizeof(a));
-    const char *failure = decode_file(job->path, &a);
+    const char *failure = decode_file(job, &a);
+    bool cancelled = failure && strcmp(failure, "cancelled") == 0;
 
     ErlNifEnv *env = enif_alloc_env();
-    ERL_NIF_TERM payload;
-    if (failure) {
+    ERL_NIF_TERM payload = 0;
+    if (cancelled) {
+        LOGI("analyze_file %s: stopped (cancelled)", job->path);
+    } else if (failure) {
         LOGE("analyze_file %s: %s", job->path, failure);
         payload = enif_make_tuple2(env, atom(env, "analysis_error"), atom(env, failure));
     } else {
@@ -1234,11 +1288,25 @@ static void *file_main(void *arg) {
         payload = enif_make_tuple2(env, atom(env, "analysis"), map);
         LOGI("analyze_file %s: %lld ms, %zu readings", job->path, (long long)duration_ms, a.n_readings);
     }
-    ERL_NIF_TERM msg = enif_make_tuple3(env, atom(env, "hum_audio"), enif_make_copy(env, job->ref), payload);
-    enif_send(NULL, &job->owner, env, msg);
+    fa_free(&a);
+
+    /* Leave the list and send under FJ.lock: once cancel_analysis has
+     * returned, nothing more arrives for the job's reference. */
+    pthread_mutex_lock(&FJ.lock);
+    for (file_job **p = &FJ.jobs; *p; p = &(*p)->next) {
+        if (*p == job) {
+            *p = job->next;
+            break;
+        }
+    }
+    if (!cancelled && !atomic_load(&job->cancelled)) {
+        ERL_NIF_TERM msg = enif_make_tuple3(env, atom(env, "hum_audio"), enif_make_copy(env, job->ref), payload);
+        enif_send(NULL, &job->owner, env, msg);
+    }
+    pthread_mutex_unlock(&FJ.lock);
     enif_free_env(env);
 
-    fa_free(&a);
+    if (job->watch) enif_release_resource(job->watch); /* drops the owner's monitor */
     enif_free_env(job->env);
     free(job->path);
     free(job);
@@ -1377,8 +1445,10 @@ static ERL_NIF_TERM nif_inputs(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv
     return list;
 }
 
-/* analyze_file(Owner, Ref, Path) -> ok | {error, Reason}: the result
- * arrives as a message. Path is a binary. */
+/* analyze_file(Owner, Ref, Path) -> ok | {error, busy | owner_dead | alloc
+ * | thread}: the result arrives as a message. Path is a binary. Cancels the
+ * owner's earlier analysis (one per owner); at most MAX_ANALYSES run for
+ * different owners at once. */
 static ERL_NIF_TERM nif_analyze_file(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
     (void)argc;
     ErlNifPid owner;
@@ -1402,18 +1472,59 @@ static ERL_NIF_TERM nif_analyze_file(ErlNifEnv *env, int argc, const ERL_NIF_TER
     job->env = enif_alloc_env();
     job->ref = enif_make_copy(job->env, argv[1]);
 
-    pthread_t t;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    int rc = pthread_create(&t, &attr, file_main, job);
-    pthread_attr_destroy(&attr);
-    if (rc != 0) {
+    const char *failure = NULL;
+    pthread_mutex_lock(&FJ.lock);
+    int others = 0;
+    for (file_job *j = FJ.jobs; j; j = j->next)
+        if (enif_compare_pids(&j->owner, &owner) != 0 && !atomic_load(&j->cancelled)) others++;
+    analysis_watch *w = NULL;
+    if (others >= MAX_ANALYSES) {
+        failure = "busy";
+    } else if (!(w = enif_alloc_resource(analysis_watch_type, sizeof(analysis_watch)))) {
+        failure = "alloc";
+    } else {
+        job->id = w->id = ++FJ.next_id;
+        /* Under the lock: a down callback for this owner waits for the job
+         * to be in the list. */
+        if (enif_monitor_process(env, w, &owner, NULL) != 0) failure = "owner_dead";
+    }
+    if (!failure) {
+        for (file_job *j = FJ.jobs; j; j = j->next)
+            if (enif_compare_pids(&j->owner, &owner) == 0) cancel_job_locked(j);
+        job->watch = w;
+        job->next = FJ.jobs;
+        FJ.jobs = job;
+        pthread_t t;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        if (pthread_create(&t, &attr, file_main, job) != 0) {
+            FJ.jobs = job->next;
+            failure = "thread";
+        }
+        pthread_attr_destroy(&attr);
+    }
+    pthread_mutex_unlock(&FJ.lock);
+    if (failure) {
+        if (w) enif_release_resource(w); /* drops the monitor */
         enif_free_env(job->env);
         free(p);
         free(job);
-        return error_tuple(env, "thread");
+        return error_tuple(env, failure);
     }
+    return atom(env, "ok");
+}
+
+/* cancel_analysis(Ref) -> ok. The analysis stops at its next decoder
+ * buffer, and nothing for Ref arrives once this has returned. Unknown or
+ * finished Refs are ignored. */
+static ERL_NIF_TERM nif_cancel_analysis(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
+    (void)argc;
+    if (!enif_is_ref(env, argv[0])) return enif_make_badarg(env);
+    pthread_mutex_lock(&FJ.lock);
+    for (file_job *j = FJ.jobs; j; j = j->next)
+        if (enif_compare(j->ref, argv[0]) == 0) cancel_job_locked(j);
+    pthread_mutex_unlock(&FJ.lock);
     return atom(env, "ok");
 }
 
@@ -1530,7 +1641,12 @@ static ERL_NIF_TERM nif_background_running(ErlNifEnv *env, int argc, const ERL_N
 static ERL_NIF_TERM nif_info(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
     (void)argc;
     (void)argv;
-    enum { N = 16 };
+    enum { N = 17 };
+    /* File analyses whose thread still runs (cancelled ones until they notice). */
+    int analyses = 0;
+    pthread_mutex_lock(&FJ.lock);
+    for (file_job *j = FJ.jobs; j; j = j->next) analyses++;
+    pthread_mutex_unlock(&FJ.lock);
     pthread_mutex_lock(&E.lock);
     AAudioStream *s = E.in;
     double input_latency_ms = -1;
@@ -1547,7 +1663,7 @@ static ERL_NIF_TERM nif_info(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]
                             atom(env, "low_latency"),   atom(env, "xruns"),           atom(env, "callbacks"),
                             atom(env, "last_callback_frames"), atom(env, "readings"), atom(env, "batches"),
                             atom(env, "spectra"),       atom(env, "lag_mean_ms"),     atom(env, "lag_max_ms"),
-                            atom(env, "input_latency_ms")};
+                            atom(env, "input_latency_ms"), atom(env, "analyses")};
     ERL_NIF_TERM vals[N] = {
         libs_ok ? atom(env, "ok") : atom(env, libs_error ? libs_error : "unknown"),
         atom(env, s && atomic_load(&E.run) ? "true" : "false"),
@@ -1565,6 +1681,7 @@ static ERL_NIF_TERM nif_info(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]
         enif_make_double(env, batches ? atomic_load(&E.lag_sum_ns) / 1e6 / batches : 0.0),
         enif_make_double(env, atomic_load(&E.lag_max_ns) / 1e6),
         enif_make_double(env, first >= 0 ? input_latency_ms : -1.0),
+        enif_make_int(env, analyses),
     };
     pthread_mutex_unlock(&E.lock);
     ERL_NIF_TERM map;
@@ -1578,6 +1695,7 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     pthread_mutex_init(&E.lock, NULL);
     pthread_mutex_init(&E.send_lock, NULL);
     pthread_mutex_init(&BG.lock, NULL);
+    pthread_mutex_init(&FJ.lock, NULL);
     atomic_store(&E.first_ns, -1);
     ErlNifResourceTypeInit init = {.dtor = NULL, .stop = NULL, .down = listener_down, .members = 3};
     listener_type = enif_init_resource_type(env, "hum_audio_listener", &init, ERL_NIF_RT_CREATE, NULL);
@@ -1585,6 +1703,9 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     ErlNifResourceTypeInit bg_init = {.dtor = NULL, .stop = NULL, .down = bg_owner_down, .members = 3};
     bg_watch_type = enif_init_resource_type(env, "hum_audio_background", &bg_init, ERL_NIF_RT_CREATE, NULL);
     if (!bg_watch_type) return 1;
+    ErlNifResourceTypeInit fj_init = {.dtor = NULL, .stop = NULL, .down = analysis_owner_down, .members = 3};
+    analysis_watch_type = enif_init_resource_type(env, "hum_audio_analysis", &fj_init, ERL_NIF_RT_CREATE, NULL);
+    if (!analysis_watch_type) return 1;
     libs_ok = bind_libraries();
     if (!libs_ok) LOGE("could not bind %s", libs_error);
     return 0;
@@ -1598,6 +1719,7 @@ static ErlNifFunc nif_funcs[] = {
     {"set_spectrum", 2, nif_set_spectrum, 0},
     {"inputs", 0, nif_inputs, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"analyze_file", 3, nif_analyze_file, 0},
+    {"cancel_analysis", 1, nif_cancel_analysis, 0},
     {"background_start", 4, nif_background_start, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"background_update", 3, nif_background_update, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"background_stop", 0, nif_background_stop, ERL_NIF_DIRTY_JOB_IO_BOUND},

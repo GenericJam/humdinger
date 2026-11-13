@@ -10,7 +10,9 @@ defmodule Humdinger.ImportScreen do
   - `:choose` — no file yet: Mimi and "Choose an audio file". On the phone
     the picker (`Mob.Files.pick/2`, audio types) opens as the screen opens.
   - `:analysing` — `Humdinger.Audio.impl().analyze_file/3` is decoding the
-    file in the background; Mimi listens, with a spinner.
+    file in the background; Mimi listens, with a spinner. Leaving the screen
+    or picking another file ("Other file") cancels it
+    (`cancel_analysis/1`), so its decoder never outlives the screen.
   - `:ready` — the analysis is kept in assigns and transcribed
     (`Humdinger.Transcribe.take/2`) again on every change, which is cheap:
     the range (drag the `Humdinger.Views.Waveform` box or its handles;
@@ -454,10 +456,14 @@ defmodule Humdinger.ImportScreen do
     do: {:noreply, Mob.Socket.assign(socket, :notice, PhraseActions.error_text({:exit, reason}))}
 
   @impl true
+  def terminate(_reason, socket), do: cancel_analysis(socket)
+
+  @impl true
   def handle_info({:press_out, :held}, socket), do: {:noreply, socket}
 
   def handle_info({:tap, :back}, socket) do
     stop(socket)
+    cancel_analysis(socket)
     {:noreply, Mob.Socket.pop_screen(socket)}
   end
 
@@ -602,6 +608,7 @@ defmodule Humdinger.ImportScreen do
 
   defp analyse(socket, path, name) do
     stop(socket)
+    cancel_analysis(socket)
 
     base =
       Mob.Socket.assign(socket,
@@ -630,6 +637,7 @@ defmodule Humdinger.ImportScreen do
   defp error_text(:no_engine), do: "This build has no audio engine, so it can't read audio files."
   defp error_text(:not_supported), do: "This phone can't decode that kind of file."
   defp error_text(:too_long), do: "It's longer than 10 minutes. Trim it and try again."
+  defp error_text(:busy), do: "Another file is still being read. Try again in a moment."
   defp error_text(reason) when is_atom(reason), do: "The file couldn't be decoded (#{reason})."
   defp error_text(_reason), do: "The file couldn't be decoded."
 
@@ -716,4 +724,14 @@ defmodule Humdinger.ImportScreen do
   end
 
   defp stop(socket), do: Player.stop(socket.assigns.player)
+
+  # The decoder thread of the current analysis, if any, stops: on leaving the
+  # screen and before another file replaces it.
+  defp cancel_analysis(%{assigns: %{ref: ref, stage: :analysing}}) when is_reference(ref) do
+    impl = Audio.impl()
+    if function_exported?(impl, :cancel_analysis, 1), do: impl.cancel_analysis(ref)
+    :ok
+  end
+
+  defp cancel_analysis(_socket), do: :ok
 end
