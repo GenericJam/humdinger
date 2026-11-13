@@ -57,6 +57,12 @@ defmodule Humdinger.Test.FakeOutput do
   # Messages to the listener are sent directly, so there is nothing to wait for.
   def sync, do: :ok
 
+  # A Player's session: its events are reported like the live ones. No
+  # arbitration here; tests of that use the real Humdinger.Output.
+  def acquire(_owner), do: {:ok, make_ref()}
+  def session_events(_ref, events), do: Listener.tell({:output, events})
+  def release(_ref), do: :ok
+
   def destinations, do: get(& &1.destinations)
 
   def subscribe(pid) do

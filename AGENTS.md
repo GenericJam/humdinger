@@ -561,31 +561,48 @@ Nothing is sent to the port while no app has it open.
 
 Never a stuck note:
 
-- **One source at a time.** A `Humdinger.Player` (phrase playback, Import's
-  "Play out", Output's test note) holds the Engine while it plays
-  (`Engine.hold/2` / `unhold/2`, monitored): a listening engine pauses, its
-  release reaches Output first (`Output.sync/0`), and it listens again when
-  the player finishes, stops or dies. `listen`/`resume` while held only
-  mark that listening should follow. The test note is a Player Output owns,
-  so a tap while it sounds restarts it (300 ms from the last tap).
+- **One source at a time, arbitrated by Output.** The live source is
+  `send_events/1` (the Engine). A `Humdinger.Player` (phrase playback,
+  Import's "Play out", Output's test note) plays in an Output session:
+  `Output.acquire/2` (owner monitored) releases the live notes and resets
+  the controllers, then drops live events until `release/2`;
+  `session_events/3` carry the player's. A newer session preempts an older
+  one (its notes off, its owner gets `{:output, :session_ended, ref}` and
+  reports `:finished`); a session whose owner dies (even `:kill`) has its
+  notes released by Output. The Engine follows (`follow_session/2`:
+  `{:output, :session, :active | :idle}`) only to keep quiet and start its
+  next note afresh; its status doesn't change, so Live's cached state and an
+  Engine restart mid-session don't matter (a new Engine is told `:active`
+  when it subscribes). The player sends `{:player, :finished, tag}` only
+  after its note-offs and `release/2`. The test note is a Player Output
+  owns, so a tap while it sounds restarts it (300 ms from the last tap).
+  Sounding notes are tracked per destination as `{source, channel, note}`.
 - **Output exits** trap and `terminate/2` panics every destination
-  directly. The Engine's `terminate/2` sends its release and syncs; when
-  Output is the one that died nothing can be sent, and Output's own
-  terminate covered it (a `:kill` skips both: the receivers' own rules
-  below remain).
-- **A destination that comes back is reset before any note**: the first
-  app to open the port again, and a USB/Bluetooth output once mob_midi
-  reports it open, get CC 123 + resets on every channel Output has used;
-  FMutate sends its own panic on every (re)connection.
+  directly, each adapter call guarded (a destination that raises is logged
+  and skipped, the others still silenced). The Engine's `terminate/2` sends
+  its release and syncs; when Output is the one that died nothing can be
+  sent, and Output's own terminate covered it.
+- **A destination that comes back is reset before any note**: CC 123 +
+  controller resets on all 16 channels to the port when Output starts and
+  when the first app opens it again, and to a USB/Bluetooth output once
+  mob_midi reports it open. FMutate sends its own panic on every
+  (re)connection.
 - **The port never drops silently**: a full writer queue answers
-  `{:error, :queue_full}`, drops the stale queued bytes and refuses until
-  the blocked write finishes; then a `drained` port event makes Output send
-  the note-offs it still knows of, CC 123 and resets, before anything new.
+  `{:error, :queue_full}` (Output stops sending to the port only; other
+  destinations carry on and stay tracked). Under a lock the bridge drops
+  the stale queued bytes, starts a new generation (the writer skips older
+  tasks; the last client leaving does the same) and queues a drain
+  sentinel behind the blocked write. When the writer reaches it, admission
+  reopens and a `drained` port event makes Output, any Output, send the
+  note-offs it still knows of, CC 123 and resets before anything new.
 - **FMutate** treats a dropped (`nosuspend`) MIDI cast as a resync: no more
   MIDI (`{:fmutate, :midi, :resyncing}`), a full panic retried every 50 ms
-  until it goes through (`:ready`), the connection dropped after 2 s.
-  `design/fmutate/protocol.md` §4.1 now requires FMutate to release a
-  sibling's notes when its node goes (`Reference.Instance` does).
+  until it goes through (`:ready`), the connection dropped after 2 s. A
+  connection is set up the same way: the `:status` subscription and then
+  the panic must both go out before MIDI flows (`:resyncing` reaches
+  subscribers before the connected status). `design/fmutate/protocol.md`
+  §4.1 requires FMutate to release a sibling's notes when its node goes
+  (`Reference.Instance` does).
 
 | Row (board `output`) | `detail` |
 |---|---|
