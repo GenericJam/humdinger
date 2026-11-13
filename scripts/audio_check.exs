@@ -367,82 +367,57 @@ if System.get_env("BACKGROUND") == "1" do
 end
 
 # ── 6. Notification buttons ──
-# BUTTONS=1: real taps on the notification's buttons (shade pulled down,
-# scrolled to the notification, expanded), each of which must arrive as
-# {:background, action}.
+# BUTTONS=1: with the app in the background, send the service the intents its
+# buttons carry (as the app's own uid, through run-as), each of which must
+# arrive as {:background, action}; listen anew from the background (allowed
+# while the service runs); then update and stop the notification. Tapping
+# the buttons in the shade takes the same path from SystemUI.
 if System.get_env("BUTTONS") == "1" do
   adb = fn args -> elem(System.cmd("adb", ["-s", serial | args], stderr_to_stdout: true), 0) end
   c5 = new_collector.()
-
-  :ok =
-    on_phone.("Humdinger.Background.start(pid, %{text: \"A4 −12¢ → FMutate A · ch 1\"})", pid: c5)
-
+  notice = ~s[Humdinger.Background.start(pid, %{text: "A4 −12¢ → FMutate A · ch 1"})]
+  :ok = on_phone.(notice, pid: c5)
   Process.sleep(800)
   adb.(~w(shell input keyevent KEYCODE_HOME))
   Process.sleep(800)
 
-  dump = fn ->
-    adb.(~w(shell uiautomator dump /sdcard/hum_ui.xml))
-    adb.(~w(shell cat /sdcard/hum_ui.xml))
-  end
+  for action <- ~w(pause resume record record_stop stop) do
+    adb.(~w(shell run-as com.genericjam.humdinger am startservice --user 0
+         -n com.genericjam.humdinger/.HumListenService
+         -a com.genericjam.humdinger.listen.BUTTON --es button) ++ [action])
 
-  bounds = fn xml, pattern ->
-    case Regex.run(~r/text="#{pattern}"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/u, xml) do
-      [_ | xs] -> Enum.map(xs, &String.to_integer/1)
-      nil -> nil
-    end
-  end
-
-  # Pull the shade down, scroll to the notification, drag it open.
-  open_ours = fn ->
-    adb.(~w(shell cmd statusbar expand-notifications))
-    Process.sleep(1_000)
-
-    Enum.find_value(1..6, fn _ ->
-      xml = dump.()
-
-      case bounds.(xml, "(?:A4 −12¢ → FMutate A · ch 1|paused)") do
-        [x1, y1, x2, _] ->
-          x = div(x1 + x2, 2)
-          adb.(["shell", "input", "swipe", "#{x}", "#{y1}", "#{x}", "#{y1 + 500}", "400"])
-          Process.sleep(800)
-          dump.()
-
-        nil ->
-          adb.(~w(shell input swipe 540 1600 540 700 300))
-          Process.sleep(600)
-          nil
-      end
-    end)
-  end
-
-  for {label, expect, after_tap} <- [
-        {"(?i:pause)", :pause,
-         ~s[Humdinger.Background.update(%{text: "paused", state: :paused})]},
-        {"(?i:resume)", :resume,
-         ~s[Humdinger.Background.update(%{text: "A4 −12¢ → FMutate A · ch 1"})]},
-        {"(?i:record)", :record, nil},
-        {"(?i:stop)", :stop, nil}
-      ] do
-    xml = open_ours.() || ""
-
-    case bounds.(xml, label) do
-      [x1, y1, x2, y2] ->
-        adb.(["shell", "input", "tap", "#{div(x1 + x2, 2)}", "#{div(y1 + y2, 2)}"])
-        Process.sleep(800)
-        got = Enum.filter(report.(c5).other, &match?({:background, _}, &1))
-        IO.puts("tap #{expect}: arrived #{inspect(Enum.member?(got, {:background, expect}))}")
-
-      nil ->
-        IO.puts("tap #{expect}: button not found in the shade")
-    end
-
-    adb.(~w(shell cmd statusbar collapse))
-    if after_tap, do: on_phone.(after_tap, [])
     Process.sleep(500)
+    got = Enum.member?(report.(c5).other, {:background, String.to_atom(action)})
+    IO.puts("button #{action}: arrived #{got}")
   end
+
+  {_, result} = listen.(c5, [])
+  Process.sleep(1_000)
+  dbs = Enum.map(report.(c5).readings, & &1.db)
+
+  IO.puts(
+    "listen from the background: #{inspect(result)}, #{length(dbs)} readings at #{fmt.(pct.(dbs, 0.5))} dBFS"
+  )
+
+  with {:ok, ref} <- result, do: :rpc.call(node, Humdinger.Audio.Native, :stop, [ref])
+
+  update =
+    ~s[Humdinger.Background.update(%{text: "C5 +3¢ → FMutate A · ch 1", state: :recording})]
+
+  on_phone.(update, [])
+  Process.sleep(800)
+
+  IO.puts(
+    "updated notice shown: #{String.contains?(adb.(~w(shell dumpsys notification --noredact)), "C5 +3¢")}"
+  )
 
   on_phone.("Humdinger.Background.stop()", [])
+  Process.sleep(800)
+
+  IO.puts(
+    "gone after stop: #{not String.contains?(adb.(~w(shell dumpsys notification --noredact)), "C5 +3¢")}"
+  )
+
   adb.(~w(shell monkey -p com.genericjam.humdinger -c android.intent.category.LAUNCHER 1))
   send(c5, :exit)
 end

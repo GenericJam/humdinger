@@ -237,22 +237,27 @@ only), `ERL_NIF_INIT(Elixir.Humdinger.Audio.Nif, …)`. It includes
   `{:background, action}`. Without the service Android silences a
   backgrounded app's microphone as soon as the app goes idle (about a
   minute; `adb shell am make-uid-idle com.genericjam.humdinger` does it at
-  once): readings keep coming, all at −90 dB.
+  once): readings keep coming, all at −90 dB. A backgrounded app can't open
+  a new microphone stream either (`listen/2` → `:microphone_unavailable`)
+  unless the service runs; with it, `listen/2` works from the background.
 - **Locks.** `lock` (control path: open/start/stop/close, join) → `send_lock`
   (the listener's owner and ref) → `BG.lock` (the service). A stream is
   closed only once it is quiet; one that won't stop is left open, harmless.
 
 Measured on the moto g power 2021 (Android 11), `scripts/audio_check.exs`:
 188 readings/s, 1.85 per message, message interval p50 9.8 ms; from the
-newest analysed sample's arrival to the owner's mailbox p50 4–5 ms, p95
-8–12 ms (the higher with the spectrum on), max ~17 ms; spectrum 29.9
+newest analysed sample's arrival to the owner's mailbox p50 3–5 ms, p95
+8–11 ms (the higher with the spectrum on), max ≤ 18 ms; spectrum 29.9
 columns/s. A consumer's per-reading work (match the map, hz → MIDI) is
 6–10 µs, 23–25 heap words per reading. A 440 Hz / 660 Hz sine from the Mac
-speaker: median +3 / +3 ¢, p95 |error| 13 / 6 ¢, no octave errors in a
-quiet room; the spectrum peaks in bin 63 (440 Hz) in every column. A
-12.4 s m4a analyses in 0.8–1.6 s. Input timestamps aren't available in
-shared mode (`input_latency_ms: -1`), so the latencies above start at the
-callback that delivered the samples.
+speaker in a quiet room: median +1.5 / +2 ¢, p95 |error| 5 / 4 ¢, no
+octave errors, the spectrum's strongest bin 63 (440 Hz) in every column.
+When something else sounds in the room the readings follow the mixture
+(e.g. a D3 under the 440 Hz tone reads as D3/A3): one voice at a time is
+the design. A 12.4 s m4a analyses in 0.8–1.6 s. Input timestamps aren't
+available in shared mode (`input_latency_ms: -1`), so the latencies above
+start at the callback that delivered the samples (192 frames = 4 ms
+bursts).
 
 How to check it:
 
@@ -279,7 +284,9 @@ How to check it:
   adds file analysis (push with `adb push` + `adb shell run-as
   com.genericjam.humdinger cp`), `BACKGROUND=1 [IDLE=1] [NOSERVICE=1]`
   listening from the background with the screen off and on (NOSERVICE is
-  the control), `BUTTONS=1` real taps on the notification's buttons.
+  the control), `BUTTONS=1` the notification's button intents (sent as the
+  app's uid through `run-as`, the path a tap in the shade takes),
+  listening from the background, update and stop.
   `Humdinger.Audio.Native.info/0` reports the stream and delivery counters.
 
 ## Rules for Mob screens here (from Choir Coach; avoid its traps)

@@ -62,8 +62,10 @@ defmodule Humdinger.Audio do
   Start the microphone, replacing whatever listened before (its reference
   goes stale). Options: `spectrum: boolean` (default false), `input: id`
   (from `inputs/0`; nil or missing: the system default). Errors:
-  `:permission` (no microphone permission yet), `:microphone_unavailable`.
-  Listening stops by itself when `owner` exits.
+  `:permission` (no microphone permission yet), `:microphone_unavailable`
+  (also: the app is in the background and `Humdinger.Background` isn't
+  running, which Android refuses). Listening stops by itself when `owner`
+  exits.
   """
   @callback listen(owner :: pid(), opts :: keyword()) :: {:ok, reference()} | {:error, term()}
   @doc "Turn the spectrum stream on or off while listening."
