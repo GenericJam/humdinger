@@ -1009,6 +1009,13 @@ tests).
   Export .mid, Discard (asks when unsaved; Back asks the same). Name taps
   open a rename sheet (an edit like the others, kept by Save). Staff: Clef,
   Rhythm, Note names, key caption, Share as PDF, MusicXML, Print, Play back.
+  System Back can't be intercepted (Mob pops without asking) and the app's
+  stop order isn't ours, so unsaved work is a draft in `Mob.State`
+  (`Humdinger.PhraseDraft`, not the database): a new phrase at mount, each
+  edit 500 ms after it settles. `terminate/2` writes the draft, then tries
+  to save (Repo exits/raises caught); a draft left behind is saved by
+  `PhraseDraft.recover/0` in `App.on_start` after the migrations. Save,
+  Discard and Hum again delete the draft.
 - **Import** (board `import_audio`): params `notify:`. Stages `:choose`
   (on the phone the picker opens with the screen: `Mob.Files.pick/2`,
   audio types; results checked with `Mob.Files.accept/2`), `:analysing`

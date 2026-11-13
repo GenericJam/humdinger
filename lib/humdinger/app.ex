@@ -34,6 +34,12 @@ defmodule Humdinger.App do
       Ecto.Migrator.run(repo, migrations_dir(), :up, all: true)
     end)
 
+    # Phrases a Review screen kept as drafts because the database was gone
+    # when it closed (the app stopping): into the Phrases list, before any
+    # screen starts. The Repo starts above, before the screens; the order
+    # things stop in isn't the app's to choose, hence the drafts.
+    Humdinger.PhraseDraft.recover()
+
     Mob.Theme.set(Humdinger.Style.theme())
 
     # The real-time path, outside the screens so it keeps listening and

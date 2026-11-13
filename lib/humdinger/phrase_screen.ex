@@ -28,12 +28,18 @@ defmodule Humdinger.PhraseScreen do
   same.
 
   **System Back** (Android's back gesture) can't be intercepted: Mob's
-  router pops the screen without asking it (`Mob.Router`, `{:mob, :back}`).
-  So a screen that leaves any other way than through Discard, back with
-  nothing unsaved, or Hum again saves its phrase as it is in `terminate/2`
-  (and tells `notify:`): a new phrase lands in the Phrases list, edits to a
-  saved one are kept. Work is never lost silently; Discard stays the way
-  to drop it.
+  router pops the screen without asking it (`Mob.Router`, `{:mob, :back}`),
+  and when the app stops nothing orders the screens before the database.
+  So unsaved work is kept as a draft (`Humdinger.PhraseDraft`, in
+  `Mob.State`, not the database) from the moment it exists: a new phrase
+  at mount, each edit half a second after it settles. Leaving any way
+  other than Discard, back with nothing unsaved, or Hum again,
+  `terminate/2` writes the draft once more and then tries to save the
+  phrase (a new one lands in the Phrases list, edits to a saved one are
+  kept, `notify:` hears); if the database is already gone it keeps the
+  draft, and `Humdinger.PhraseDraft.recover/0` saves it at the next start.
+  Saving and Discard delete the draft. Work is never lost silently;
+  Discard stays the way to drop it.
 
   **Staff**: `Humdinger.Views.Staff` of `Humdinger.Notation.layout/2`, Clef
   Auto/Treble/Bass, Rhythm As sung / Simpler (1/4), Note names, the key
@@ -49,13 +55,14 @@ defmodule Humdinger.PhraseScreen do
 
   require Logger
 
-  alias Humdinger.{Notation, Phrase, PhraseActions, Phrases, Player, Style}
+  alias Humdinger.{Notation, Phrase, PhraseActions, PhraseDraft, Phrases, Player, Style}
   alias Humdinger.Views.{Draw, PianoRoll, Staff}
 
   @roll_w 350
   @roll_h 312
   @staff_w 350
   @quiet_ms 1000
+  @draft_ms 500
 
   @impl true
   def mount(params, _session, socket) do
@@ -78,13 +85,18 @@ defmodule Humdinger.PhraseScreen do
         notice: nil,
         notify: Map.get(params, :notify),
         return_to: Map.get(params, :return_to),
-        left: false
+        left: false,
+        draft_key: PhraseDraft.new_key(),
+        draft_token: nil
       )
 
     socket =
       case params do
         %{phrase: %Phrase{id: nil} = phrase} ->
-          Mob.Socket.assign(socket, phrase: phrase)
+          # A new phrase is unsaved work from the start: keep it at once.
+          socket = Mob.Socket.assign(socket, phrase: phrase)
+          PhraseDraft.put(socket.assigns.draft_key, phrase)
+          socket
 
         %{phrase: %Phrase{} = phrase} ->
           Mob.Socket.assign(socket, phrase: phrase, saved: phrase)
@@ -405,6 +417,7 @@ defmodule Humdinger.PhraseScreen do
   def handle_info({:tap, :hum_again}, socket) do
     if pid = socket.assigns.return_to, do: send(pid, :hum_again)
     stop(socket)
+    PhraseDraft.delete(socket.assigns.draft_key)
 
     {:noreply,
      socket |> Mob.Socket.assign(:left, true) |> Mob.Socket.pop_to(Humdinger.LiveScreen)}
@@ -451,7 +464,10 @@ defmodule Humdinger.PhraseScreen do
     case Phrases.save(socket.assigns.phrase) do
       {:ok, stored} ->
         if pid = socket.assigns.notify, do: send(pid, :phrases_changed)
-        {:noreply, Mob.Socket.assign(socket, phrase: stored, saved: stored, notice: nil)}
+        PhraseDraft.delete(socket.assigns.draft_key)
+
+        {:noreply,
+         Mob.Socket.assign(socket, phrase: stored, saved: stored, notice: nil, draft_token: nil)}
 
       {:error, _} ->
         {:noreply, Mob.Socket.assign(socket, :notice, "Couldn't save it.")}
@@ -518,12 +534,30 @@ defmodule Humdinger.PhraseScreen do
   def handle_info({:drag_quiet, token}, %{assigns: %{drag: %{token: token}}} = socket),
     do: {:noreply, Mob.Socket.assign(socket, :drag, nil)}
 
+  # The edit has settled: keep it as the draft (or drop the draft if the
+  # phrase is back to what is saved).
+  def handle_info({:write_draft, token}, %{assigns: %{draft_token: token}} = socket) do
+    if dirty?(socket.assigns),
+      do: PhraseDraft.put(socket.assigns.draft_key, socket.assigns.phrase),
+      else: PhraseDraft.delete(socket.assigns.draft_key)
+
+    {:noreply, Mob.Socket.assign(socket, :draft_token, nil)}
+  end
+
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   # ── Editing ─────────────────────────────────────────────────────────────
 
   defp edit(socket, fun),
-    do: Mob.Socket.assign(socket, phrase: fun.(socket.assigns.phrase), notice: nil)
+    do: socket |> put_phrase(fun.(socket.assigns.phrase)) |> Mob.Socket.assign(:notice, nil)
+
+  # Every change to the phrase goes through here: the draft follows it once
+  # it settles (a drag sends ~60 a second).
+  defp put_phrase(socket, phrase) do
+    token = make_ref()
+    Process.send_after(self(), {:write_draft, token}, @draft_ms)
+    Mob.Socket.assign(socket, phrase: phrase, draft_token: token)
+  end
 
   # A drag's first point: what it grabbed, on the roll as it was drawn then.
   defp grab(socket, %{x: x, y: y}) do
@@ -561,7 +595,7 @@ defmodule Humdinger.PhraseScreen do
           Phrase.resize_note(drag.phrase, drag.index, edge, ms)
       end
 
-    socket |> Mob.Socket.assign(:phrase, phrase) |> quiet_timer()
+    socket |> put_phrase(phrase) |> quiet_timer()
   end
 
   # MOB-511: a drag whose end is lost ends after a second without events.
@@ -584,28 +618,34 @@ defmodule Humdinger.PhraseScreen do
 
   defp leave(socket) do
     stop(socket)
+    PhraseDraft.delete(socket.assigns.draft_key)
     socket |> Mob.Socket.assign(sheet: nil, left: true) |> Mob.Socket.pop_screen()
   end
 
   defp stop(socket), do: Player.stop(socket.assigns.player)
 
-  # Popped by system Back (or the app going away) with unsaved work: keep it.
+  # Popped by system Back, or the app stopping, with unsaved work: keep the
+  # draft first (nothing here may depend on the database still running),
+  # then try to save; a failed save leaves the draft for `PhraseDraft.recover/0`.
   @impl true
   def terminate(_reason, %{assigns: %{left: false, phrase: %Phrase{}} = assigns}) do
-    if dirty?(assigns), do: autosave(assigns)
+    if dirty?(assigns), do: keep(assigns)
     :ok
   end
 
   def terminate(_reason, _socket), do: :ok
 
-  defp autosave(%{phrase: phrase, notify: notify}) do
-    case Phrases.save(phrase) do
+  defp keep(%{phrase: phrase, notify: notify, draft_key: key}) do
+    PhraseDraft.put(key, phrase)
+
+    case PhraseDraft.save(phrase) do
       {:ok, _} ->
+        PhraseDraft.delete(key)
         if notify, do: send(notify, :phrases_changed)
 
       {:error, reason} ->
         Logger.warning(
-          "Humdinger.PhraseScreen: couldn't keep the phrase on leaving: #{inspect(reason)}"
+          "Humdinger.PhraseScreen: kept the phrase as a draft, couldn't save it: #{inspect(reason)}"
         )
     end
   end
