@@ -423,6 +423,54 @@ defmodule Humdinger.LiveScreenTest do
     end
   end
 
+  describe "when the engine restarts" do
+    # The test supervisor restarts the engine, as Humdinger.Realtime does.
+    defp restart_engine(view) do
+      old = Process.whereis(Engine)
+      mon = assigns(view).engine_mon
+      Process.exit(old, :kill)
+      assert_receive {:DOWN, ^mon, :process, ^old, _} = down
+      view |> render_info(down) |> rewatch()
+    end
+
+    defp rewatch(view) do
+      if assigns(view).engine_mon do
+        pump(view)
+      else
+        receive do
+          :engine_rewatch -> view |> render_info(:engine_rewatch) |> rewatch()
+        after
+          2_000 -> flunk("Live didn't watch the engine again")
+        end
+      end
+    end
+
+    test "Live watches the new engine and sets it listening again" do
+      view = mount_live()
+      FakeAudio.reset()
+      view = restart_engine(view)
+
+      assert Engine.status() == :listening
+      assert assigns(view).status == :listening
+      assert FakeAudio.current()
+
+      # Frames come again.
+      view = sing_note(view, 69)
+      assert assigns(view).shown.note == 69
+    end
+
+    test "a paused Live leaves the new engine paused" do
+      view = mount_live()
+      view = render_info(view, {:tap, :pause}) |> pump()
+      view = restart_engine(view)
+      assert Engine.status() == :paused
+      assert "Resume" in texts(view)
+
+      render_info(view, {:tap, :pause}) |> pump()
+      assert Engine.status() == :listening
+    end
+  end
+
   test "the view's geometry helpers" do
     assert LiveScreen.window_for(69, nil) == {62, 76}
     # A black-key centre starts the window on the white key below.

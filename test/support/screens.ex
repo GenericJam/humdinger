@@ -15,7 +15,11 @@ defmodule Humdinger.Test.Screens do
   alias Humdinger.{Engine, Music, Settings}
   alias Humdinger.Test.{FakeAudio, FakeOutput}
 
-  @doc "Saved settings, fresh fakes and an Engine named `Humdinger.Engine`."
+  @doc """
+  Saved settings, fresh fakes and an Engine named `Humdinger.Engine`.
+  Screen tests sing in bursts and then look, so the Engine waits a minute,
+  not 150 ms, before it treats missing readings as a stalled input.
+  """
   def start_engine(settings \\ %{}) do
     Mob.State.delete(:settings)
     {:ok, saved} = Settings.merge(Settings.defaults(), settings)
@@ -29,7 +33,7 @@ defmodule Humdinger.Test.Screens do
       on_exit(fn -> restore_env(key, previous) end)
     end
 
-    start_supervised!({Engine, audio: FakeAudio, output: FakeOutput})
+    start_supervised!({Engine, audio: FakeAudio, output: FakeOutput, stall_ms: 60_000})
     :ok
   end
 

@@ -10,8 +10,15 @@ defmodule Humdinger.EngineTest do
     @moduledoc false
     # Forwards what the engine sends to the test process; tells the engine
     # where the notes go, as Humdinger.Output does on subscribe.
-    def send_events(events), do: send(Humdinger.EngineTest, {:output, events})
-    def configure(opts), do: send(Humdinger.EngineTest, {:configure, opts})
+    # (Like a cast, it never fails: the engine's terminate/2 may call it
+    # after the test process has gone.)
+    def send_events(events), do: report({:output, events})
+    def configure(opts), do: report({:configure, opts})
+
+    defp report(message) do
+      if pid = Process.whereis(Humdinger.EngineTest), do: send(pid, message)
+      :ok
+    end
 
     def subscribe(pid) do
       send(pid, {:output, :destinations, destinations()})
@@ -274,6 +281,79 @@ defmodule Humdinger.EngineTest do
     assert_receive {:output, [{:note_off, 69}]}, 2000
   end
 
+  test "a note whose readings stop coming ends on the timer" do
+    ref = listening()
+    # A stalled input: readings simply stop, no error arrives.
+    deliver(ref, sing(0, 300, 69.0))
+    assert [{:note_on, 69, _}] = note_events(output_events())
+    # Due ~150 ms after the last reading (host timers can be late).
+    assert_receive {:output, [{:note_off, 69}]}, 2000
+  end
+
+  test "a take reaching its longest is saved as a phrase" do
+    :ok = stop_supervised(Engine)
+    start_supervised!({Engine, output: Output, max_take_ms: 400})
+    :ok = Engine.subscribe(self())
+    ref = listening()
+    :ok = Engine.record_start()
+    deliver(ref, sing(0, 300, 62.0) ++ sing(300, 300, 65.0))
+
+    assert_receive {:engine, :phrase_saved, %Phrase{} = phrase}, 2000
+    assert Enum.map(phrase.notes, & &1.midi) == [62, 65]
+    refute Engine.recording?()
+    assert Engine.record_stop() == {:error, :not_recording}
+    assert [_saved] = Phrases.list()
+  end
+
+  describe "when the engine ends" do
+    test "a crash turns its note off, stops the microphone and the notification; it comes back off" do
+      :ok = Engine.subscribe(self())
+      ref = listening()
+      deliver(ref, sing(0, 300, 69.0))
+      output_events()
+      old = Process.whereis(Engine)
+      mon = Process.monitor(old)
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        catch_exit(GenServer.call(Engine, :not_a_request))
+        assert_receive {:DOWN, ^mon, :process, ^old, _}
+      end)
+
+      assert output_events() == [{:note_off, 69}]
+      refute Fake.listening?(ref)
+      assert Fake.background() == nil
+      assert eventually(fn -> Process.whereis(Engine) not in [nil, old] end)
+      assert Engine.status() == :off
+    end
+
+    test "Realtime restarts the engine when Output goes, and the old engine's note is turned off" do
+      :ok = stop_supervised(Engine)
+
+      realtime =
+        start_supervised!(
+          {Humdinger.Realtime,
+           name: :realtime_test,
+           children: [
+             %{id: :output, start: {Agent, :start_link, [fn -> nil end]}},
+             {Engine, output: Output}
+           ]}
+        )
+
+      ref = listening()
+      deliver(ref, sing(0, 300, 69.0))
+      output_events()
+      engine = Process.whereis(Engine)
+
+      {:output, output, _, _} =
+        realtime |> Supervisor.which_children() |> List.keyfind(:output, 0)
+
+      Process.exit(output, :kill)
+      assert eventually(fn -> Process.whereis(Engine) not in [nil, engine] end)
+      assert output_events() == [{:note_off, 69}]
+      assert Engine.status() == :off
+    end
+  end
+
   test "a settings change that re-maps notes releases first; a channel change reaches the output after" do
     ref = listening()
     deliver(ref, sing(0, 300, 69.0))
@@ -324,7 +404,7 @@ defmodule Humdinger.EngineTest do
     times = Enum.map(take.trace, &elem(&1, 0))
     assert times == Enum.sort(times)
     voiced = for {t, p} <- take.trace, p != nil, do: t
-    voiced |> Enum.chunk_every(2, 1, :discard) |> Enum.each(fn [x, y] -> assert y - x >= 10 end)
+    voiced |> Enum.chunk_every(2, 1, :discard) |> Enum.each(fn [x, y] -> assert y - x >= 20 end)
     assert Enum.count(take.trace, fn {_, p} -> p == nil end) == 1
 
     assert Enum.all?(take.trace, fn {_, p} ->
@@ -416,19 +496,35 @@ defmodule Humdinger.EngineTest do
       assert owner == Process.whereis(Engine)
       assert eventually(fn -> notice().text == "listening… → Humdinger port · ch 1" end)
 
-      deliver(ref, sing(0, 300, 69.25))
-      assert eventually(fn -> notice().text == "A4 +25¢ → Humdinger port · ch 1" end)
+      # Sung in real time (the notice follows at most 4 times a second)
+      # until the notice shows it, or 3 s.
+      shown =
+        Enum.reduce_while(0..2990//10, false, fn from, _ ->
+          Fake.sing(ref, sing(from, 10, 69.25))
+          Process.sleep(10)
+
+          if notice().text == "A4 +25¢ → Humdinger port · ch 1",
+            do: {:halt, true},
+            else: {:cont, false}
+        end)
+
+      assert shown
     end
 
     test "pause keeps it with Resume; Resume in the shade listens again" do
       :ok = Engine.subscribe(self())
       old = listening()
       :ok = Engine.pause()
+      # Take the earlier status messages, so the next :listening is Resume's.
+      assert_receive {:engine, :status, :listening}
+      assert_receive {:engine, :status, :paused}
       assert %{title: "Humdinger · paused", state: :paused} = notice()
 
       :ok = Fake.tap_background(:resume)
       assert_receive {:engine, :status, :listening}
       assert Fake.current() not in [nil, old]
+      # The notice follows the status message, in the same step.
+      Engine.status()
       assert %{title: "Humdinger · listening", state: :listening} = notice()
 
       :ok = Fake.tap_background(:pause)
@@ -498,7 +594,8 @@ defmodule Humdinger.EngineTest do
              } = notice()
 
       :ok = Fake.tap_background(:resume)
-      assert_receive {:engine, :status, :listening}
+      # The tap reaches the engine before this call does.
+      assert Engine.status() == :listening
     end
 
     @tag :capture_log

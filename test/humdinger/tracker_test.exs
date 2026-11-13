@@ -133,6 +133,38 @@ defmodule Humdinger.TrackerTest do
       assert [{545, {:note_off, 62}}] = timed
     end
 
+    test "a note whose readings stop altogether ends on tick, 150 ms after the last" do
+      for {on_stop, off_at} <- [note_off: 445, hold: 545] do
+        {tr, _} = run(Tracker.new(chromatic(on_stop: on_stop)), sing(0, 300, 62.0))
+        assert Tracker.display(tr).note == 62
+        # The last reading was at 295: the input has stalled.
+        assert Tracker.deadline(tr) == 445
+        assert {^tr, []} = Tracker.tick(tr, 444)
+
+        {tr, events} = Tracker.tick(tr, 445)
+        assert events == if(on_stop == :note_off, do: [{:note_off, 62}], else: [])
+        refute Tracker.display(tr).voiced
+        assert Tracker.deadline(tr) == if(on_stop == :hold, do: off_at)
+
+        {tr, events} = Tracker.tick(tr, off_at)
+        assert events == if(on_stop == :hold, do: [{:note_off, 62}], else: [])
+        assert Tracker.display(tr).note == nil
+      end
+    end
+
+    test "ticks while the readings keep coming change nothing" do
+      {tr, _} = run(Tracker.new(chromatic()), sing(0, 300, 62.0))
+
+      {_tr, timed} =
+        Enum.reduce(sing(300, 1000, 62.0), {tr, []}, fn r, {tr, acc} ->
+          {tr, pushed} = Tracker.push(tr, r)
+          {tr, ticked} = Tracker.tick(tr, r.t + 4)
+          {tr, acc ++ pushed ++ ticked}
+        end)
+
+      assert for(e <- timed, elem(e, 0) in [:note_on, :note_off], do: e) == []
+    end
+
     test "re-voicing a different note during a hold changes note as in a phrase" do
       for {change, expected} <- [
             legato: [{:note_on, 62, :v}, {:note_on, 65, :v}, {:note_off, 62}],
@@ -433,6 +465,17 @@ defmodule Humdinger.TrackerTest do
       assert events == [{:cc, 11, 127}]
       {_tr, timed} = run(tr, sing(300, 300, 69.0))
       assert timed == []
+    end
+
+    test "a change that releases and turns CC 11 off also restores full expression" do
+      # A quiet note leaves expression low; changing mode and turning CC 11
+      # off at once must not leave every later note at that level.
+      {tr, timed} = run(Tracker.new(chromatic()), sing(0, 300, 69.0, db: -50.0))
+      assert [{_, {:cc, 11, low}} | _] = Enum.filter(timed, &match?({_, {:cc, 11, _}}, &1))
+      assert low < 127
+
+      {_tr, events} = Tracker.configure(tr, chromatic(mode: :open, cc11_from_loudness: false))
+      assert events == [{:note_off, 69}, {:cc, 11, 127}]
     end
   end
 

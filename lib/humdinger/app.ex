@@ -34,15 +34,13 @@ defmodule Humdinger.App do
       Ecto.Migrator.run(repo, migrations_dir(), :up, all: true)
     end)
 
-    # Where the MIDI goes: FMutate, the Humdinger port, USB and Bluetooth MIDI.
-    # Lives outside the screens so it keeps sending while FMutate is in front.
-    {:ok, _} = Humdinger.Output.start_link()
-
     Mob.Theme.set(Humdinger.Style.theme())
 
-    # The real-time path lives outside the screens, so it keeps listening
-    # while another app is in front. It starts off; Live calls listen/0.
-    {:ok, _} = Humdinger.Engine.start_link()
+    # The real-time path, outside the screens so it keeps listening and
+    # sending while FMutate is in front: Output (where the MIDI goes:
+    # FMutate, the Humdinger port, USB and Bluetooth MIDI), then the Engine
+    # (starts off; Live calls listen/0), supervised together.
+    {:ok, _} = Humdinger.Realtime.start_link()
 
     # Humdinger is held in portrait, like a phone normally is.
     Mob.Device.lock_orientation(:portrait)

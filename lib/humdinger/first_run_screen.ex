@@ -23,7 +23,9 @@ defmodule Humdinger.FirstRunScreen do
   nothing else changes.
 
   Frames arm a token-guarded 33 ms tick, and every tap target carries
-  `on_press_out={held()}`.
+  `on_press_out={held()}`. It watches the Engine (`Engine.watch/0`) and
+  watches the new one after a restart (Live, underneath, sets it
+  listening again).
   """
 
   use Mob.Screen
@@ -36,10 +38,11 @@ defmodule Humdinger.FirstRunScreen do
   @mimi {170, 150}
   @bar_w 342
   @output_screen Humdinger.OutputScreen
+  @rewatch_ms 100
 
   @impl true
   def mount(params, _session, socket) do
-    :ok = Engine.subscribe(self())
+    {:ok, engine_mon} = Engine.watch()
     destinations = subscribe_output()
     step = Map.get(params, :step, :mic)
     settings = Engine.settings()
@@ -57,6 +60,7 @@ defmodule Humdinger.FirstRunScreen do
         frame: nil,
         shown: nil,
         tick_token: nil,
+        engine_mon: engine_mon,
         destinations: destinations,
         saved_range: nil
       )
@@ -471,6 +475,24 @@ defmodule Humdinger.FirstRunScreen do
     do: {:noreply, Mob.Socket.assign(socket, :status, status)}
 
   def handle_info({:engine, _kind, _payload}, socket), do: {:noreply, socket}
+
+  def handle_info({:DOWN, mon, :process, _pid, _reason}, %{assigns: %{engine_mon: mon}} = socket) do
+    send(self(), :engine_rewatch)
+    {:noreply, Mob.Socket.assign(socket, :engine_mon, nil)}
+  end
+
+  def handle_info(:engine_rewatch, %{assigns: %{engine_mon: nil}} = socket) do
+    case Engine.watch() do
+      {:ok, mon} ->
+        {:noreply, Mob.Socket.assign(socket, engine_mon: mon, status: Engine.status())}
+
+      {:error, :down} ->
+        Process.send_after(self(), :engine_rewatch, @rewatch_ms)
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info(:engine_rewatch, socket), do: {:noreply, socket}
 
   def handle_info({:tick, token}, %{assigns: %{tick_token: token}} = socket) do
     a = socket.assigns

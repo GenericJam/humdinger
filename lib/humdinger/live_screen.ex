@@ -21,6 +21,12 @@ defmodule Humdinger.LiveScreen do
   and asks for the microphone when it reports back with `{:first_run,
   :done}`.
 
+  Live watches the engine (`Engine.watch/0`). If the engine goes down, its
+  supervisor starts a new one, `:off`; Live watches that one (retrying
+  every 100 ms until it is up), reloads the settings and puts it back as
+  it was: listening, or listening then paused. A recording in progress is
+  lost with the old engine.
+
   ## Frames
 
   Engine frames (≤ 30/s) go into a `Humdinger.LiveFeed` and arm a
@@ -76,6 +82,7 @@ defmodule Humdinger.LiveScreen do
   @blink_ms 140
   @toast_ms 3_500
   @drag_quiet_ms 1_000
+  @rewatch_ms 100
 
   @phrase_screen Humdinger.PhraseScreen
   @phrases_screen Humdinger.PhrasesScreen
@@ -85,7 +92,7 @@ defmodule Humdinger.LiveScreen do
 
   @impl true
   def mount(_params, _session, socket) do
-    :ok = Engine.subscribe(self())
+    {:ok, engine_mon} = Engine.watch()
     destinations = subscribe_output()
     settings = Engine.settings()
 
@@ -111,6 +118,7 @@ defmodule Humdinger.LiveScreen do
         sens_drag: nil,
         drag_token: nil,
         recording: recording_state(Engine.recording?()),
+        engine_mon: engine_mon,
         rec_changed_at: now_ms() - 1_000,
         rec_token: nil,
         toast: nil,
@@ -638,6 +646,41 @@ defmodule Humdinger.LiveScreen do
 
   def handle_info({:engine, _other, _payload}, socket), do: {:noreply, socket}
 
+  # The engine went down; its supervisor starts a new one, `:off` and
+  # without subscribers. Watch it again, then put it back the way the
+  # singer had it: listening, or paused.
+  def handle_info({:DOWN, mon, :process, _pid, _reason}, %{assigns: %{engine_mon: mon}} = socket) do
+    send(self(), :engine_rewatch)
+    {:noreply, Mob.Socket.assign(socket, :engine_mon, nil)}
+  end
+
+  def handle_info(:engine_rewatch, %{assigns: %{engine_mon: nil}} = socket) do
+    case Engine.watch() do
+      {:ok, mon} ->
+        was = socket.assigns.status
+
+        socket =
+          socket
+          |> Mob.Socket.assign(
+            engine_mon: mon,
+            recording: nil,
+            rec_token: nil,
+            frame: idle_frame(),
+            status: Engine.status()
+          )
+          |> reload_settings()
+          |> restore_listening(was)
+
+        {:noreply, refresh(socket)}
+
+      {:error, :down} ->
+        Process.send_after(self(), :engine_rewatch, @rewatch_ms)
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info(:engine_rewatch, socket), do: {:noreply, socket}
+
   def handle_info({:tick, token}, %{assigns: %{tick_token: token}} = socket) do
     a = socket.assigns
     frame = a.frame
@@ -830,6 +873,18 @@ defmodule Humdinger.LiveScreen do
   end
 
   defp listen(socket), do: socket
+
+  # After an engine restart (the new one is :off).
+  defp restore_listening(socket, :listening), do: listen(socket)
+
+  defp restore_listening(socket, :paused) do
+    socket = listen(socket)
+    if socket.assigns.status == :listening, do: Engine.pause()
+    Mob.Socket.assign(socket, :status, Engine.status())
+  end
+
+  defp restore_listening(socket, {:error, _reason}), do: listen(socket)
+  defp restore_listening(socket, _off), do: socket
 
   defp open(socket, screen, params) do
     if Code.ensure_loaded?(screen),

@@ -90,9 +90,10 @@ mic ─► Audio (NIF: YIN pitch, level, spectrum) ─► Engine ─► Tracker 
 ```
 
 The real-time path runs in long-lived processes started from `App.on_start`
-(`Engine`, `Output`, `FMutate`), never in a screen: Humdinger keeps
-listening while the singer plays FMutate in the foreground. Screens
-subscribe for display and send commands.
+(`Humdinger.Realtime`, a `rest_for_one` supervisor of `Output` then
+`Engine`; `FMutate` under its own supervisor), never in a screen:
+Humdinger keeps listening while the singer plays FMutate in the
+foreground. Screens subscribe for display and send commands.
 
 ### Shared modules (in place; extend, don't fork)
 
@@ -145,11 +146,14 @@ Tests: `Fake.background/0` (`%{owner, notice} | nil`),
 
 **Tracker** (`Humdinger.Tracker`, pure): readings in, MIDI events out.
 `new(settings)`, `push(tracker, reading) :: {tracker, [event]}`,
-`tick(tracker, t_ms) :: {tracker, [event]}` (hold timeouts),
-`deadline(tracker) :: t_ms | nil` (when `tick/2` next matters),
+`tick(tracker, t_ms) :: {tracker, [event]}` (hold timeouts, and closes the
+gate when no reading at all came for 150 ms: a stalled input),
+`deadline(tracker) :: t_ms | nil` (when `tick/2` next matters: while
+voiced, last voiced reading + 150 ms; else the end of a hold),
 `release(tracker) :: {tracker, [event]}` (note off, bend centred, CC 1
 zeroed), `configure(tracker, settings) :: {tracker, [event]}` (releases
-first when mode, scale, octave, transpose, bend range or channel change),
+first when mode, scale, octave, transpose, bend range or channel change;
+turning CC 11 off sends `{:cc, 11, 127}` either way),
 `display(tracker) :: %{pitch: float | nil, note: midi | nil, cents: float
 | nil, hz: float | nil, db: float, velocity: 1..127 | nil, voiced:
 boolean, holding: boolean}` (pitch and note after octave/transpose: the
@@ -201,13 +205,16 @@ merges into the current map. Fields and defaults: `sensitivity_db` −55
 `destinations` through `update/1`, the engine everything else, both from a
 fresh load so neither clobbers the other.
 
-**Engine** (`Humdinger.Engine`, GenServer, started in `App.on_start`
+**Engine** (`Humdinger.Engine`, GenServer under `Humdinger.Realtime`,
 after Output and before the root screen; starts `:off`, the Live screen
-calls `listen/0`): `start_link(audio:, output:, name:)` (defaults
-`Audio.impl/0`, i.e. the NIF on the phone and `Audio.Fake` in host tests;
-`config :humdinger, :output` or `Humdinger.Output`; `Humdinger.Engine`).
-Every call also takes the server as an optional first argument.
-`subscribe(pid)` (monitored; replies with the current status at once) →
+calls `listen/0`): `start_link(audio:, output:, name:, max_take_ms:)`
+(defaults `Audio.impl/0`, i.e. the NIF on the phone and `Audio.Fake` in
+host tests; `config :humdinger, :output` or `Humdinger.Output`;
+`Humdinger.Engine`; 10 min). Every call also takes the server as an
+optional first argument.
+`watch()` :: `{:ok, monitor} | {:error, :down}` (subscribe + monitor the
+engine; screens use it) or `subscribe(pid)` (monitored; replies with the
+current status at once) →
 `{:engine, :frame, frame}` ≤ 30/s while listening (token-guarded 33 ms
 timer, latest state, only when changed; plus one per status change),
 `{:engine, :status, status}` on change, `{:engine, :spectrum, spectrum}`
@@ -231,10 +238,22 @@ quieter than gate − 10 dB), `:listening`, `:flat`/`:sharp` (sounding note,
 voice ≥ 10¢ off), `:aria` (≥ gate + 35 dB), `:singing`; `sent` = the last
 note on/off sent (`Midi.describe/2`); `background` = `:off | :running |
 {:error, reason}`. Readings move onto one engine clock that runs across
-pause/resume; a hold timer fires `Tracker.tick/2` at `Tracker.deadline/1`.
+pause/resume; a timer fires `Tracker.tick/2` at `Tracker.deadline/1`
+(hold ends, stalled input).
 A take (`Engine.Recording`, pure) has the notes from the note on/off
 pairs sent (ms from `record_start`, open notes closed at the stop) and
-the tracker's smoothed (shifted) pitch every ≥ 10 ms, one nil per gap.
+the tracker's smoothed (shifted) pitch every ≥ 20 ms, one nil per gap; at
+10 minutes it is finished and saved as a phrase (`{:engine,
+:phrase_saved, phrase}`), so a forgotten recording stays bounded.
+
+When the engine ends (a crash, or `Realtime` restarting it after Output
+went), `terminate/2` (it traps exits) sends the sounding note's note-off
+and bend/CC resets to the output, stops the microphone and the
+notification. The supervisor starts a new engine: `:off`, no subscribers,
+no take. Screens that `watch/0`ed get `:DOWN`, then `watch/0` again
+every 100 ms until it succeeds: Live puts the new engine back as it was
+(listening, or listening then paused), Spectrum turns its spectrum relay
+on again, First run just watches. A recording in progress is lost.
 
 The engine owns the background notification (`Humdinger.Background`,
 text from the pure `Engine.Notice`): every successful `listen/0`/`resume/0`

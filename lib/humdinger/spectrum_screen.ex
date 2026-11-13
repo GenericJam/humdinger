@@ -5,9 +5,10 @@ defmodule Humdinger.SpectrumScreen do
   drawn on top, so a singer can see why the note jumped to a harmonic.
 
   Opened from Live's "Spectrum ›" chip; "Notes" goes back. On mount it
-  subscribes to the Engine and turns its spectrum relay on
+  watches the Engine (`Engine.watch/0`) and turns its spectrum relay on
   (`Engine.spectrum(self(), true)`), and off again in `terminate/2` (the
-  Engine also drops it when this process ends).
+  Engine also drops it when this process ends). After an engine restart it
+  watches the new engine and turns the relay on again.
 
   The trace is the raw sung pitch (Hz → MIDI, before octave and transpose,
   so it sits on the harmonics). A frame's pitch is placed at its own `t`
@@ -26,10 +27,11 @@ defmodule Humdinger.SpectrumScreen do
   @window_ms 4_000
   @box {350, 470}
   @mimi {60, 56}
+  @rewatch_ms 100
 
   @impl true
   def mount(_params, _session, socket) do
-    :ok = Engine.subscribe(self())
+    {:ok, engine_mon} = Engine.watch()
     :ok = Engine.spectrum(self(), true)
 
     socket =
@@ -40,6 +42,7 @@ defmodule Humdinger.SpectrumScreen do
         last_column: nil,
         feed: LiveFeed.new(@window_ms + 500),
         tick_token: nil,
+        engine_mon: engine_mon,
         ops: Spectrum.ops(%{columns: [], trace: [], now_ms: 0, pitch: nil}, 350, 470),
         mimi_ops: mimi_ops(nil)
       )
@@ -172,6 +175,26 @@ defmodule Humdinger.SpectrumScreen do
   end
 
   def handle_info({:engine, _kind, _payload}, socket), do: {:noreply, socket}
+
+  # The engine was restarted: watch the new one and ask for the spectrum again.
+  def handle_info({:DOWN, mon, :process, _pid, _reason}, %{assigns: %{engine_mon: mon}} = socket) do
+    send(self(), :engine_rewatch)
+    {:noreply, Mob.Socket.assign(socket, :engine_mon, nil)}
+  end
+
+  def handle_info(:engine_rewatch, %{assigns: %{engine_mon: nil}} = socket) do
+    case Engine.watch() do
+      {:ok, mon} ->
+        :ok = Engine.spectrum(self(), true)
+        {:noreply, Mob.Socket.assign(socket, :engine_mon, mon)}
+
+      {:error, :down} ->
+        Process.send_after(self(), :engine_rewatch, @rewatch_ms)
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info(:engine_rewatch, socket), do: {:noreply, socket}
 
   def handle_info({:tick, token}, %{assigns: %{tick_token: token}} = socket) do
     a = socket.assigns

@@ -31,6 +31,30 @@ defmodule Humdinger.SpectrumScreenTest do
     refute FakeAudio.spectrum?(FakeAudio.current())
   end
 
+  test "after an engine restart it asks the new engine for the spectrum" do
+    view = mount_screen(SpectrumScreen)
+    old = Process.whereis(Engine)
+    mon = assigns(view).engine_mon
+    # The test supervisor restarts the engine, as Humdinger.Realtime does.
+    Process.exit(old, :kill)
+    assert_receive {:DOWN, ^mon, :process, ^old, _} = down
+    view = view |> render_info(down) |> rewatch()
+    assert assigns(view).engine_mon
+
+    # The new engine is off; when something listens, the spectrum is on.
+    :ok = Engine.listen()
+    assert FakeAudio.spectrum?(FakeAudio.current())
+  end
+
+  defp rewatch(view) do
+    if assigns(view).engine_mon do
+      view
+    else
+      assert_receive :engine_rewatch, 1_000
+      view |> render_info(:engine_rewatch) |> rewatch()
+    end
+  end
+
   test "draws the columns and the heard pitch, and names the note" do
     view = mount_screen(SpectrumScreen) |> pump()
     empty_ops = assigns(view).ops
@@ -67,7 +91,10 @@ defmodule Humdinger.SpectrumScreenTest do
 
     FakeAudio.spectrum(ref, column(10, 60))
     view = pump(view)
-    assert [%{t: 10}] = assigns(view).columns
+    # Engine time: the column's audio t plus the listen's offset (0 or a
+    # millisecond or two since the engine started).
+    assert [%{t: t}] = assigns(view).columns
+    assert t in 10..30
   end
 
   test "Notes goes back to Live; every tap target carries the press-out handle" do

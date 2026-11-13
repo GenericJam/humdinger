@@ -3,7 +3,8 @@ defmodule Humdinger.Tracker do
   Turns the microphone's pitch readings into MIDI events: the heart of
   Humdinger. Pure: `push/2` takes one `Humdinger.Audio` reading (`%{t, hz,
   clarity, db}`, `t` in ms) and returns the events it caused, `tick/2`
-  ends a hold when no more readings come, `release/1` turns everything off.
+  moves time on without a reading (it ends a hold, or a note whose
+  readings stopped coming), `release/1` turns everything off.
   Events carry no channel: `{:note_on, note, velocity}`, `{:note_off,
   note}`, `{:pitch_bend, -8192..8191}`, `{:cc, number, value}`.
 
@@ -59,7 +60,11 @@ defmodule Humdinger.Tracker do
   `:hold` keeps it for 250 ms after the last voiced reading: a breath or
   a consonant that re-voices on the same note continues it without a new
   note on, a different note changes as in a phrase, and silence ends it
-  (on a later reading or on `tick/2`, see `deadline/1`).
+  (on a later reading or on `tick/2`, see `deadline/1`). If the readings
+  stop altogether (readings come every ~10 ms; a stalled microphone sends
+  none), `tick/2` closes the gate 150 ms after the last one, so a note
+  can't sound on forever; the margin over the 30 ms a reading needs keeps
+  a busy moment of the caller from chopping a note.
 
   **Velocity** maps the loudest reading of the onset (the readings that
   opened the gate) from `sensitivity_db` (16) to −10 dBFS (127); a note
@@ -104,6 +109,7 @@ defmodule Humdinger.Tracker do
   @keep_clarity 0.6
   @keep_below_gate_db 6.0
   @close_ms 30
+  @stall_ms 150
   @hold_ms 250
   @leap 1.5
   @hysteresis 0.25
@@ -127,6 +133,7 @@ defmodule Humdinger.Tracker do
     :confirm_ms,
     :tau_ms,
     :shift,
+    stall_ms: @stall_ms,
     t: nil,
     db: -90.0,
     hz: nil,
@@ -152,9 +159,15 @@ defmodule Humdinger.Tracker do
 
   @type t :: %__MODULE__{}
 
-  @doc "A tracker for these settings."
-  @spec new(Settings.t()) :: t()
-  def new(%Settings{} = settings), do: apply_settings(%__MODULE__{}, settings)
+  @doc """
+  A tracker for these settings. Option `stall_ms` (default 150): how long
+  without any reading counts as a stalled input (see `tick/2`).
+  """
+  @spec new(Settings.t(), keyword()) :: t()
+  def new(%Settings{} = settings, opts \\ []) do
+    tracker = %__MODULE__{stall_ms: Keyword.get(opts, :stall_ms, @stall_ms)}
+    apply_settings(tracker, settings)
+  end
 
   @doc """
   The response time of a `response` setting in ms: how long a voice or a
@@ -177,7 +190,8 @@ defmodule Humdinger.Tracker do
   def configure(%__MODULE__{settings: old} = tracker, %Settings{} = settings) do
     if Enum.any?(@release_on, &(Map.fetch!(old, &1) != Map.fetch!(settings, &1))) do
       {released, events} = release(tracker)
-      {apply_settings(released, settings), events}
+      {released, cc11} = maybe_restore_cc11(released, settings.cc11_from_loudness)
+      {apply_settings(released, settings), events ++ cc11}
     else
       {tracker, cc1} = maybe_zero_cc1(tracker, settings.cc1_from_vibrato)
       {tracker, cc11} = maybe_restore_cc11(tracker, settings.cc11_from_loudness)
@@ -193,12 +207,24 @@ defmodule Humdinger.Tracker do
     {tracker, expired ++ events}
   end
 
-  @doc "Advance time to `t` without a reading: ends a hold that has run out."
+  @doc """
+  Advance time to `t` without a reading: closes the gate when no reading
+  at all came for 150 ms (a stalled input), and ends a hold that has run
+  out.
+  """
   @spec tick(t(), number()) :: {t(), [event()]}
-  def tick(%__MODULE__{} = tracker, t), do: expire_hold(tracker, t)
+  def tick(%__MODULE__{} = tracker, t) do
+    {tracker, closed} = close_stalled(tracker, t)
+    {tracker, expired} = expire_hold(tracker, t)
+    {tracker, closed ++ expired}
+  end
 
-  @doc "When `tick/2` next has something to do (the end of a hold), or nil."
+  @doc """
+  When `tick/2` next has something to do, or nil: while voiced, when the
+  readings would count as stalled; else the end of a hold.
+  """
   @spec deadline(t()) :: number() | nil
+  def deadline(%__MODULE__{voiced: true, last_voiced_t: last, stall_ms: stall}), do: last + stall
   def deadline(%__MODULE__{hold_until: until}), do: until
 
   @doc "Everything off: the note, the bend (centred) and the mod wheel (0)."
@@ -381,6 +407,12 @@ defmodule Humdinger.Tracker do
         {%{tracker | note: nil, velocity: nil}, [{:note_off, tracker.note} | cc1]}
     end
   end
+
+  defp close_stalled(%{voiced: true, last_voiced_t: last, stall_ms: stall} = tracker, t)
+       when t - last >= stall,
+       do: close(tracker)
+
+  defp close_stalled(tracker, _t), do: {tracker, []}
 
   defp expire_hold(%{hold_until: until, voiced: false, note: note} = tracker, t)
        when is_number(until) and t >= until and note != nil do
