@@ -214,8 +214,9 @@ this implementation, for FMutate to implement the other side).
   and a hidden connection (`hidden_connect_node/1`, messages to
   `:fmutate_instance`). In a dev build on Android, `Mob.Dist` starts the
   loopback dev node a few seconds after boot; the link uses that node (its
-  name is what the pairing declares) and waits 15 s for it before starting
-  its own under the same name, so `mix mob.connect` keeps working.
+  name is what the pairing declares), waiting up to 15 s for it and starting
+  its own under the same name if it doesn't come, so `mix mob.connect`
+  keeps working with a pairing stored.
   `Transport.setup/1` (in `App.on_start`, before `Mob.Dist`) makes
   `Humdinger.FMutate.Epmd` the kernel `epmd_module`: FMutate's node is
   routed to its port from the pairing, everything else (the dev node's
@@ -235,24 +236,47 @@ this implementation, for FMutate to implement the other side).
   pairing (validated by `Record`), and for TLS only after the tunnel checked
   FMutate's certificate; mDNS and pairing input never make atoms.
 - **mDNS.** One-shot legacy unicast queries (from an ephemeral port), so
-  replies come back unicast and Android needs no `MulticastLock`.
+  replies come back unicast and Android needs no `MulticastLock`. FMutate on
+  Android should advertise with `NsdManager` (the system responder owns
+  5353). A Mac standing in for FMutate: advertise with `dns-sd -R "FMutate
+  A" _fmutate._tcp local <port> v=1 inst=a node=… fp=… port=… dport=…`;
+  `Reference.Responder` binds 5353 next to mDNSResponder, but processes
+  started from an agent's terminal can't use LAN multicast on macOS (Local
+  Network privacy), so the phone doesn't hear it.
 - **Storage.** `mob_secure_store` (git dependency pinned to a commit; not on
   Hex yet, so `mob.exs` acknowledges it as an unsigned plugin). On a phone
   without the plugin's NIF (BEAM-only deploy after adding it) it fails
   closed: pairing reports `{:store, :secure_store_unavailable}` until
   `mix mob.deploy --native`.
+- **Device name.** `Mob.Device.model/0` answers `"Android"` on Android (mob's
+  NIF doesn't read `Build.MODEL` yet), so pairing reads `getprop
+  ro.product.model` ("moto g power (2021)").
 - **Not done here:** waking FMutate on the same phone through its
   signature-permission service (FMutate doesn't have it yet); Humdinger
   sends `signing_cert_sha256: null` (a self-reported hash proves nothing;
   protocol §3).
-- **Verify.** `mix test test/humdinger/fmutate*`: pairing by link and by
-  code (SRP, mDNS on loopback), wrong code ×5, expiry, single use,
+- **Verify (host).** `mix test test/humdinger/fmutate*`: pairing by link and
+  by code (SRP, mDNS on loopback), wrong code ×5, expiry, single use,
   fingerprint mismatch, Allow/Deny/withdraw, then real distribution to a
-  `:peer` FMutate with no epmd (loopback TCP and TLS through the tunnel),
-  MIDI received, status events, reconnect, revoke, forget. A Mac can play
-  FMutate for a phone: run `Humdinger.FMutate.Reference.start/1` in a node
-  started with `Reference.Epmd` (and `-proto_dist inet_tls
-  -ssl_dist_optfile` for TLS), pairing on `0.0.0.0` with `advertise:`.
+  `:peer` FMutate with no epmd (loopback TCP, and TLS through the tunnel),
+  MIDI received, status events, reconnect, revoke, forget.
+- **Verify (phone, Mac as FMutate).** Start a node on the Mac with
+  `--erl "-start_epmd false -epmd_module Elixir.Humdinger.FMutate.Reference.Epmd
+  -kernel erl_epmd_node_listen_port 45124 -proto_dist inet_tls
+  -ssl_dist_optfile <file from Pairings.write_ssl_dist_optfile/2>"` and
+  `ERL_LIBS=_build/dev/lib`, run `Humdinger.FMutate.Reference.start/1` with
+  `pairing: [cert:, host: <Mac IP>, port: 45123, dist_port: 45124,
+  dist_proto: :inet_tls, approve: fn _ -> :allow end]`, advertise with
+  `dns-sd -R`, then drive the phone over `mix mob.connect` (RPC
+  `Pairing.pair/2`, `FMutate.status/0`, `send_midi/1`). Checked on the moto
+  g power (Android 11), 2026-11-12: `ssl`/`public_key`/`crypto`/`asn1`
+  load, SRP and certificates work, `MobSecureStore.Native` (Keystore)
+  stores and deletes; mDNS found the Mac in 1.5 s without a multicast
+  lock; pairing by typed code and by link, TLS distribution through the
+  tunnel over Wi-Fi, MIDI and status events arrived; the pairing survived
+  app restarts (with `mob.connect`: on Mob's dev node; without: the link's
+  own hidden node after the grace); `forget/0` revoked it on both sides.
+  Same-phone loopback was only tested on the host (no FMutate app yet).
 
 ## Rules for Mob screens here (from Choir Coach; avoid its traps)
 

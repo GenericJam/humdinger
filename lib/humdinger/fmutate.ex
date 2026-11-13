@@ -43,7 +43,8 @@ defmodule Humdinger.FMutate do
 
   @backoff [1_000, 2_000, 5_000, 10_000, 30_000]
   # Mob.Dist starts the development node 3 s after boot and waits up to 10 s
-  # for the Mac's epmd; the link waits that long before starting its own.
+  # for the Mac's epmd; the link waits that long (or until the node is up)
+  # before starting its own.
   @dev_grace 15_000
   @call_timeout 5_000
 
@@ -132,8 +133,11 @@ defmodule Humdinger.FMutate do
   def handle_continue({:load, grace}, %{store: {store, store_opts}} = state) do
     case store.load(store_opts) do
       {:ok, record} ->
-        delay = if Node.alive?(), do: 0, else: grace
-        {:noreply, schedule(%{state | record: record}, delay)}
+        state = %{state | record: record}
+
+        if grace > 0 and not Node.alive?(),
+          do: {:noreply, await_node(state, now() + grace)},
+          else: {:noreply, connect(state)}
 
       :none ->
         {:noreply, state}
@@ -211,6 +215,12 @@ defmodule Humdinger.FMutate do
 
   @impl true
   def handle_info(:connect, state), do: {:noreply, connect(%{state | timer: nil})}
+
+  def handle_info({:await_node, deadline}, state) do
+    if Node.alive?() or now() >= deadline,
+      do: {:noreply, connect(%{state | timer: nil})},
+      else: {:noreply, await_node(state, deadline)}
+  end
 
   def handle_info({:connected, pid, conn, firmware}, %{connecting: {pid, _}} = state) do
     old = state
@@ -319,6 +329,15 @@ defmodule Humdinger.FMutate do
     state = cancel_timer(state)
     %{state | timer: Process.send_after(self(), :connect, delay)}
   end
+
+  # Development build: wait for Mob.Dist's node (checked each 500 ms) until
+  # the deadline, then start one.
+  defp await_node(state, deadline) do
+    state = cancel_timer(state)
+    %{state | timer: Process.send_after(self(), {:await_node, deadline}, 500)}
+  end
+
+  defp now, do: System.monotonic_time(:millisecond)
 
   defp cancel_timer(%{timer: nil} = state), do: state
 

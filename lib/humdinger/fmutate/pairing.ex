@@ -38,6 +38,7 @@ defmodule Humdinger.FMutate.Pairing do
   @app_name "Humdinger"
   @discovery_interval 2_000
   @fresh_candidates_ms 5_000
+  @getprop "/system/bin/getprop"
 
   @typedoc "What `pair/2` takes: a parsed link, or a typed code (optionally for one candidate)."
   @type offer :: PairLink.t() | %{required(:code) => String.t(), optional(:candidate) => map()}
@@ -348,13 +349,27 @@ defmodule Humdinger.FMutate.Pairing do
     }
   end
 
+  # The name FMutate's Allow sheet shows ("on moto g power (2021)").
   defp device_name do
-    if System.get_env("MOB_BEAMS_DIR") do
-      Mob.Device.model()
-    else
-      {:ok, host} = :inet.gethostname()
-      List.to_string(host)
+    cond do
+      System.get_env("MOB_BEAMS_DIR") == nil -> hostname()
+      File.exists?(@getprop) -> android_model() || Mob.Device.model()
+      true -> Mob.Device.model()
     end
+  end
+
+  # Mob.Device.model/0 answers "Android" on Android (mob doesn't read
+  # Build.MODEL yet); the system property is readable by any app.
+  defp android_model do
+    case System.cmd(@getprop, ["ro.product.model"]) do
+      {model, 0} -> if String.trim(model) != "", do: String.trim(model)
+      _ -> nil
+    end
+  end
+
+  defp hostname do
+    {:ok, host} = :inet.gethostname()
+    List.to_string(host)
   end
 
   defp now, do: System.monotonic_time(:millisecond)

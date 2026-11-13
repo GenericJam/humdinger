@@ -136,6 +136,15 @@ defmodule Humdinger.FMutateTest do
              {:connected, %{name: "FMutate A", firmware: "X0X", device: "Pixel 7", emulator: nil}}
   end
 
+  test "while distribution may still come up (development build), a stored pairing waits for it",
+       ctx do
+    :ok = Store.save(record(), key: ctx.key)
+    started = System.monotonic_time(:millisecond)
+    _link = start_link(ctx, grace_ms: 300)
+    assert_receive {:connect, _, at}, 2_000
+    assert at - started >= 300
+  end
+
   test "MIDI goes out only while connected", ctx do
     ScriptedTransport.script(fn _ -> {:error, :unreachable} end)
     link = start_link(ctx)
