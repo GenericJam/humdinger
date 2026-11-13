@@ -31,6 +31,10 @@ defmodule Humdinger.App do
 
     Mob.Theme.set(Humdinger.Style.theme())
 
+    # The real-time path lives outside the screens, so it keeps listening
+    # while another app is in front. It starts off; Live calls listen/0.
+    {:ok, _} = Humdinger.Engine.start_link()
+
     # Humdinger is held in portrait, like a phone normally is.
     Mob.Device.lock_orientation(:portrait)
     Mob.Screen.start_root(Humdinger.LiveScreen)
