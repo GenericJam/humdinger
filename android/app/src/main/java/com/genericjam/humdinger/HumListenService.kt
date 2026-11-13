@@ -95,7 +95,7 @@ object HumListenBridge {
     const val NOTIFICATION_ID = 4410
     const val ACTION_BUTTON = "com.genericjam.humdinger.listen.BUTTON"
     const val EXTRA_BUTTON = "button"
-    private const val CHANNEL_ID = "humdinger_listening"
+    private const val CHANNEL_ID = "humdinger_live"
     private const val MIN_POST_MS = 250L
     private const val STATE_PAUSED = 1
     private const val STATE_RECORDING = 2
@@ -185,9 +185,15 @@ object HumListenBridge {
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             if (nm.getNotificationChannel(CHANNEL_ID) == null) {
+                // Default importance, without sound or vibration: a low one
+                // files the notification under "Silent", at the bottom of the
+                // shade with its buttons folded away, while the singer wants
+                // it at hand.
                 nm.createNotificationChannel(
-                    NotificationChannel(CHANNEL_ID, "Listening", NotificationManager.IMPORTANCE_LOW).apply {
+                    NotificationChannel(CHANNEL_ID, "Listening", NotificationManager.IMPORTANCE_DEFAULT).apply {
                         description = "Shown while Humdinger listens in the background"
+                        setSound(null, null)
+                        enableVibration(false)
                         setShowBadge(false)
                     }
                 )
@@ -205,7 +211,7 @@ object HumListenBridge {
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .addAction(0, if (s == STATE_PAUSED) "Resume" else "Pause", button(context, if (s == STATE_PAUSED) "resume" else "pause", 1))
             .addAction(0, if (s == STATE_RECORDING) "Stop rec" else "Record", button(context, if (s == STATE_RECORDING) "record_stop" else "record", 2))

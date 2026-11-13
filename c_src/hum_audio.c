@@ -62,6 +62,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
@@ -513,6 +514,9 @@ static int64_t sample_ms(double index) {
 
 static void *listen_main(void *arg) {
     uint64_t generation = (uint64_t)(uintptr_t)arg;
+    /* Audio priority (Android's THREAD_PRIORITY_AUDIO), so the UI and the
+     * BEAM's schedulers don't hold the readings up. Best effort. */
+    if (setpriority(PRIO_PROCESS, (id_t)gettid(), -16) != 0) LOGE("listen: could not raise the thread's priority");
     int rate = E.in_rate;
     pitch_detector *p = pitch_new(rate, MIN_HZ, MAX_HZ);
     spectrum *sp = spectrum_new(rate);
@@ -1172,6 +1176,7 @@ static ERL_NIF_TERM missing_libs(ErlNifEnv *env) {
  * device id or nil (the system default). Stops whatever was listening. Dirty IO. */
 static ERL_NIF_TERM nif_listen(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
     (void)argc;
+    int64_t called_ns = now_ns(); /* readings' t counts from here: opening the stream takes ~100 ms */
     ErlNifPid owner;
     int device = 0;
     if (!enif_get_local_pid(env, argv[0], &owner) || !enif_is_ref(env, argv[1])) return enif_make_badarg(env);
@@ -1210,7 +1215,7 @@ static ERL_NIF_TERM nif_listen(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv
     atomic_store(&E.spectra_sent, 0);
     atomic_store(&E.lag_sum_ns, 0);
     atomic_store(&E.lag_max_ns, 0);
-    E.listen_ns = now_ns();
+    E.listen_ns = called_ns;
 
     listener_res *res = enif_alloc_resource(listener_type, sizeof(listener_res));
     res->generation = generation;
