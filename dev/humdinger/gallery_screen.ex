@@ -12,8 +12,19 @@ defmodule Humdinger.GalleryScreen do
 
   use Mob.Screen
 
-  alias Humdinger.{Audio, Mimi, Music, Style}
-  alias Humdinger.Views.{PianoStrip, QrFrame, RangeBar, Spectrum, TuningMeter, Waveform}
+  alias Humdinger.{Audio, Mimi, Music, Scale, Style}
+
+  alias Humdinger.Views.{
+    PhraseThumb,
+    PianoRoll,
+    PianoStrip,
+    PitchRoll,
+    QrFrame,
+    RangeBar,
+    Spectrum,
+    TuningMeter,
+    Waveform
+  }
 
   @typedoc "A labelled canvas: name, width, height, ops."
   @type scene :: {String.t(), number(), number(), [map()]}
@@ -42,7 +53,7 @@ defmodule Humdinger.GalleryScreen do
   @doc "Every scene, in gallery order."
   @spec scenes() :: [scene()]
   def scenes do
-    mimi_scenes() ++ live_scenes() ++ spectrum_scenes() ++ import_pair_scenes()
+    mimi_scenes() ++ live_scenes() ++ spectrum_scenes() ++ phrase_scenes() ++ import_pair_scenes()
   end
 
   # Boards 02-live (top) and 05-first_run.
@@ -54,9 +65,147 @@ defmodule Humdinger.GalleryScreen do
       {"PianoStrip: A4, a little flat", 334, 129, PianoStrip.ops(strip, 334, 129)},
       {"PianoStrip: F#4 lit", 334, 129, PianoStrip.ops(black, 334, 129)},
       {"TuningMeter: −12¢", 213, 22, TuningMeter.ops(%{cents: -12.0, tolerance: 10}, 213, 22)},
+      {"PitchRoll: D Dorian, singing up to A4", 350, 256,
+       PitchRoll.ops(pitch_roll_sample(), 350, 256)},
       {"RangeBar: choosing the lowest", 342, 46,
        RangeBar.ops(%{pitch: 40.0, low: 40, high: nil}, 342, 46)}
     ]
+  end
+
+  # The board's trace and sent notes, from its pixel positions: the playhead
+  # (x 306) is now, 4 s span 306 px; row r is MIDI 72 − r.
+  defp pitch_roll_sample do
+    now = 10_000
+    t = fn x -> round(now - (306 - x) * 4000 / 306) end
+
+    trace =
+      for {x, row} <- [
+            {40, 10.2},
+            {70, 9.9},
+            {100, 10.1},
+            {108, 8.3},
+            {146, 7.9},
+            {158, 7.1},
+            {200, 6.9},
+            {214, 5.2},
+            {256, 4.9},
+            {268, 3.4},
+            {290, 3.2},
+            {306, 3.12}
+          ],
+          do: {t.(x), 72 - row}
+
+    notes =
+      for {x, row, w} <- [{40, 10, 60}, {104, 8, 46}, {154, 7, 52}, {210, 5, 50}, {264, 3, nil}] do
+        %{start_ms: t.(x), end_ms: w && t.(x + w), midi: 72 - row}
+      end
+
+    %{now_ms: now, trace: trace, notes: notes, scale: Scale.new("D", :dorian), center_midi: 67}
+  end
+
+  # Boards 06-record_review, 12-import_audio (the editor) and 07-saved (thumbs).
+  defp phrase_scenes do
+    eighth = 60_000 / 96 / 2
+
+    review = %{
+      notes:
+        for {s, d, m} <- [
+              {0, 2, 62},
+              {2, 1, 64},
+              {3, 1, 65},
+              {4, 3, 69},
+              {8, 2, 65},
+              {10, 2, 64},
+              {12, 2, 62},
+              {14, 2, 60}
+            ] do
+          %{start_ms: s * eighth, dur_ms: d * eighth, midi: m}
+        end,
+      trace: [
+        {100, 62.2},
+        {500, 62.0},
+        {900, 63.1},
+        {1200, 64.4},
+        {1500, 65.2},
+        {1700, 67.0},
+        {2400, 69.1},
+        {3000, 69.0},
+        {3300, 66.6},
+        {3800, 65.0},
+        {4000, 64.2},
+        {4500, 63.8},
+        {4700, 62.2},
+        {4900, 61.0}
+      ],
+      scale: Scale.new("D", :dorian),
+      tempo_bpm: 96,
+      selected: 4
+    }
+
+    sixteenth = 60_000 / 84 / 4
+
+    heard =
+      for {s, d, m, unsure} <- [
+            {0, 2, 64, false},
+            {2, 1, 67, false},
+            {3, 1, 69, false},
+            {4, 3, 71, false},
+            {7, 1, 72, false},
+            {8, 2, 71, false},
+            {10, 2, 69, false},
+            {12, 1, 67, false},
+            {13, 1, 66, true},
+            {14, 4, 64, false},
+            {18, 2, 62, false},
+            {20, 2, 64, false},
+            {22, 1, 59, true},
+            {23, 5, 64, false}
+          ] do
+        %{start_ms: s * sixteenth, dur_ms: d * sixteenth, midi: m, unsure: unsure}
+      end
+
+    sung =
+      Enum.flat_map(Enum.with_index(heard), fn {n, i} ->
+        wobble = if rem(i, 2) == 0, do: 0.15, else: -0.12
+        [{n.start_ms + 20, n.midi + wobble}, {n.start_ms + n.dur_ms - 20, n.midi - wobble}]
+      end)
+
+    import = %{
+      notes: heard,
+      trace: sung,
+      scale: Scale.new("E", :minor),
+      tempo_bpm: 84,
+      selected: nil
+    }
+
+    [
+      {"PianoRoll: review, F4 selected", 350, 312, PianoRoll.ops(review, 350, 312)},
+      {"PianoRoll: import, 2 unsure", 350, 210, PianoRoll.ops(import, 350, 210)},
+      {"PhraseThumb: Bus stop riff", 326, 56,
+       PhraseThumb.ops(
+         %{
+           notes:
+             thumb_notes([{62, 2}, {64, 1}, {65, 1}, {69, 3}, {65, 2}, {64, 2}, {62, 2}, {60, 2}])
+         },
+         326,
+         56
+       )},
+      {"PhraseThumb: Whistled hook", 326, 56,
+       PhraseThumb.ops(
+         %{notes: thumb_notes([{84, 1}, {86, 1}, {88, 2}, {86, 1}, {84, 1}, {79, 2}])},
+         326,
+         56
+       )}
+    ]
+  end
+
+  defp thumb_notes(seq) do
+    {notes, _end} =
+      Enum.map_reduce(seq, 0, fn {midi, beats}, at ->
+        {%{start_ms: at * 250, dur_ms: beats * 250, midi: midi}, at + beats}
+      end)
+
+    notes
   end
 
   # Board 09-spectrum: D4, a glide to G4, a glide to A4, after a breath.

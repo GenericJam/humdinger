@@ -1,151 +1,130 @@
-# Renders Mob.Canvas ops on the host: ops → SVG → PNG (headless Chrome), so
-# views can be compared with design/shots/* without a phone. Load it from a
-# script or IEx:
+# Renders Mob.Canvas ops on the host: ops → SVG → PNG, so views can be
+# compared with design/shots/* without a phone. Rasterises with libvips
+# (the `image` dev dependency: `Image.from_svg/2`, librsvg inside), so it
+# runs in dev only. Load it from a script or IEx:
 #
 #     Code.require_file("scripts/canvas_svg.exs")
 #     CanvasSvg.render([{"mimi", 220, 192, ops}], "/tmp/mimi.png")
 #
-# `render/3` lays the scenes out on one sheet (a caption over each) and
-# screenshots it at 2x. Text follows Android's canvas renderer by default
-# (`family:` ignored, the system sans-serif, bold for :medium and heavier);
-# `fonts: :ios` draws each op's `family:` from priv/fonts instead.
-# `scripts/preview_views.exs` renders every scene of Humdinger.GalleryScreen.
+# `render/3` lays the scenes out on one captioned sheet at 2x; `png/5` writes
+# one scene at its exact size with a transparent background (icons). Text
+# follows Android's canvas renderer, which ignores `family:`: a system
+# sans-serif, bold for :medium and heavier. `scripts/preview_views.exs`
+# renders every scene of Humdinger.GalleryScreen.
 
 defmodule CanvasSvg do
   import Bitwise
 
-  @chrome System.get_env("CHROME", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
   # Where the text's top sits above its baseline, as a fraction of its size.
   # Mob draws canvas text with y at the top (Android: baseline − ascent).
   @ascent 0.93
+  @sans "Roboto, Helvetica Neue, Helvetica, Arial, sans-serif"
+  @gap 24
+  @caption_h 22
 
-  @doc "One scene as an `<svg>` element."
+  @doc "One scene as an `<svg>` element; `x:`/`y:` place it inside a sheet."
   def svg(ops, w, h, opts \\ []) do
-    fonts = Keyword.get(opts, :fonts, :android)
+    at =
+      case {Keyword.get(opts, :x), Keyword.get(opts, :y)} do
+        {nil, nil} -> ~s(xmlns="http://www.w3.org/2000/svg")
+        {x, y} -> ~s(x="#{n(x)}" y="#{n(y)}")
+      end
 
     [
-      ~s(<svg xmlns="http://www.w3.org/2000/svg" width="#{w}" height="#{h}" viewBox="0 0 #{w} #{h}" style="overflow:hidden">),
+      ~s(<svg #{at} width="#{n(w)}" height="#{n(h)}" viewBox="0 0 #{n(w)} #{n(h)}" overflow="hidden">),
       case Keyword.get(opts, :background) do
         nil -> ""
-        bg -> ~s(<rect width="#{w}" height="#{h}" #{paint(:fill, bg, nil)}/>)
+        bg -> ~s(<rect width="#{n(w)}" height="#{n(h)}" #{paint(:fill, bg, nil)}/>)
       end,
-      Enum.map(ops, &op(&1, fonts)),
+      Enum.map(ops, &op/1),
       "</svg>"
     ]
     |> IO.iodata_to_binary()
   end
 
   @doc """
-  Writes `scenes` (`[{name, w, h, ops}]`) to one sheet: `<out>.html` and
-  `<out>.png` (`out` may end in .png). Returns the PNG path.
-  Options: `background:` (ARGB, default the app background), `fonts:`,
-  `columns:` (default 3), `scale:` (default 2).
+  Writes `scenes` (`[{name, w, h, ops}]`) to one sheet, a caption over each:
+  `<out>.png` and the `<out>.svg` it was drawn from. Returns the PNG path.
+  Options: `background:` (ARGB, default the app background), `columns:`
+  (default 3), `scale:` (default 2).
   """
   def render(scenes, out, opts \\ []) do
-    base = Path.rootname(out)
-    html_path = base <> ".html"
-    png_path = base <> ".png"
     bg = Keyword.get(opts, :background, 0xFF14121A)
     columns = Keyword.get(opts, :columns, 3)
-    scale = Keyword.get(opts, :scale, 2)
-    gap = 24
-
     rows = Enum.chunk_every(scenes, columns)
 
-    row_heights = Enum.map(rows, fn row -> Enum.max(Enum.map(row, &elem(&1, 2))) + 22 end)
-
-    # CSS grid sizes each column to its widest cell (canvas or caption).
-    width =
+    col_widths =
       scenes
       |> Enum.with_index()
       |> Enum.group_by(fn {_scene, i} -> rem(i, columns) end, fn {{name, w, h, _}, _} ->
-        max(w, String.length("#{name} · #{w}×#{h}") * 6.7)
+        max(w, String.length(caption(name, w, h)) * 6.7)
       end)
+      |> Enum.sort()
       |> Enum.map(fn {_col, widths} -> Enum.max(widths) end)
-      |> Enum.sum()
-      |> Kernel.+(gap * (min(columns, length(scenes)) + 1))
-      |> ceil()
 
-    height = Enum.sum(row_heights) + gap * (length(rows) + 1)
+    col_x = Enum.scan([@gap | col_widths], fn w, x -> x + w + @gap end)
 
-    cells =
-      Enum.map(scenes, fn {name, w, h, ops} ->
-        ~s(<figure><figcaption>#{escape(name)} · #{w}×#{h}</figcaption>) <>
-          svg(ops, w, h, background: bg, fonts: Keyword.get(opts, :fonts, :android)) <>
-          "</figure>"
+    {cells, height} =
+      Enum.reduce(rows, {[], @gap}, fn row, {acc, y} ->
+        row_h = Enum.max(Enum.map(row, &elem(&1, 2))) + @caption_h
+
+        cells =
+          row
+          |> Enum.with_index()
+          |> Enum.map(fn {{name, w, h, ops}, i} ->
+            x = Enum.at(col_x, i)
+
+            ~s(<text x="#{n(x)}" y="#{n(y + 12)}" font-family="Menlo, monospace" font-size="11" fill="#A9A3B8">) <>
+              escape(caption(name, w, h)) <>
+              "</text>" <> svg(ops, w, h, x: x, y: y + @caption_h, background: bg)
+          end)
+
+        {[acc | cells], y + row_h + @gap}
       end)
 
-    html = """
-    <!doctype html><html><head><meta charset="utf-8"><style>
-    #{font_faces()}
-    body{margin:0;background:#0B0A0F;color:#A9A3B8;font:11px 'JetBrainsMono-Medium',monospace}
-    main{display:grid;grid-template-columns:repeat(#{columns},max-content);gap:#{gap}px;padding:#{gap}px;align-items:start}
-    figure{margin:0}figcaption{height:18px}
-    svg text{font-family:Roboto,'Helvetica Neue',Arial,sans-serif}
-    </style></head><body><main>#{cells}</main></body></html>
-    """
+    width = Enum.sum(col_widths) + @gap * (length(col_widths) + 1)
 
-    File.mkdir_p!(Path.dirname(html_path))
-    File.write!(html_path, html)
-    screenshot(html_path, png_path, width, height, scale)
-    png_path
+    sheet =
+      ~s(<svg xmlns="http://www.w3.org/2000/svg" width="#{n(width)}" height="#{n(height)}">) <>
+        ~s(<rect width="100%" height="100%" fill="#0B0A0F"/>#{cells}</svg>)
+
+    base = Path.rootname(out)
+    File.mkdir_p!(Path.dirname(base))
+    File.write!(base <> ".svg", sheet)
+    rasterise(sheet, base <> ".png", Keyword.get(opts, :scale, 2))
   end
 
-  defp screenshot(html_path, png_path, w, h, scale) do
-    # A throwaway profile: sharing the default one with a running Chrome (or
-    # another agent's render) can stall the headless run for minutes.
-    profile =
-      Path.join(System.tmp_dir!(), "canvas_svg_chrome_#{System.unique_integer([:positive])}")
-
-    args = [
-      "--headless=new",
-      "--disable-gpu",
-      "--hide-scrollbars",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--user-data-dir=#{profile}",
-      "--force-device-scale-factor=#{scale}",
-      "--window-size=#{w},#{h}",
-      "--screenshot=#{Path.expand(png_path)}",
-      "file://" <> Path.expand(html_path)
-    ]
-
-    File.rm(png_path)
-    {out, code} = System.cmd(@chrome, args, stderr_to_stdout: true)
-    File.rm_rf(profile)
-
-    # Headless Chrome sometimes exits non-zero at teardown after writing the
-    # screenshot; only a missing PNG is a failure.
-    case File.stat(png_path) do
-      {:ok, %{size: size}} when size > 0 -> :ok
-      _ -> raise "Chrome wrote no screenshot (exit #{code}): #{out}"
-    end
+  @doc """
+  One scene as a PNG exactly `w × h` px, nothing outside the ops (what isn't
+  drawn stays transparent). For assets such as the app icon.
+  """
+  def png(ops, w, h, out) do
+    File.mkdir_p!(Path.dirname(out))
+    rasterise(svg(ops, w, h), out, 1)
   end
 
-  defp font_faces do
-    "priv/fonts/*.ttf"
-    |> Path.wildcard()
-    |> Enum.map_join("\n", fn file ->
-      name = Path.basename(file, ".ttf")
-      "@font-face{font-family:'#{name}';src:url('file://#{Path.expand(file)}')}"
-    end)
+  defp rasterise(svg, png, scale) do
+    svg |> Image.from_svg!(scale: scale) |> Image.write!(png)
+    png
   end
+
+  defp caption(name, w, h), do: "#{name} · #{w}×#{h}"
 
   # ── Ops ─────────────────────────────────────────────────────────────────
 
-  defp op(%{op: :line} = o, _fonts) do
+  defp op(%{op: :line} = o) do
     ~s(<line x1="#{n(o.x1)}" y1="#{n(o.y1)}" x2="#{n(o.x2)}" y2="#{n(o.y2)}" #{stroke(o)}/>)
   end
 
-  defp op(%{op: :circle} = o, _fonts) do
+  defp op(%{op: :circle} = o) do
     ~s(<circle cx="#{n(o.x)}" cy="#{n(o.y)}" r="#{n(o.r)}" #{shape_paint(o)}/>)
   end
 
-  defp op(%{op: :ellipse} = o, _fonts) do
+  defp op(%{op: :ellipse} = o) do
     ~s(<ellipse cx="#{n(o.x)}" cy="#{n(o.y)}" rx="#{n(o.rx)}" ry="#{n(o.ry)}" #{shape_paint(o)}/>)
   end
 
-  defp op(%{op: :arc} = o, _fonts) do
+  defp op(%{op: :arc} = o) do
     a0 = o.start_deg * :math.pi() / 180
     a1 = o.end_deg * :math.pi() / 180
     {x0, y0} = {o.x + o.r * :math.cos(a0), o.y + o.r * :math.sin(a0)}
@@ -156,22 +135,22 @@ defmodule CanvasSvg do
     ~s(<path d="#{d}" fill="none" #{stroke(o)}/>)
   end
 
-  defp op(%{op: :rect} = o, _fonts) do
+  defp op(%{op: :rect} = o) do
     r = Map.get(o, :radius, 0)
 
     ~s(<rect x="#{n(o.x)}" y="#{n(o.y)}" width="#{n(o.w)}" height="#{n(o.h)}" rx="#{n(r)}" #{shape_paint(o)}/>)
   end
 
-  defp op(%{op: :path, points: []}, _fonts), do: ""
+  defp op(%{op: :path, points: []}), do: ""
 
-  defp op(%{op: :path} = o, _fonts) do
+  defp op(%{op: :path} = o) do
     pts = Enum.map_join(o.points, " ", fn [x, y] -> "#{n(x)},#{n(y)}" end)
     fill = Map.get(o, :fill, false)
     tag = if fill or Map.get(o, :closed, false), do: "polygon", else: "polyline"
     ~s(<#{tag} points="#{pts}" #{shape_paint(o)}/>)
   end
 
-  defp op(%{op: :text} = o, fonts) do
+  defp op(%{op: :text} = o) do
     anchor =
       case Map.get(o, :anchor, :start) do
         :center -> "middle"
@@ -181,18 +160,12 @@ defmodule CanvasSvg do
 
     weight = if Map.get(o, :weight) in [:medium, :semibold, :bold], do: "bold", else: "normal"
 
-    family =
-      case {fonts, Map.get(o, :family)} do
-        {:ios, f} when is_binary(f) -> ~s( style="font-family:'#{f}'")
-        _ -> ""
-      end
-
     ~s(<text x="#{n(o.x)}" y="#{n(o.y + o.size * @ascent)}" font-size="#{n(o.size)}" ) <>
-      ~s(font-weight="#{weight}" text-anchor="#{anchor}"#{family} #{paint(:fill, o.color, Map.get(o, :opacity))}>) <>
+      ~s(font-weight="#{weight}" text-anchor="#{anchor}" font-family="#{@sans}" #{paint(:fill, o.color, Map.get(o, :opacity))}>) <>
       escape(o.text) <> "</text>"
   end
 
-  defp op(%{op: :image}, _fonts), do: ""
+  defp op(%{op: :image}), do: ""
 
   defp shape_paint(o) do
     if Map.get(o, :fill, false),

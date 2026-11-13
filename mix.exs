@@ -28,6 +28,8 @@ defmodule Humdinger.MixProject do
     [
       {:mob, "~> 0.9.27"},
       {:mob_dev, "~> 0.7.31", only: :dev, runtime: false},
+      # Resizes the icon master for `mix mob.icon` (scripts/render_icon.exs).
+      {:image, "~> 0.54", only: :dev, runtime: false},
       {:ecto_sqlite3, "~> 0.18"},
       # USB-MIDI and Bluetooth-MIDI output.
       {:mob_midi, "~> 0.2.0"},

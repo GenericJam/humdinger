@@ -177,6 +177,17 @@ defmodule Humdinger.MimiTest do
       [tile | _] = Mimi.icon_ops(1024, rounded: false)
       assert tile.radius == 0.0
     end
+
+    test "the adaptive foreground is Mimi alone, inside the 66/108 safe circle" do
+      size = 1024
+      ops = Mimi.icon_foreground_ops(size)
+      refute Enum.any?(ops, &(&1.op == :rect and &1.w == size))
+      radius = size * 33 / 108
+
+      for op <- ops, {x, y} <- points(op) do
+        assert :math.sqrt((x - size / 2) ** 2 + (y - size / 2) ** 2) <= radius, inspect(op)
+      end
+    end
   end
 
   defp points(%{op: :path, points: pts}), do: Enum.map(pts, fn [x, y] -> {x, y} end)

@@ -137,6 +137,13 @@ defmodule Humdinger.Mimi do
     ])
   end
 
+  # Mimi on the app icon: singing A4, looking up (the identity board).
+  @icon_mimi %{mood: :singing, note: 69, look: {0, -1}}
+  # Her width on the adaptive foreground: her farthest point (the tail and
+  # feet, ≈ 38.5 board units from the box centre) stays inside the 66/108
+  # safe circle: 38.5 / 64 · 0.49 ≈ 0.295 < 0.306 of the size.
+  @foreground_share 0.49
+
   @doc """
   The app icon, `size` dp square ("Dark + pitch stripe" on the identity
   board, shown there at 140): a `surface` (#1C1925) tile with corner radius
@@ -146,8 +153,8 @@ defmodule Humdinger.Mimi do
   E3 A3 E4 A4 A5 A6 (MIDI 33 45 52 57 64 69 81 93), clipped by the rounded
   corners.
 
-  `rounded: false` draws the tile and stripe square, for the full-bleed
-  master an OS masks itself (Android adaptive icons, iOS).
+  `rounded: false` draws the tile and stripe square: the full-bleed master
+  the stores and iOS mask themselves (`assets/icon/humdinger-icon-1024.png`).
   """
   @spec icon_ops(number(), keyword()) :: [map()]
   def icon_ops(size, opts \\ []) do
@@ -166,10 +173,22 @@ defmodule Humdinger.Mimi do
 
     List.flatten([
       rect(0, 0, size, size, color: Style.surface(), fill: true, radius: Draw.r1(r)),
-      ops(size / 2, size / 2, size * 105.6 / 140, %{mood: :singing, note: 69, look: {0, -1}}),
+      ops(size / 2, size / 2, size * 105.6 / 140, @icon_mimi),
       stripe
     ])
   end
+
+  @doc """
+  The Android adaptive icon's foreground layer, `size` dp square: Mimi as in
+  `icon_ops/2` and nothing else (the layer is transparent; the background
+  layer is the `surface` colour #1C1925). Launchers mask the 108 dp layer to
+  any shape and only promise the centre 66 dp circle, so she is
+  0.49 of the size wide, which keeps every part of
+  her inside that circle.
+  """
+  @spec icon_foreground_ops(number()) :: [map()]
+  def icon_foreground_ops(size),
+    do: ops(size / 2, size / 2, size * @foreground_share, @icon_mimi)
 
   # ── Palette and geometry ────────────────────────────────────────────────
 
@@ -323,12 +342,16 @@ defmodule Humdinger.Mimi do
 
   defp marks(_mood, _at, _len, _to), do: []
 
+  # The board draws head and stem as one path under one opacity; here they
+  # are two translucent ops, so the stem starts just above the head (its
+  # round cap meeting the head's edge) instead of overlapping it, which
+  # would show a brighter spot.
   defp note_glyph({x, top}, {rx, ry}, stem_x, stem_top, opacity, at, len, to) do
     {hx, hy} = at.({x + 0.05, top + ry})
 
     [
       ellipse(hx, hy, len.(rx + 0.8), len.(ry + 0.8), color: @mark, fill: true, opacity: opacity),
-      path(to.([{stem_x, top}, {stem_x, stem_top}]),
+      path(to.([{stem_x, top - 0.8}, {stem_x, stem_top}]),
         color: @mark,
         width: len.(1.6),
         cap: :round,
