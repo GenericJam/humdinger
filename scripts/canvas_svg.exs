@@ -54,10 +54,17 @@ defmodule CanvasSvg do
 
     row_heights = Enum.map(rows, fn row -> Enum.max(Enum.map(row, &elem(&1, 2))) + 22 end)
 
+    # CSS grid sizes each column to its widest cell (canvas or caption).
     width =
-      rows
-      |> Enum.map(fn row -> Enum.sum(Enum.map(row, &elem(&1, 1))) + gap * (length(row) + 1) end)
-      |> Enum.max()
+      scenes
+      |> Enum.with_index()
+      |> Enum.group_by(fn {_scene, i} -> rem(i, columns) end, fn {{name, w, h, _}, _} ->
+        max(w, String.length("#{name} · #{w}×#{h}") * 6.7)
+      end)
+      |> Enum.map(fn {_col, widths} -> Enum.max(widths) end)
+      |> Enum.sum()
+      |> Kernel.+(gap * (min(columns, length(scenes)) + 1))
+      |> ceil()
 
     height = Enum.sum(row_heights) + gap * (length(rows) + 1)
 
@@ -85,10 +92,18 @@ defmodule CanvasSvg do
   end
 
   defp screenshot(html_path, png_path, w, h, scale) do
+    # A throwaway profile: sharing the default one with a running Chrome (or
+    # another agent's render) can stall the headless run for minutes.
+    profile =
+      Path.join(System.tmp_dir!(), "canvas_svg_chrome_#{System.unique_integer([:positive])}")
+
     args = [
       "--headless=new",
       "--disable-gpu",
       "--hide-scrollbars",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--user-data-dir=#{profile}",
       "--force-device-scale-factor=#{scale}",
       "--window-size=#{w},#{h}",
       "--screenshot=#{Path.expand(png_path)}",
@@ -97,6 +112,7 @@ defmodule CanvasSvg do
 
     File.rm(png_path)
     {out, code} = System.cmd(@chrome, args, stderr_to_stdout: true)
+    File.rm_rf(profile)
 
     # Headless Chrome sometimes exits non-zero at teardown after writing the
     # screenshot; only a missing PNG is a failure.
