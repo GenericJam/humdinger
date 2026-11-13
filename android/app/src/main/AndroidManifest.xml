@@ -79,11 +79,6 @@
         </intent>
     </queries>
 
-    <!-- mob:plugin-permissions BEGIN (managed — regenerated each build; do not edit) -->
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
-    <uses-permission android:name="android.permission.CAMERA" />
-    <!-- mob:plugin-permissions END -->
     <application
         android:label="Humdinger"
         android:icon="@mipmap/ic_launcher"
@@ -138,10 +133,5 @@
                 android:resource="@xml/file_provider_paths" />
         </provider>
 
-        <!-- mob:plugin-components BEGIN (managed — regenerated each build; do not edit) -->
-        <activity android:name="io.mob.scanner.MobScannerActivity"
-            android:exported="false"
-            android:theme="@style/Theme.AppCompat.NoActionBar" />
-        <!-- mob:plugin-components END -->
     </application>
 </manifest>
