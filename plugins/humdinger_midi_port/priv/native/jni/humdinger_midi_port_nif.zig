@@ -44,7 +44,7 @@ export fn Java_com_genericjam_humdinger_midi_HumdingerMidiBridge_nativeRegister(
     g_m.port_send = jni.getStaticMethodID(jenv, cls, "portSend", "([B)I");
     g_m.port_connections = jni.getStaticMethodID(jenv, cls, "portConnections", "()I");
     g_m.subscribe = jni.getStaticMethodID(jenv, cls, "subscribe", "(J)V");
-    g_m.devices = jni.getStaticMethodID(jenv, cls, "devices", "()Ljava/lang/String;");
+    g_m.devices = jni.getStaticMethodID(jenv, cls, "devices", "()[B");
     g_m.ble_scan = jni.getStaticMethodID(jenv, cls, "bleScan", "(I)Ljava/lang/String;");
     g_m.ble_stop_scan = jni.getStaticMethodID(jenv, cls, "bleStopScan", "()V");
     g_m.ble_connect = jni.getStaticMethodID(jenv, cls, "bleConnect", "(Ljava/lang/String;)Ljava/lang/String;");
@@ -96,13 +96,17 @@ fn clearPendingException(jenv: *jni.JNIEnv) bool {
     return true;
 }
 
-// A Java String result as a binary (empty for null).
-fn stringTerm(env: ?*erts.ErlNifEnv, jenv: *jni.JNIEnv, str: jni.JString) erts.ERL_NIF_TERM {
-    if (str == null) return makeBinary(env, "");
-    defer jni.deleteLocalRef(jenv, str);
-    const cstr = jni.getStringUTFChars(jenv, str) orelse return makeBinary(env, "");
-    defer jni.releaseStringUTFChars(jenv, str, cstr);
-    return makeBinary(env, std.mem.span(cstr));
+// A Java byte[] result (UTF-8 JSON from the bridge) as a binary (empty for
+// null). The bridge sends bytes, not a String: GetStringUTFChars gives
+// modified UTF-8, which turns a non-BMP character (an emoji in a device
+// name) into surrogate bytes that aren't valid UTF-8.
+fn bytesTerm(env: ?*erts.ErlNifEnv, jenv: *jni.JNIEnv, arr: jni.JByteArray) erts.ERL_NIF_TERM {
+    if (arr == null) return makeBinary(env, "");
+    const len = jni.getArrayLength(jenv, arr);
+    var bin: erts.ErlNifBinary = undefined;
+    if (erts.enif_alloc_binary(@intCast(len), &bin) == 0) return makeBinary(env, "");
+    if (len > 0) jni.getByteArrayRegion(jenv, arr, 0, len, @ptrCast(bin.data));
+    return erts.enif_make_binary(env, &bin);
 }
 
 // The bridge answers "" for success or an error reason, which becomes
@@ -128,6 +132,11 @@ fn argCString(env: ?*erts.ErlNifEnv, term: erts.ERL_NIF_TERM, buf: []u8) ?[*:0]c
 
 // ── NIFs ─────────────────────────────────────────────────────────────────
 
+// Runs on a dirty IO scheduler (see nif_funcs) and leaves the thread attached
+// to the JVM: Output sends every MIDI event through here, and an attach plus
+// detach per call is far dearer than the send. Dirty scheduler threads live as
+// long as the VM, so the attachment is never leaked. The bridge only queues
+// the bytes (HumdingerMidiBridge.portSend), so a stalled client can't block it.
 export fn nif_port_send(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
     _ = argc;
     if (g_m.port_send == null) return unavailable(env);
@@ -136,7 +145,6 @@ export fn nif_port_send(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.
 
     var attached: c_int = 0;
     const jenv = get_jenv(&attached) orelse return failed(env);
-    defer detachIfAttached(attached);
 
     const jarr = jni.newByteArray(jenv, @intCast(bin.size));
     if (jarr == null) {
@@ -190,7 +198,8 @@ export fn nif_devices(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ER
     defer detachIfAttached(attached);
     const json = jenv.*.CallStaticObjectMethod.?(jenv, g_cls, g_m.devices);
     if (clearPendingException(jenv)) return failed(env);
-    return stringTerm(env, jenv, json);
+    defer if (json != null) jni.deleteLocalRef(jenv, json);
+    return bytesTerm(env, jenv, json);
 }
 
 export fn nif_ble_scan(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const erts.ERL_NIF_TERM) callconv(.c) erts.ERL_NIF_TERM {
@@ -255,20 +264,18 @@ export fn nif_ble_disconnect(env: ?*erts.ErlNifEnv, argc: c_int, argv: [*]const 
 
 // ── Delivery thunk (called from HumdingerMidiBridge.kt) ──────────────────
 
-pub export fn Java_com_genericjam_humdinger_midi_HumdingerMidiBridge_nativeDeliver(jenv: *jni.JNIEnv, cls: jni.JClass, pid_long: jni.JLong, tag: jni.JString, json: jni.JString) callconv(.c) void {
+pub export fn Java_com_genericjam_humdinger_midi_HumdingerMidiBridge_nativeDeliver(jenv: *jni.JNIEnv, cls: jni.JClass, pid_long: jni.JLong, tag: jni.JString, json: jni.JByteArray) callconv(.c) void {
     _ = cls;
     var pid = pidFromLong(pid_long);
     const tag_c = jni.getStringUTFChars(jenv, tag) orelse return;
     defer jni.releaseStringUTFChars(jenv, tag, tag_c);
-    const json_c = jni.getStringUTFChars(jenv, json) orelse return;
-    defer jni.releaseStringUTFChars(jenv, json, json_c);
 
     const env = erts.enif_alloc_env() orelse return;
     defer erts.enif_free_env(env);
     const msg = erts.makeTuple(env, .{
         erts.atom(env, "humdinger_midi"),
         erts.enif_make_atom(env, tag_c),
-        makeBinary(env, std.mem.span(json_c)),
+        bytesTerm(env, jenv, json),
     });
     _ = erts.enif_send(null, &pid, env, msg);
 }
@@ -276,7 +283,7 @@ pub export fn Java_com_genericjam_humdinger_midi_HumdingerMidiBridge_nativeDeliv
 // ── NIF table + init ─────────────────────────────────────────────────────
 
 const nif_funcs = [_]erts.ErlNifFunc{
-    .{ .name = "port_send", .arity = 1, .fptr = nif_port_send, .flags = 0 },
+    .{ .name = "port_send", .arity = 1, .fptr = nif_port_send, .flags = erts.ERL_NIF_DIRTY_JOB_IO_BOUND },
     .{ .name = "port_connections", .arity = 0, .fptr = nif_port_connections, .flags = 0 },
     .{ .name = "subscribe", .arity = 0, .fptr = nif_subscribe, .flags = 0 },
     .{ .name = "devices", .arity = 0, .fptr = nif_devices, .flags = 0 },

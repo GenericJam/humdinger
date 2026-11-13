@@ -74,6 +74,10 @@ defmodule Humdinger.MidiTest do
     end
   end
 
+  test "reset_controllers/1: bend centre, modulation 0, expression full" do
+    assert Midi.reset_controllers(2) == [<<0xE1, 0x00, 0x40>>, <<0xB1, 1, 0>>, <<0xB1, 11, 127>>]
+  end
+
   describe "all_notes_off/2" do
     test "CC 123 alone when no notes are known" do
       assert Midi.all_notes_off(1) == [<<0xB0, 123, 0>>]

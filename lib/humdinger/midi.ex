@@ -77,6 +77,20 @@ defmodule Humdinger.Midi do
     offs ++ [encode({:cc, 123, 0}, channel)]
   end
 
+  @doc """
+  Puts back what Humdinger's controllers move: pitch bend to centre, CC 1
+  (modulation) to 0, CC 11 (expression) to 127. Sent to a destination that
+  stops receiving, so it doesn't keep a bend or a fade it was left with.
+  """
+  @spec reset_controllers(integer()) :: [binary()]
+  def reset_controllers(channel) do
+    [
+      encode({:pitch_bend, 0}, channel),
+      encode({:cc, 1, 0}, channel),
+      encode({:cc, 11, 127}, channel)
+    ]
+  end
+
   @doc "The channel clamped to 1..16."
   @spec channel(integer()) :: channel()
   def channel(channel), do: clamp(channel, 1, 16)

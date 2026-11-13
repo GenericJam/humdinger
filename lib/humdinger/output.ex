@@ -75,6 +75,8 @@ defmodule Humdinger.Output do
 
   defstruct [
     :fmutate,
+    # Monitor on the FMutate process: its subscribers die with it.
+    :fmutate_ref,
     :settings,
     :port,
     :device,
@@ -359,6 +361,14 @@ defmodule Humdinger.Output do
 
   def handle_info({:midi, _, _}, state), do: {:noreply, state}
 
+  # FMutate restarted (its supervisor brings it back with no subscribers):
+  # treat it as disconnected and subscribe again.
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{fmutate_ref: ref} = state) do
+    send(self(), :link_fmutate)
+    state = %{state | fmutate_ref: nil, fmutate_status: :disconnected}
+    {:noreply, state |> prune_sounding() |> changed()}
+  end
+
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state),
     do: {:noreply, %{state | subscribers: Map.delete(state.subscribers, pid)}}
 
@@ -405,7 +415,7 @@ defmodule Humdinger.Output do
     for device_id <- sendable_devices(state, id), do: state.device.send(device_id, bytes)
   end
 
-  defp targets(state), do: Enum.filter(@ids, &(state.enabled[&1] and available?(state, &1)))
+  defp targets(state), do: Enum.filter(@ids, &(state.enabled[&1] and sendable?(state, &1)))
 
   defp note_sent(state, summary) do
     state = %{state | last_sent: summary}
@@ -427,11 +437,17 @@ defmodule Humdinger.Output do
 
   defp now, do: System.monotonic_time(:millisecond)
 
-  # Note-offs for what `id` has sounding (when it can still be reached).
+  # Note-offs for what `id` has sounding (when it can still be reached), then
+  # the controllers back to rest on each channel it played on and the current
+  # one, so turning it back on later doesn't start out bent or faded.
   defp release(state, id) do
-    if available?(state, id) do
+    if sendable?(state, id) do
       for {channel, note} <- state.sounding[id],
           do: write(state, id, Midi.encode({:note_off, note}, channel))
+
+      for channel <- channels(state, id),
+          bytes <- Midi.reset_controllers(channel),
+          do: write(state, id, bytes)
     end
 
     put_in(state.sounding[id], MapSet.new())
@@ -439,15 +455,25 @@ defmodule Humdinger.Output do
 
   defp panic_all(state) do
     for id <- targets(state) do
-      state.sounding[id]
-      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
-      |> Map.put_new(state.channel, [])
-      |> Enum.flat_map(fn {channel, notes} -> Midi.all_notes_off(channel, notes) end)
-      |> Enum.each(&write(state, id, &1))
+      notes = Enum.group_by(state.sounding[id], &elem(&1, 0), &elem(&1, 1))
+
+      for channel <- channels(state, id),
+          bytes <-
+            Midi.all_notes_off(channel, Map.get(notes, channel, [])) ++
+              Midi.reset_controllers(channel),
+          do: write(state, id, bytes)
     end
 
     %{state | sounding: Map.new(@ids, &{&1, MapSet.new()})}
   end
+
+  defp channels(state, id),
+    do:
+      state.sounding[id]
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.concat([state.channel])
+      |> Enum.uniq()
+      |> Enum.sort()
 
   defp toggle(state, id, false) do
     state
@@ -465,7 +491,7 @@ defmodule Humdinger.Output do
   defp prune_sounding(state) do
     sounding =
       Map.new(state.sounding, fn {id, set} ->
-        {id, if(available?(state, id), do: set, else: MapSet.new())}
+        {id, if(sendable?(state, id), do: set, else: MapSet.new())}
       end)
 
     %{state | sounding: sounding}
@@ -476,6 +502,12 @@ defmodule Humdinger.Output do
   defp available?(state, :fmutate), do: match?({:connected, _}, state.fmutate_status)
   defp available?(state, :port), do: state.port_available
   defp available?(state, id), do: sendable_devices(state, id) != []
+
+  # Whether sending reaches anyone. The port exists (its row is available)
+  # whether or not an app listens, but with no app connected every send would
+  # be a JNI round trip that drops the bytes.
+  defp sendable?(state, :port), do: state.port_available and state.port_connections > 0
+  defp sendable?(state, id), do: available?(state, id)
 
   defp devices_for(state, id) do
     for {_, device} <- state.devices, destination(device) == id, do: device
@@ -612,7 +644,7 @@ defmodule Humdinger.Output do
   end
 
   defp native_event(state, :port, %{"connections" => n}) when is_integer(n),
-    do: %{state | port_connections: n}
+    do: prune_sounding(%{state | port_connections: n})
 
   defp native_event(state, :device_added, payload) when is_map(payload),
     do: state |> add_devices([Device.from_json(payload)]) |> sync_devices()
@@ -702,7 +734,9 @@ defmodule Humdinger.Output do
 
   defp link_fmutate(%{fmutate: fmutate} = state) do
     fmutate.subscribe(self())
-    prune_sounding(%{state | fmutate_status: fmutate.status()})
+    if state.fmutate_ref, do: Process.demonitor(state.fmutate_ref, [:flush])
+    ref = if pid = GenServer.whereis(fmutate), do: Process.monitor(pid)
+    prune_sounding(%{state | fmutate_status: fmutate.status(), fmutate_ref: ref})
   catch
     :exit, _ ->
       Process.send_after(self(), :link_fmutate, @fmutate_retry_ms)
