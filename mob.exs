@@ -42,10 +42,17 @@ config :mob_dev,
 # here to deactivate a plugin without removing the dep; remove both to drop it
 # entirely (the native build shrinks and a clean rebuild prunes its artifacts).
 #
-# mob_midi: USB-MIDI and Bluetooth-MIDI output (Output screen).
+# mob_midi: opening and sending to USB-MIDI and Bluetooth-MIDI devices.
+# humdinger_midi_port: the virtual "Humdinger" MIDI port, the MIDI device
+# watcher and Bluetooth-MIDI connect (plugins/humdinger_midi_port, Kotlin + a
+# Zig NIF), part of this repo.
 # mob_camera + mob_scanner: scanning FMutate's pairing QR code (mob_scanner
 # needs mob_camera, which owns the :camera permission).
-config :mob, :plugins, [:mob_midi, :mob_camera, :mob_scanner]
+config :mob, :plugins, [:mob_midi, :humdinger_midi_port, :mob_camera, :mob_scanner]
+
+# humdinger_midi_port is this app's own code, reviewed with it, so it builds
+# unsigned instead of carrying a signing key (mob_dev prints a banner).
+config :mob, :acknowledge_unsafe_plugins, [:humdinger_midi_port]
 
 # Trust gate for the first-party plugins. Each is signed in CI with the shared
 # mob release key; this is that key's public fingerprint. The build refuses an

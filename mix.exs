@@ -25,6 +25,9 @@ defmodule Humdinger.MixProject do
       {:ecto_sqlite3, "~> 0.18"},
       # USB-MIDI and Bluetooth-MIDI output.
       {:mob_midi, "~> 0.2.0"},
+      # The virtual MIDI port, device watcher and Bluetooth-MIDI connect
+      # (Android native, in this repo).
+      {:humdinger_midi_port, path: "plugins/humdinger_midi_port"},
       # Scanning FMutate's pairing QR code (mob_scanner needs mob_camera).
       {:mob_camera, "~> 0.1.15"},
       {:mob_scanner, "~> 0.1.8"},

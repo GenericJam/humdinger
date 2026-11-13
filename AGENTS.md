@@ -149,11 +149,21 @@ events to `Output.send_events/1`.
 
 **Output** (`Humdinger.Output`, GenServer; `Humdinger.Midi` pure
 encoder): `send_events([event])` (cast, on the settings channel),
-`destinations/0 :: [%{id: :fmutate | :port | :usb | :bt, name, detail,
-enabled, available}]`, `set_enabled(id, bool)`, `test_note/0`, `panic/0`,
-`subscribe(pid)` → `{:output, :destinations, list}`, `{:output, :sent,
-summary}` (e.g. `"A4 on · vel 92 · ch 1"`, throttled). `Midi.encode(event,
-channel) :: binary`, `Midi.describe(event, channel) :: String.t()`.
+`configure(channel: 1..16)` (cast; the Engine sends it after the old
+channel's note-offs), `destinations/0 :: [%{id: :fmutate | :port | :usb |
+:bt, name, detail, enabled, available}]`, `set_enabled(id, bool)` (call,
+saves via `Settings.update/1`), `test_note/0`, `panic/0` (call),
+`last_sent/0 :: String.t() | nil`, `subscribe(pid)` → `{:output,
+:destinations, list}` (at once, then on change), `{:output, :sent,
+summary}` (e.g. `"A4 on · vel 92 · ch 1"`, ≤ 10/s, latest wins),
+`{:output, :bluetooth, view}`. Bluetooth-MIDI (Output board's "Scan
+Bluetooth"): `bluetooth/0 :: %{scanning, found: [%{address, name, rssi}],
+error, connecting, paired}`, `scan_bluetooth/0`, `stop_bluetooth_scan/0`,
+`connect_bluetooth(address)`, `forget_bluetooth/0`; on `{:error,
+:no_permission}` the screen calls `Mob.Permissions.request(socket,
+:midi_bluetooth)`. Every function takes an optional last `server` argument.
+`Midi.encode(event, channel) :: binary`, `Midi.describe(event, channel) ::
+String.t()`, `Midi.all_notes_off(channel, notes \\ []) :: [binary]`.
 
 **FMutate link** (`Humdinger.FMutate`, GenServer): `status/0 :: :unpaired |
 :disconnected | {:connected, %{name, firmware, device}}`, `subscribe(pid)` →
@@ -176,6 +186,86 @@ rhythm:)` (measures of notes/rests for the staff), `Humdinger.Transcribe`
 **Views** (pure `Mob.Canvas` op builders under `Humdinger.Views.*`, plus
 `Humdinger.Mimi`): the screens compose them; each takes plain data and a
 size and returns ops (and, for editable ones, a hit-test function).
+
+## Output: where the MIDI goes
+
+`Humdinger.Output` (started in `App.on_start`) encodes each batch of
+Tracker events once on the channel and sends every message to each
+destination that is enabled (Settings `destinations`) and available. It
+tracks the notes it left sounding per destination as `{channel, note}`:
+turning a destination off sends it exactly those note-offs (USB/Bluetooth
+outputs are closed after), `panic/0` sends them plus CC 123 on every channel
+used and the current one, and a destination that drops out (FMutate
+disconnects, a device is unplugged) forgets its notes.
+
+| Row (board `output`) | `detail` |
+|---|---|
+| FMutate (`FMutate A` once connected: the status `name`) | `sibling app · connected · X0X` (firmware), `sibling app · not connected`, `sibling app · not paired` |
+| Humdinger port | `virtual MIDI · any app can pick it`, `… · 1 app listening`, `… · N apps listening`; `virtual MIDI · not on this phone` without the plugin (host, iOS) |
+| USB MIDI out | `nothing plugged in`, or the devices' names (`<name> · can't open` if mob_midi couldn't open it) |
+| Bluetooth MIDI | `none paired`, `connecting…`, the connected device's name, `<name> · not connected` (remembered, not connected) |
+
+Encoding (`Humdinger.Midi`): channel 1..16 → status nibble 0..15; note-on
+velocity clamped to 1..127 (a note-on stays one); note-off is `8n note 64`;
+pitch bend −8192..8191 → 14 bits around 8192, LSB first; everything clamped,
+never raised on.
+
+Native side: `plugins/humdinger_midi_port/` (in-repo Mob plugin, unsigned,
+in `:acknowledge_unsafe_plugins`; Android only). `HumdingerMidiBridge.kt`
+holds:
+
+- **The Humdinger port**: `HumdingerMidiService`, a `MidiDeviceService`
+  declared by the plugin's `manifest_application_snippets` (exported,
+  `BIND_MIDI_DEVICE_SERVICE`, intent filter + meta-data) with
+  `res/xml/humdinger_midi_port.xml`: device `name="Humdinger"`, one
+  `<output-port name="Humdinger">` (a service's output port is what other
+  apps receive from). Android lists it whenever the app is installed and
+  binds the service in the app's process when an app opens the port.
+  `Humdinger.Output.Port.send/1` → `portSend` → the port's
+  `getOutputPortReceivers()[0].send(bytes, 0, n, System.nanoTime())`; with no
+  app connected it returns `{:error, :no_client}` and the bytes are dropped.
+  `connections/0` comes from `onDeviceStatusChanged`
+  (`getOutputPortOpenCount(0)`).
+- **Device watcher** (`MidiManager.DeviceCallback`) and the device list
+  with transport (`usb` / `bluetooth` / `virtual`, plus `own` for the port):
+  mob_midi 0.2.0 on Android has neither hot-plug events nor the transport.
+  Opening and sending to USB/Bluetooth devices goes through mob_midi
+  (`MobMidi.open_output/2`, `send_raw/3`, `close/2`); only devices with an
+  input port, not virtual, are used. Output opens a device only while its
+  destination is on (an Android input port has one opener at a time).
+- **Bluetooth-MIDI central**: BLE scan filtered on the BLE-MIDI service
+  (10 s), `MidiManager.openBluetoothDevice/3`; the opened device then shows
+  up as a `bluetooth` MIDI device. The last one connected is remembered in
+  `Mob.State` and reconnected at start while Bluetooth MIDI is on. The
+  `:midi_bluetooth` permission capability (the bridge is a
+  `MobPermissionProvider`) asks for fine location on Android ≤ 11 and
+  BLUETOOTH_SCAN + BLUETOOTH_CONNECT + location on 12+.
+
+All events reach Output as `{:humdinger_midi, tag, json}` through
+`humdinger_midi_port_nif.zig` (`subscribe/0` registers the one listener).
+Without the plugin (host, iOS) the NIF stub answers `{:error,
+:unavailable}`, so the port and devices are simply unavailable.
+
+Output reads the FMutate and Settings modules from `Application.get_env(:humdinger,
+:fmutate | :settings, …)`; one that isn't loaded is left out (FMutate
+unavailable; defaults channel 1, FMutate + port on, USB + Bluetooth off).
+If FMutate isn't running yet, Output retries `subscribe/1` every second.
+
+### Verifying Output on the phone
+
+- Host: `mix test test/humdinger/midi_test.exs test/humdinger/output_test.exs`
+  (Output runs against doubles; they report through `$callers`).
+- `adb shell dumpsys midi` lists `name=Humdinger … mOutputPortCount=1`
+  with the `HumdingerMidiService` service info, even before the app runs.
+- Another process receiving from the port:
+  `plugins/humdinger_midi_port/tools/midi_probe.sh <serial> Humdinger 30`
+  runs a MIDI client as the adb shell user (`app_process`, no app needed),
+  opens the port and prints `RECV 90 45 5c` per message. While it listens,
+  over dist: `Humdinger.Output.Port.connections()` is 1 and
+  `Humdinger.Output.Port.send(<<0x90, 69, 92>>)` (or `Output.test_note()`)
+  shows up as `RECV` lines.
+- USB/Bluetooth need hardware: plug a USB-MIDI synth (OTG) or scan for a
+  BLE-MIDI one; the `:usb` / `:bt` rows should change at once.
 
 ## Rules for Mob screens here (from Choir Coach; avoid its traps)
 

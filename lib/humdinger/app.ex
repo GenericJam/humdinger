@@ -29,6 +29,10 @@ defmodule Humdinger.App do
       Ecto.Migrator.run(repo, migrations_dir(), :up, all: true)
     end)
 
+    # Where the MIDI goes: FMutate, the Humdinger port, USB and Bluetooth MIDI.
+    # Lives outside the screens so it keeps sending while FMutate is in front.
+    {:ok, _} = Humdinger.Output.start_link()
+
     Mob.Theme.set(Humdinger.Style.theme())
 
     # Humdinger is held in portrait, like a phone normally is.
