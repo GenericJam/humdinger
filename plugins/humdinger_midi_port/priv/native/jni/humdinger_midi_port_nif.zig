@@ -2,7 +2,7 @@
 //!
 //! Bridges to the Kotlin HumdingerMidiBridge (HumdingerMidiBridge.kt): the
 //! virtual MIDI port (a MidiDeviceService), the MIDI device watcher and
-//! Bluetooth-MIDI scan/connect. Elixir: Humdinger.Output.Native.
+//! Bluetooth-MIDI scan/connect. Elixir: Humdinger.Output.Port, Humdinger.Output.Device.
 //!
 //! NIFs (all return {:error, :unavailable} until the bridge registered):
 //!   port_send(bytes)       :ok | {:error, :no_client | :send_failed}

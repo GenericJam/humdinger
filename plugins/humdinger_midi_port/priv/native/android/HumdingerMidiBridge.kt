@@ -1,5 +1,5 @@
 // Humdinger's MIDI plumbing on Android (android.media.midi), for
-// Humdinger.Output (Elixir side: Humdinger.Output.Native).
+// Humdinger.Output (Elixir side: Humdinger.Output.Port, Humdinger.Output.Device).
 //
 // 1. The Humdinger port: HumdingerMidiService is a MidiDeviceService with one
 //    output port, "Humdinger". Other apps open it as a MIDI source. Android
@@ -22,6 +22,7 @@ package com.genericjam.humdinger.midi
 import android.Manifest
 import android.app.Activity
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
@@ -192,10 +193,13 @@ object HumdingerMidiBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPe
         return arr.toString()
     }
 
+    // The address is the Bluetooth device's ("" for USB and virtual devices),
+    // so Output can tell which MIDI device a connected address became.
     @Suppress("DEPRECATION") // typed getParcelable is API 33+
     private fun describe(info: MidiDeviceInfo): JSONObject {
         val props = info.properties
         val owner = props.getParcelable<ServiceInfo>(PROPERTY_SERVICE_INFO)?.packageName
+        val address = props.getParcelable<BluetoothDevice>(MidiDeviceInfo.PROPERTY_BLUETOOTH_DEVICE)?.address
         val type = when (info.type) {
             MidiDeviceInfo.TYPE_USB -> "usb"
             MidiDeviceInfo.TYPE_BLUETOOTH -> "bluetooth"
@@ -208,6 +212,7 @@ object HumdingerMidiBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPe
             .put("inputs", info.inputPortCount)
             .put("outputs", info.outputPortCount)
             .put("own", owner != null && owner == appContext?.packageName)
+            .put("address", address ?: "")
     }
 
     // USB and Bluetooth devices carry PROPERTY_NAME; some only declare
@@ -251,6 +256,8 @@ object HumdingerMidiBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPe
     private val scanTimeout = Runnable { finishScan(JSONObject()) }
 
     private fun startScan(leScanner: BluetoothLeScanner, ms: Int) {
+        // A new scan replaces a running one, timeout included.
+        main.removeCallbacks(scanTimeout)
         stopScanQuietly()
         val seen = HashSet<String>()
         val callback = object : ScanCallback() {

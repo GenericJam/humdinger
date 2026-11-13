@@ -295,7 +295,15 @@ defmodule Humdinger.Output do
     {:reply, :ok, state}
   end
 
+  # One Bluetooth device at a time: connecting another drops the paired one.
   def handle_call({:connect_bluetooth, address}, _from, state) do
+    state =
+      case state.paired do
+        %{address: ^address} -> state
+        %{address: old} -> drop_bluetooth(state, old)
+        nil -> state
+      end
+
     case state.device.connect(address) do
       :ok -> {:reply, :ok, changed(%{state | connecting: address, scan_error: nil})}
       {:error, reason} = error -> {:reply, error, changed(%{state | scan_error: reason})}
@@ -303,7 +311,8 @@ defmodule Humdinger.Output do
   end
 
   def handle_call(:forget_bluetooth, _from, state) do
-    if state.paired, do: state.device.disconnect(state.paired.address)
+    state = if state.paired, do: drop_bluetooth(state, state.paired.address), else: state
+    if state.connecting, do: state.device.disconnect(state.connecting)
     state.device.remember(nil)
     {:reply, :ok, changed(%{state | paired: nil, connecting: nil})}
   end
@@ -629,18 +638,42 @@ defmodule Humdinger.Output do
 
   # Android names a Bluetooth MIDI device after the name its stack cached,
   # which can be missing; the name the scan saw is the better one.
-  defp native_event(state, :ble_connected, %{"address" => address} = payload) do
+  defp native_event(
+         %{connecting: address} = state,
+         :ble_connected,
+         %{"address" => address} = payload
+       ) do
     scanned = Enum.find_value(state.found, &(&1.address == address and &1.name != "" and &1.name))
     paired = %{address: address, name: scanned || payload["name"] || address}
     state.device.remember(paired)
     %{state | paired: paired, connecting: nil}
   end
 
-  defp native_event(state, :ble_failed, payload) do
+  # A connection nobody is waiting for any more (forgotten, or replaced).
+  defp native_event(state, :ble_connected, %{"address" => address}) do
+    state.device.disconnect(address)
+    state
+  end
+
+  defp native_event(
+         %{connecting: address} = state,
+         :ble_failed,
+         %{"address" => address} = payload
+       ) do
     %{state | connecting: nil, scan_error: error_atom(payload["reason"]) || :connect_failed}
   end
 
   defp native_event(state, _tag, _payload), do: state
+  # Releases the Bluetooth notes, closes mob_midi's output on the device at
+  # `address` and disconnects it: Android drops a Bluetooth MIDI device only
+  # when its last client (ours and mob_midi's) has closed it.
+  defp drop_bluetooth(state, address) do
+    state = release(state, :bt)
+    ids = for {id, %{type: :bluetooth, address: ^address}} <- state.devices, do: id
+    for id <- ids, Map.has_key?(state.opened, id), do: state.device.close(id)
+    state.device.disconnect(address)
+    %{state | devices: Map.drop(state.devices, ids), opened: Map.drop(state.opened, ids)}
+  end
 
   @errors Map.new(
             ~w(scan_failed no_permission open_failed bluetooth_off location_off no_bluetooth)a,

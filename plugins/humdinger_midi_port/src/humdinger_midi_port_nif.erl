@@ -1,6 +1,7 @@
 %% humdinger_midi_port_nif: the Erlang side of Humdinger's Android MIDI NIF
 %% (priv/native/jni/humdinger_midi_port_nif.zig, bridging to
-%% HumdingerMidiBridge.kt). Elixir callers go through Humdinger.Output.Native.
+%% HumdingerMidiBridge.kt). Elixir callers: Humdinger.Output.Port and
+%% Humdinger.Output.Device.
 %%
 %% On the phone the NIF is linked into the app and replaces these functions.
 %% Where it isn't (host, iOS), on_load tolerates the failure and every

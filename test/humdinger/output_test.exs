@@ -96,7 +96,8 @@ defmodule Humdinger.OutputTest do
       type: type,
       inputs: Keyword.get(opts, :inputs, 1),
       outputs: 0,
-      own: Keyword.get(opts, :own, false)
+      own: Keyword.get(opts, :own, false),
+      address: Keyword.get(opts, :address, "")
     })
   end
 
@@ -419,7 +420,7 @@ defmodule Humdinger.OutputTest do
       # Android's own name for it can be the generic one; the scan's wins.
       connected = ~s({"address":"AA:BB:CC:DD:EE:FF","id":12,"name":"MIDI device"})
       send(output, {:humdinger_midi, :ble_connected, connected})
-      plug(output, 12, "bluetooth", name: "Minilogue")
+      plug(output, 12, "bluetooth", name: "Minilogue", address: "AA:BB:CC:DD:EE:FF")
 
       assert_receive {:remember, %{address: "AA:BB:CC:DD:EE:FF", name: "Minilogue"}}
       assert_receive {:open, 12}
@@ -427,6 +428,19 @@ defmodule Humdinger.OutputTest do
 
       Output.send_events([{:note_on, 60, 100}], output)
       assert_receive {:device, 12, <<0x90, 60, 100>>}
+
+      # Forgetting it releases its notes and closes mob_midi's output too, or
+      # Android would keep the device connected.
+      Output.forget_bluetooth(output)
+      assert_receive {:device, 12, <<0x80, 60, 64>>}
+      assert_receive {:close, 12}
+      assert_receive {:disconnect, "AA:BB:CC:DD:EE:FF"}
+      assert %{available: false, detail: "none paired"} = row(output, :bt)
+
+      # A connection that completes after it was forgotten is dropped.
+      send(output, {:humdinger_midi, :ble_connected, connected})
+      assert_receive {:disconnect, "AA:BB:CC:DD:EE:FF"}
+      assert Output.bluetooth(output).paired == nil
     end
 
     test "reconnects the remembered device at start and can forget it" do

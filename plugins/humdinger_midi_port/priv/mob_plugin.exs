@@ -1,6 +1,6 @@
 # Humdinger's Android MIDI: the virtual "Humdinger" port, the MIDI device
 # watcher and Bluetooth-MIDI connect. Android only; the Elixir side is
-# Humdinger.Output.Native (see AGENTS.md, "Output").
+# Humdinger.Output.Port and Humdinger.Output.Device (see AGENTS.md, "Output").
 %{
   name: :humdinger_midi_port,
   description: "Humdinger's virtual MIDI port, MIDI device watcher and Bluetooth-MIDI connect",

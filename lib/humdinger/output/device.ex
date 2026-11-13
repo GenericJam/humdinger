@@ -33,7 +33,8 @@ defmodule Humdinger.Output.Device do
           type: :usb | :bluetooth | :virtual,
           inputs: non_neg_integer(),
           outputs: non_neg_integer(),
-          own: boolean()
+          own: boolean(),
+          address: String.t()
         }
 
   @remembered_key {__MODULE__, :bluetooth}
@@ -66,7 +67,8 @@ defmodule Humdinger.Output.Device do
       type: type(map["type"]),
       inputs: map["inputs"] || 0,
       outputs: map["outputs"] || 0,
-      own: map["own"] == true
+      own: map["own"] == true,
+      address: map["address"] || ""
     }
   end
 

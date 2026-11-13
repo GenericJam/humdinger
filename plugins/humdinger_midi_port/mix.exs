@@ -6,8 +6,8 @@ defmodule HumdingerMidiPort.MixProject do
   # res/xml device info), the MIDI device watcher and Bluetooth-MIDI connect,
   # all in Kotlin behind a Zig NIF. A plugin is the only way to ship a Kotlin
   # class, a manifest <service> and a res file through the Mob build. Native
-  # plus the Erlang NIF stub only; the Elixir side is Humdinger.Output.Native
-  # in the app. See priv/mob_plugin.exs.
+  # plus the Erlang NIF stub only; the Elixir side is Humdinger.Output.Port
+  # and Humdinger.Output.Device in the app. See priv/mob_plugin.exs.
   def project do
     [
       app: :humdinger_midi_port,
