@@ -53,6 +53,7 @@ defmodule Humdinger.LiveScreen do
   use Mob.Screen
 
   import Mob.Canvas, only: [circle: 4, rect: 5, path: 2]
+  import Humdinger.Controls
 
   alias Humdinger.{
     Audio,
@@ -66,8 +67,7 @@ defmodule Humdinger.LiveScreen do
     SettingsSheet,
     SpectrumScreen,
     Style,
-    Tracker,
-    Widgets
+    Tracker
   }
 
   alias Humdinger.Views.{PianoStrip, PitchRoll, TuningMeter}
@@ -191,131 +191,138 @@ defmodule Humdinger.LiveScreen do
       %{label: "Open + bend", tap: {self(), {:set, :mode, :open}}, selected: s.mode == :open}
     ]
 
-    ~MOB"""
-    <Column background={Style.bg()} fill_width={true} fill_height={true}>
-      <Row fill_width={true} fill_height={true} align={:top}>
-        <Spacer />
-        <Column width={350} fill_height={true} padding_top={12} padding_bottom={8}>
-          <Row height={44} gap={8}>
-            {pill(a, output_tap)}
-            <Box
-              width={44}
-              height={44}
-              corner_radius={22}
-              background={Style.surface()}
-              align="center"
-              on_tap={settings_tap}
-              on_press_out={Widgets.held()}
-            >
-              <Canvas width={20} height={20} draw={SettingsSheet.icon_ops()} />
-            </Box>
-          </Row>
-          <Spacer size={11} />
-          <Box align="center">
-            <Canvas width={strip_w()} height={PianoStrip.height()} draw={a.ops.strip} />
-          </Box>
-          <Spacer size={10} />
-          <Row height={112} gap={16} padding_left={8} padding_right={8}>
-            <Canvas width={mimi_w} height={mimi_h} draw={a.ops.mimi} />
-            {note_panel(a)}
-          </Row>
-          <Spacer size={10} />
-          <Box width={roll_w} height={roll_h} align="bottom_trailing">
-            <Canvas width={roll_w} height={roll_h} draw={a.ops.roll} />
-            <Box fill_width={false} padding={8}>
-              <Box
-                fill_width={false}
-                height={36}
-                corner_radius={18}
-                background={Style.bg()}
-                padding_left={12}
-                padding_right={12}
-                align="center"
-                on_tap={spectrum_tap}
-                on_press_out={Widgets.held()}
-              >
-                <Text text="Spectrum ›" font={:semibold} text_size={12} text_color={0xFFE4DFEE} />
-              </Box>
-            </Box>
-          </Box>
-          <Spacer size={10} />
-          <Column gap={10}>
-            <Row gap={8}>
-              {Widgets.segmented(modes)}
-              <Box
-                fill_width={false}
-                height={46}
-                corner_radius={12}
-                background={Style.surface()}
-                padding_left={14}
-                padding_right={14}
-                align="center"
-                on_tap={picker_tap}
-                on_press_out={Widgets.held()}
-              >
-                <Text
-                  text={Scale.name(s.scale) <> " ▾"}
-                  font={:semibold}
-                  text_size={13}
-                  text_color={if(s.mode == :scale, do: Style.text(), else: Style.muted())}
-                />
-              </Box>
-            </Row>
-            <Row gap={8}>
-              {stepper("octave", s.octave, :octave, -3..3)}
-              {stepper("transp", s.transpose, :transpose, -12..12)}
-            </Row>
-          </Column>
-          <Spacer />
-          <Text
-            height={18}
-            fill_width={true}
-            text={status_line(a) || ""}
-            font={:mono_semibold}
-            text_size={12}
-            text_align="center"
-            text_color={if(a.recording, do: Style.danger_text(), else: Style.text_2())}
-          />
-          <Spacer size={4} />
-          <Row>
-            <Box
-              width={96}
-              height={56}
-              corner_radius={16}
-              background={Style.surface()}
-              align="center"
-              on_tap={pause_tap}
-              on_press_out={Widgets.held()}
-            >
-              {pause_label(a.status)}
-            </Box>
-            <Spacer />
-            <Canvas
-              width={88}
-              height={88}
-              draw={record_ops(a.recording)}
-              on_tap={record_tap}
-              on_press_out={Widgets.held()}
-            />
-            <Spacer />
-            <Box
-              width={96}
-              height={56}
-              corner_radius={16}
-              background={Style.surface()}
-              align="center"
-              on_tap={phrases_tap}
-              on_press_out={Widgets.held()}
-            >
-              <Text text="Phrases" font={:semibold} text_size={13} text_color={Style.text()} />
-            </Box>
-          </Row>
-        </Column>
-        <Spacer />
+    top = ~MOB"""
+    <Row height={44} gap={8}>
+      {pill(a, output_tap)}
+      <Box
+        width={44}
+        height={44}
+        corner_radius={22}
+        background={Style.surface()}
+        align="center"
+        on_tap={settings_tap}
+        on_press_out={held()}
+      >
+        <Canvas width={20} height={20} draw={SettingsSheet.icon_ops()} />
+      </Box>
+    </Row>
+    """
+
+    spectrum =
+      button("Spectrum ›", spectrum_tap,
+        kind: :header,
+        height: 36,
+        radius: 18,
+        background: Style.bg(),
+        text_size: 12,
+        color: 0xFFE4DFEE
+      )
+
+    roll = ~MOB"""
+    <Box width={roll_w} height={roll_h} align="bottom_trailing">
+      <Canvas width={roll_w} height={roll_h} draw={a.ops.roll} />
+      <Box fill_width={false} padding={8}>
+        {spectrum}
+      </Box>
+    </Box>
+    """
+
+    picker =
+      button(Scale.name(s.scale) <> " ▾", picker_tap,
+        kind: :header,
+        height: 46,
+        padding: 14,
+        color: if(s.mode == :scale, do: Style.text(), else: Style.muted())
+      )
+
+    controls = ~MOB"""
+    <Column gap={10}>
+      <Row gap={8}>
+        {segmented(modes)}
+        {picker}
       </Row>
-      {sheets(a)}
+      <Row gap={8}>
+        {shift_stepper("octave", s.octave, :octave, -3..3)}
+        {shift_stepper("transp", s.transpose, :transpose, -12..12)}
+      </Row>
     </Column>
     """
+
+    actions = ~MOB"""
+    <Row>
+      <Box
+        width={96}
+        height={56}
+        corner_radius={16}
+        background={Style.surface()}
+        align="center"
+        on_tap={pause_tap}
+        on_press_out={held()}
+      >
+        {pause_label(a.status)}
+      </Box>
+      <Spacer />
+      <Canvas
+        width={88}
+        height={88}
+        draw={record_ops(a.recording)}
+        on_tap={record_tap}
+        on_press_out={held()}
+      />
+      <Spacer />
+      <Box
+        width={96}
+        height={56}
+        corner_radius={16}
+        background={Style.surface()}
+        align="center"
+        on_tap={phrases_tap}
+        on_press_out={held()}
+      >
+        <Text text="Phrases" font={:semibold} text_size={13} text_color={Style.text()} />
+      </Box>
+    </Row>
+    """
+
+    page(
+      [
+        top,
+        ~MOB(<Spacer size={11} />),
+        ~MOB"""
+        <Box align="center">
+          <Canvas width={strip_w()} height={PianoStrip.height()} draw={a.ops.strip} />
+        </Box>
+        """,
+        ~MOB(<Spacer size={10} />),
+        ~MOB"""
+        <Row height={112} gap={16} padding_left={8} padding_right={8}>
+          <Canvas width={mimi_w} height={mimi_h} draw={a.ops.mimi} />
+          {note_panel(a)}
+        </Row>
+        """,
+        ~MOB(<Spacer size={10} />),
+        roll,
+        ~MOB(<Spacer size={10} />),
+        controls,
+        ~MOB(<Spacer />),
+        ~MOB"""
+        <Text
+          height={18}
+          fill_width={true}
+          text={status_line(a) || ""}
+          font={:mono_semibold}
+          text_size={12}
+          text_align="center"
+          text_color={if(a.recording, do: Style.danger_text(), else: Style.text_2())}
+        />
+        """,
+        ~MOB(<Spacer size={4} />),
+        actions,
+        sheets(a)
+      ],
+      padding_bottom: 8,
+      gap: nil
+    )
   end
 
   defp pill(a, tap) do
@@ -330,7 +337,7 @@ defmodule Humdinger.LiveScreen do
       padding_left={14}
       padding_right={14}
       on_tap={tap}
-      on_press_out={Widgets.held()}
+      on_press_out={held()}
     >
       <Row height={44} gap={8}>
         <Box width={8} height={8} corner_radius={4} background={dot} />
@@ -410,7 +417,7 @@ defmodule Humdinger.LiveScreen do
       <Text text={body} text_size={12} line_height={1.35} text_color={Style.muted()} />
       <Row gap={8}>
         {for {label, tag} <- actions do
-          Widgets.button(label, {self(), tag}, :flat, height: 34, radius: 17)
+          button(label, {self(), tag}, kind: :flat, height: 34, radius: 17)
         end}
       </Row>
     </Column>
@@ -447,36 +454,10 @@ defmodule Humdinger.LiveScreen do
     end
   end
 
-  defp stepper(label, value, field, lo..hi//_) do
+  defp shift_stepper(label, value, field, lo..hi//_) do
     down = {self(), {:set, field, max(value - 1, lo)}}
     up = {self(), {:set, field, min(value + 1, hi)}}
-    text = "#{label} #{signed(value)}"
-
-    ~MOB"""
-    <Row
-      weight={1}
-      height={46}
-      corner_radius={12}
-      background={Style.surface()}
-      padding_left={4}
-      padding_right={4}
-    >
-      <Box width={44} height={40} align="center" on_tap={down} on_press_out={Widgets.held()}>
-        <Text text="−" font={:bold} text_size={18} text_color={Style.text()} />
-      </Box>
-      <Text
-        text={text}
-        weight={1}
-        font={:mono_semibold}
-        text_size={12}
-        text_align="center"
-        text_color={Style.text()}
-      />
-      <Box width={44} height={40} align="center" on_tap={up} on_press_out={Widgets.held()}>
-        <Text text="+" font={:bold} text_size={18} text_color={Style.text()} />
-      </Box>
-    </Row>
-    """
+    stepper(nil, "#{label} #{signed(value)}", down, up, height: 46)
   end
 
   defp signed(n) when n > 0, do: "+#{n}"
@@ -547,56 +528,48 @@ defmodule Humdinger.LiveScreen do
     done = {self(), :scale_done}
     chromatic = s.scale.mode == :chromatic
 
-    ~MOB"""
-    <Sheet
-      id="scale"
-      detents={[:medium, :large]}
-      on_dismiss={dismiss}
-      background={Style.surface()}
-      corner_radius={24}
-    >
-      <Scroll fill_width={true}>
-        <Row fill_width={true} align={:top}>
-          <Spacer />
-          <Column width={350} padding_top={4} padding_bottom={24} gap={14}>
-            <Row>
-              <Text
-                text={Scale.name(s.scale)}
-                font={:display}
-                text_size={24}
-                text_color={Style.text()}
-              />
-              <Spacer />
-              {Widgets.button("Done", done, :lime, height: 40, radius: 20)}
-            </Row>
-            {Widgets.heading("ROOT")}
-            <Wrap spacing={6} run_spacing={6} fill_width={true}>
-              {for root <- 0..11 do
-                Widgets.chip(
-                  root_label(root, scale_mode(s.scale)),
-                  not chromatic and s.scale.root == root,
-                  {self(), {:set, :scale, Scale.new(root, scale_mode(s.scale))}},
-                  dim: chromatic
-                )
-              end}
-            </Wrap>
-            {Widgets.heading("MODE")}
-            <Wrap spacing={6} run_spacing={6} fill_width={true}>
-              {for mode <- Scale.modes() do
-                Widgets.chip(
-                  mode_label(mode),
-                  s.scale.mode == mode,
-                  {self(), {:set, :scale, Scale.new(s.scale.root, mode)}},
-                  font: :semibold
-                )
-              end}
-            </Wrap>
-          </Column>
-          <Spacer />
-        </Row>
-      </Scroll>
-    </Sheet>
+    roots = ~MOB"""
+    <Wrap spacing={6} run_spacing={6} fill_width={true}>
+      {for root <- 0..11 do
+        chip(
+          root_label(root, scale_mode(s.scale)),
+          not chromatic and s.scale.root == root,
+          {self(), {:set, :scale, Scale.new(root, scale_mode(s.scale))}},
+          dim: chromatic
+        )
+      end}
+    </Wrap>
     """
+
+    modes = ~MOB"""
+    <Wrap spacing={6} run_spacing={6} fill_width={true}>
+      {for mode <- Scale.modes() do
+        chip(
+          mode_label(mode),
+          s.scale.mode == mode,
+          {self(), {:set, :scale, Scale.new(s.scale.root, mode)}},
+          font: :semibold
+        )
+      end}
+    </Wrap>
+    """
+
+    sheet(
+      "scale",
+      dismiss,
+      [
+        sheet_title(Scale.name(s.scale), font: :display, size: 24, done: done, padding_bottom: 0),
+        heading("ROOT"),
+        roots,
+        heading("MODE"),
+        modes
+      ],
+      detents: [:medium, :large],
+      scroll: true,
+      width: content_width(),
+      padding_top: 4,
+      gap: 14
+    )
   end
 
   # A root spelled as the scale's name spells it ("Gb" in Gb Lydian).
@@ -839,7 +812,7 @@ defmodule Humdinger.LiveScreen do
 
   def handle_info({:drag_quiet, _stale}, socket), do: {:noreply, socket}
 
-  # The lift after a tap (see `Widgets.held/0`): nothing to do.
+  # The lift after a tap (see `Controls.held/0`): nothing to do.
   def handle_info({:press_out, :held}, socket), do: {:noreply, socket}
 
   def handle_info(_message, socket), do: {:noreply, socket}

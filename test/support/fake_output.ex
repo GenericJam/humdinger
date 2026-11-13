@@ -1,18 +1,24 @@
 defmodule Humdinger.Test.FakeOutput do
   @moduledoc """
-  An Output double for screen tests: the Engine's `send_events/1` and
-  `configure/1`, and the screens' `destinations/0`, `subscribe/1` and
-  `set_enabled/2`. Destinations start as Output's defaults (FMutate and the
-  port on, FMutate connected as "FMutate A"); subscribers get
-  `{:output, :destinations, list}` at once and on every change. Events sent
-  are kept for `sent/0`. State lives in a named Agent, so tests using it
-  run `async: false`; `reset/0` from a test's setup.
+  The `Humdinger.Output` double (`output:` / `config :humdinger, :output`):
+  the Engine's and Player's `send_events/1` and `configure/1`, and the
+  screens' `destinations/0`, `subscribe/1` and `set_enabled/2`.
+
+  Destinations start as Output's defaults (FMutate and the port on,
+  FMutate connected as "FMutate A"); `reset/1` replaces them. Subscribers
+  get `{:output, :destinations, list}` at once and on every change. What
+  is sent and configured is reported to the test listening through
+  `Humdinger.Test.Listener` as `{:output, events}` and `{:configure, opts}`.
+  State lives in a named Agent, so tests
+  using it run `async: false`; `reset/0` from a test's setup.
   """
+
+  alias Humdinger.Test.Listener
 
   @doc "Forget everything; `destinations` replaces the default list."
   def reset(destinations \\ defaults()) do
     ensure_started()
-    Agent.update(__MODULE__, fn _ -> %{destinations: destinations, subscribers: [], sent: []} end)
+    Agent.update(__MODULE__, fn _ -> fresh(destinations) end)
   end
 
   def defaults do
@@ -42,8 +48,11 @@ defmodule Humdinger.Test.FakeOutput do
     ]
   end
 
-  def send_events(events), do: update(fn s -> %{s | sent: s.sent ++ events} end)
-  def configure(_opts), do: :ok
+  # Like a cast, these never fail: the engine's terminate/2 may call them
+  # after the test has gone.
+  def send_events(events), do: Listener.tell({:output, events})
+
+  def configure(opts), do: Listener.tell({:configure, opts})
 
   def destinations, do: get(& &1.destinations)
 
@@ -67,9 +76,6 @@ defmodule Humdinger.Test.FakeOutput do
     :ok
   end
 
-  @doc "Every event sent so far."
-  def sent, do: get(& &1.sent)
-
   defp get(fun) do
     ensure_started()
     Agent.get(__MODULE__, fun)
@@ -80,10 +86,10 @@ defmodule Humdinger.Test.FakeOutput do
     Agent.update(__MODULE__, fun)
   end
 
+  defp fresh(destinations), do: %{destinations: destinations, subscribers: []}
+
   defp ensure_started do
-    case Agent.start(fn -> %{destinations: defaults(), subscribers: [], sent: []} end,
-           name: __MODULE__
-         ) do
+    case Agent.start(fn -> fresh(defaults()) end, name: __MODULE__) do
       {:ok, _} -> :ok
       {:error, {:already_started, _}} -> :ok
     end

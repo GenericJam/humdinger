@@ -2,6 +2,8 @@ defmodule Humdinger.PairScreenTest do
   # The pairing, clipboard and scanner doubles are set in the app env.
   use Mob.ScreenCase, async: false
 
+  import Humdinger.Test.Screens, only: [assert_every_tap_held: 1, tap_tags: 1, texts: 1]
+
   alias Humdinger.FMutate.PairLink
   alias Humdinger.{PairScreen, Style}
 
@@ -98,8 +100,6 @@ defmodule Humdinger.PairScreenTest do
     view
   end
 
-  defp texts(view), do: for(node <- flatten(view), node.type == :text, do: node.props.text)
-  defp tap_tags(view), do: for(node <- flatten(view), tap = node.props[:on_tap], do: elem(tap, 1))
   defp type(view, text), do: render_info(view, {:change, :code, text})
   defp field(view), do: find(view, :text_field, id: "code")
 
@@ -135,10 +135,7 @@ defmodule Humdinger.PairScreenTest do
       |> render_info({:fmutate_pair, :found, [@candidate]})
       |> render_info({:fmutate_pair, :waiting})
 
-    taps = for node <- flatten(view), node.props[:on_tap], do: node
-
-    for node <- taps,
-        do: assert(node.props[:on_press_out] == {self(), :held}, inspect(node.props))
+    assert_every_tap_held(view)
 
     assert Enum.sort(tap_tags(view)) ==
              Enum.sort([:back, :scan, :paste, {:candidate, "a"}, :cancel])

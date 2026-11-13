@@ -94,25 +94,22 @@ defmodule Humdinger.PhraseScreen do
 
     right =
       if assigns.tab == :roll,
-        do: header_button("hum_again", "Hum again", {self(), :hum_again})
+        do: button("Hum again", {self(), :hum_again}, kind: :header, id: "hum_again")
 
-    tabs = [
-      {:roll, "Piano roll", {self(), {:tab, :roll}}},
-      {:staff, "Staff", {self(), {:tab, :staff}}}
-    ]
+    tabs = segments([roll: "Piano roll", staff: "Staff"], assigns.tab, :tab)
 
     page(
       [
         header(back, p.name, Phrase.summary(p), right, title_tap: rename),
         ~MOB"""
         <Row fill_width={true}>
-          {segmented(tabs, assigns.tab)}
+          {segmented(tabs, height: 38)}
         </Row>
         """,
         tab_body(assigns),
         sheet_for(assigns)
       ],
-      14
+      gap: 14
     )
   end
 
@@ -127,7 +124,7 @@ defmodule Humdinger.PhraseScreen do
         do: ~MOB[<Text id="missing" text={message} text_size={14} text_color={Style.text_2()} />],
         else: ~MOB[<Progress color={Style.fm()} />]
 
-    page([header(back, "Phrase", nil, nil), status], 14)
+    page([header(back, "Phrase", nil, nil), status], gap: 14)
   end
 
   defp tab_body(%{tab: :roll} = assigns) do
@@ -135,17 +132,15 @@ defmodule Humdinger.PhraseScreen do
     drag = {self(), :roll}
     roll = PianoRoll.ops(roll_data(p, assigns.selected), @roll_w, @roll_h)
 
-    quantize =
-      for {q, label} <- [q4: "1/4", q8: "1/8", q16: "1/16", off: "Off"],
-          do: {q, label, {self(), {:quantize, q}}}
+    quantize = segments([q4: "1/4", q8: "1/8", q16: "1/16", off: "Off"], p.quantize, :quantize)
 
     tempo = "#{p.tempo_bpm} bpm" <> if(p.tempo_detected, do: " · detected", else: "")
     clean = clean?(assigns)
 
     actions = [
-      action_button("save", if(clean, do: "Saved", else: "Save"), {self(), :save}),
-      action_button("export_mid", "Export .mid", {self(), {:share, :mid}}),
-      action_button("discard", "Discard", {self(), :discard}, :outline)
+      button(if(clean, do: "Saved", else: "Save"), {self(), :save}, kind: :action, id: "save"),
+      button("Export .mid", {self(), {:share, :mid}}, kind: :action, id: "export_mid"),
+      button("Discard", {self(), :discard}, kind: :outline, id: "discard")
     ]
 
     ~MOB"""
@@ -158,7 +153,7 @@ defmodule Humdinger.PhraseScreen do
           text_color={Style.muted()}
         />
       </Column>
-      {labelled("Quantize", 64, segmented(quantize, p.quantize))}
+      {labelled("Quantize", 64, segmented(quantize, height: 38))}
       {labelled("Tempo", 64, stepper("tempo", tempo, {self(), {:tempo, -1}}, {self(), {:tempo, 1}}))}
       {notice(assigns.notice)}
       <Spacer />
@@ -175,14 +170,14 @@ defmodule Humdinger.PhraseScreen do
     data = staff_data(assigns)
     h = Staff.height(data, @staff_w)
 
-    clefs =
-      for {c, label} <- [auto: "Auto", treble: "Treble", bass: "Bass"],
-          do: {c, label, {self(), {:clef, c}}}
+    clefs = segments([auto: "Auto", treble: "Treble", bass: "Bass"], assigns.clef, :clef)
 
-    rhythms = [
-      {:as_sung, "As sung (#{grid_label(p.quantize)})", {self(), {:rhythm, :as_sung}}},
-      {:simpler, "Simpler (1/4)", {self(), {:rhythm, :simpler}}}
-    ]
+    rhythms =
+      segments(
+        [as_sung: "As sung (#{grid_label(p.quantize)})", simpler: "Simpler (1/4)"],
+        assigns.rhythm,
+        :rhythm
+      )
 
     names = {self(), :note_names}
 
@@ -191,12 +186,11 @@ defmodule Humdinger.PhraseScreen do
         " Transpose on the home screen to move it somewhere easier to play."
 
     actions = [
-      action_button("musicxml", "MusicXML", {self(), {:share, :musicxml}}),
-      action_button("print", "Print", {self(), :print}),
-      action_button(
-        "play_back",
-        if(assigns.playing, do: "Stop", else: "Play back"),
-        {self(), :play}
+      button("MusicXML", {self(), {:share, :musicxml}}, kind: :action, id: "musicxml"),
+      button("Print", {self(), :print}, kind: :action, id: "print"),
+      button(if(assigns.playing, do: "Stop", else: "Play back"), {self(), :play},
+        kind: :action,
+        id: "play_back"
       )
     ]
 
@@ -206,8 +200,8 @@ defmodule Humdinger.PhraseScreen do
         <Column gap={14}>
           {staff_canvas(data, h)}
           <Column gap={8}>
-            {labelled("Clef", 70, segmented(clefs, assigns.clef, height: 36))}
-            {labelled("Rhythm", 70, segmented(rhythms, assigns.rhythm, height: 36))}
+            {labelled("Clef", 70, segmented(clefs, height: 36))}
+            {labelled("Rhythm", 70, segmented(rhythms, height: 36))}
             <Row align={:center} gap={12} fill_width={true}>
               <Column weight={1} gap={2}>
                 <Text text="Note names" font={:semibold} text_size={14} text_color={Style.text()} />
@@ -231,7 +225,7 @@ defmodule Humdinger.PhraseScreen do
         </Column>
       </Scroll>
       <Column gap={8}>
-        {primary_button("share_pdf", "Share as PDF", {self(), {:share, :pdf}})}
+        {button("Share as PDF", {self(), {:share, :pdf}}, kind: :primary, id: "share_pdf")}
         {action_row(actions)}
       </Column>
     </Column>
@@ -240,8 +234,8 @@ defmodule Humdinger.PhraseScreen do
 
   defp play_out(playing, label) do
     if playing,
-      do: primary_button("play_out", "Stop", {self(), :play}, icon: :stop),
-      else: primary_button("play_out", label, {self(), :play}, icon: :play)
+      do: button("Stop", {self(), :play}, kind: :primary, id: "play_out", icon: :stop),
+      else: button(label, {self(), :play}, kind: :primary, id: "play_out", icon: :play)
   end
 
   defp roll_canvas(ops, drag) do
@@ -290,8 +284,8 @@ defmodule Humdinger.PhraseScreen do
       />
       """,
       action_row([
-        action_button("cancel", "Cancel", {self(), :dismiss}),
-        action_button("save_name", "Done", {self(), :save_name})
+        button("Cancel", {self(), :dismiss}, kind: :action, id: "cancel"),
+        button("Done", {self(), :save_name}, kind: :action, id: "save_name")
       ])
     ])
   end
@@ -303,10 +297,10 @@ defmodule Humdinger.PhraseScreen do
         else: {"Discard your changes?", "The saved phrase stays as it was."}
 
     sheet("discard", {self(), :dismiss}, [
-      sheet_title(title, note),
+      sheet_title(title, note: note),
       action_row([
-        action_button("keep", "Keep editing", {self(), :dismiss}),
-        action_button("confirm_discard", "Discard", {self(), :leave}, :outline)
+        button("Keep editing", {self(), :dismiss}, kind: :action, id: "keep"),
+        button("Discard", {self(), :leave}, kind: :outline, id: "confirm_discard")
       ])
     ])
   end

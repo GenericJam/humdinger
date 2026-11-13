@@ -4,7 +4,7 @@ defmodule Humdinger.SpectrumScreenTest do
   import Humdinger.Test.Screens
 
   alias Humdinger.{Audio, Engine, Music, SpectrumScreen}
-  alias Humdinger.Test.FakeAudio
+  alias Humdinger.Audio.Fake
   alias Humdinger.Views.Spectrum
 
   setup do
@@ -26,9 +26,9 @@ defmodule Humdinger.SpectrumScreenTest do
 
   test "turns the engine's spectrum on while it's open and off when it closes" do
     view = mount_screen(SpectrumScreen)
-    assert FakeAudio.spectrum?(FakeAudio.current())
+    assert Fake.spectrum?(Fake.current())
     SpectrumScreen.terminate(:normal, view.socket)
-    refute FakeAudio.spectrum?(FakeAudio.current())
+    refute Fake.spectrum?(Fake.current())
   end
 
   test "after an engine restart it asks the new engine for the spectrum" do
@@ -43,7 +43,7 @@ defmodule Humdinger.SpectrumScreenTest do
 
     # The new engine is off; when something listens, the spectrum is on.
     :ok = Engine.listen()
-    assert FakeAudio.spectrum?(FakeAudio.current())
+    assert Fake.spectrum?(Fake.current())
   end
 
   defp rewatch(view) do
@@ -58,9 +58,9 @@ defmodule Humdinger.SpectrumScreenTest do
   test "draws the columns and the heard pitch, and names the note" do
     view = mount_screen(SpectrumScreen) |> pump()
     empty_ops = assigns(view).ops
-    ref = FakeAudio.current()
+    ref = Fake.current()
 
-    for t <- 0..300//33, do: FakeAudio.spectrum(ref, column(t, 69))
+    for t <- 0..300//33, do: Fake.spectrum(ref, column(t, 69))
     sing(readings(0, 330, 69))
     view = pump_frame(view)
 
@@ -84,12 +84,12 @@ defmodule Humdinger.SpectrumScreenTest do
 
   test "keeps only the columns inside the window; a new listen starts over" do
     view = mount_screen(SpectrumScreen) |> pump()
-    ref = FakeAudio.current()
-    for t <- 0..6_000//100, do: FakeAudio.spectrum(ref, column(t, 60))
+    ref = Fake.current()
+    for t <- 0..6_000//100, do: Fake.spectrum(ref, column(t, 60))
     view = pump(view)
     assert hd(assigns(view).columns).t >= 6_000 - 4_200
 
-    FakeAudio.spectrum(ref, column(10, 60))
+    Fake.spectrum(ref, column(10, 60))
     view = pump(view)
     # Engine time: the column's audio t plus the listen's offset (0 or a
     # millisecond or two since the engine started).

@@ -28,6 +28,8 @@ defmodule Humdinger.OutputScreen do
 
   use Mob.Screen
 
+  import Humdinger.Controls
+
   alias Humdinger.{Engine, Output, PairScreen, Style}
 
   @impl true
@@ -57,64 +59,37 @@ defmodule Humdinger.OutputScreen do
     footer_color = if none_on, do: Style.warn(), else: Style.muted()
     footer_font = if none_on, do: :semibold, else: :default
 
-    ~MOB"""
-    <Column
-      background={Style.bg()}
-      fill_width={true}
-      fill_height={true}
-      padding_left={20}
-      padding_right={20}
-      padding_top={12}
-      padding_bottom={22}
-      gap={14}
-    >
-      {header("Send MIDI to")}
-      <Scroll weight={1} show_indicator={false}>
-        <Column fill_width={true} gap={14}>
-          <Column fill_width={true} gap={8}>
-            {Enum.map(@destinations, &card(&1, @fmutate))}
-            <Row fill_width={true} gap={8}>
-              {flat_button("Pair FMutate · QR or code", :pair, weight: 1)}
-              {flat_button("Scan Bluetooth", :scan_bluetooth, weight: 1)}
-            </Row>
+    page(
+      [
+        header({self(), :back}, "Send MIDI to", nil, nil, size: 24),
+        ~MOB"""
+        <Scroll weight={1} show_indicator={false}>
+          <Column fill_width={true} gap={14}>
+            <Column fill_width={true} gap={8}>
+              {Enum.map(@destinations, &card(&1, @fmutate))}
+              <Row fill_width={true} gap={8}>
+                {button("Pair FMutate · QR or code", {self(), :pair}, kind: :raised, weight: 1)}
+                {button("Scan Bluetooth", {self(), :scan_bluetooth}, kind: :raised, weight: 1)}
+              </Row>
+            </Column>
+            {channel_section(@settings.channel)}
+            {sent_section(@settings, @last_sent)}
           </Column>
-          {channel_section(@settings.channel)}
-          {sent_section(@settings, @last_sent)}
-        </Column>
-      </Scroll>
-      <Text
-        text="Humdinger makes no sound itself. Turn on at least one destination, or nothing will play."
-        font={footer_font}
-        text_size={12}
-        text_color={footer_color}
-      />
-      {if @bt_sheet, do: bluetooth_sheet(assigns)}
-    </Column>
-    """
-  end
-
-  @doc "The back chevron and the title, as on the Output and Pair boards (tap: `:back`)."
-  def header(title) do
-    back = {self(), :back}
-
-    ~MOB"""
-    <Row fill_width={true} gap={8} align={:center}>
-      <Canvas width={44} height={44} draw={back_ops()} on_tap={back} on_press_out={held()} />
-      <Text text={title} font={:display} text_size={24} text_color={Style.text()} />
-    </Row>
-    """
-  end
-
-  @doc "The back chevron (board: 22 dp, stroke 2, in a 44 dp target)."
-  def back_ops do
-    [
-      Mob.Canvas.path([{24.75, 15.6}, {19.4, 22}, {24.75, 28.4}],
-        color: Style.text(),
-        width: 2,
-        cap: :round,
-        join: :round
-      )
-    ]
+        </Scroll>
+        """,
+        ~MOB"""
+        <Text
+          text="Humdinger makes no sound itself. Turn on at least one destination, or nothing will play."
+          font={footer_font}
+          text_size={12}
+          text_color={footer_color}
+        />
+        """,
+        if(assigns.bt_sheet, do: bluetooth_sheet(assigns))
+      ],
+      width: nil,
+      gap: 14
+    )
   end
 
   defp card(dest, fmutate_status) do
@@ -191,29 +166,6 @@ defmodule Humdinger.OutputScreen do
   defp detail(%{id: :fmutate}, :unpaired), do: "not paired · pair below"
   defp detail(dest, _), do: dest.detail
 
-  # The board's 48 × 28 switch: lime with a dark knob when on.
-  defp switch(on?, tap) do
-    {track, knob, align} =
-      if on?,
-        do: {Style.fm(), Style.ink(), "trailing"},
-        else: {Style.selected(), Style.muted(), "leading"}
-
-    ~MOB"""
-    <Box
-      width={48}
-      height={28}
-      corner_radius={14}
-      background={track}
-      padding={3}
-      align={align}
-      on_tap={tap}
-      on_press_out={held()}
-    >
-      <Box width={22} height={22} corner_radius={11} background={knob} />
-    </Box>
-    """
-  end
-
   defp channel_section(selected) do
     rows = Enum.chunk_every(1..16, 8)
 
@@ -271,7 +223,7 @@ defmodule Humdinger.OutputScreen do
     >
       {heading("WHAT GETS SENT")}
       <Wrap spacing={6} run_spacing={6} fill_width={true}>
-        {Enum.map(chips(settings), fn {label, on} -> chip(label, on) end)}
+        {Enum.map(chips(settings), fn {label, on} -> chip(label, on, nil, kind: :tag) end)}
       </Wrap>
       <Row fill_width={true} gap={10} align={:center} padding_top={4}>
         <Column weight={1}>
@@ -283,7 +235,7 @@ defmodule Humdinger.OutputScreen do
             text_color={Style.key_white()}
           />
         </Column>
-        {flat_button("Send test note", :test_note, height: 40, padding: 14)}
+        {button("Send test note", {self(), :test_note}, kind: :raised, height: 40, padding: 14)}
       </Row>
     </Column>
     """
@@ -304,72 +256,6 @@ defmodule Humdinger.OutputScreen do
     ] ++ if(settings.cc1_from_vibrato, do: [{"CC 1 vibrato", true}], else: [])
   end
 
-  defp chip(label, on) do
-    {bg, border, color} =
-      if on,
-        do: {Style.raised_hi(), Style.raised_hi(), Style.text()},
-        else: {Style.surface(), 0xFF4A4560, Style.muted()}
-
-    ~MOB"""
-    <Box
-      fill_width={false}
-      background={bg}
-      border_color={border}
-      border_width={1}
-      corner_radius={8}
-      padding_left={9}
-      padding_right={9}
-      padding_top={5}
-      padding_bottom={5}
-    >
-      <Text text={label} font={:mono_semibold} text_size={11} text_color={color} />
-    </Box>
-    """
-  end
-
-  @doc "A section heading (mono 11, spaced capitals); the Pair screen's too."
-  def heading(text) do
-    ~MOB"""
-    <Text
-      text={text}
-      font={:mono_semibold}
-      text_size={11}
-      letter_spacing={0.88}
-      text_color={Style.muted()}
-    />
-    """
-  end
-
-  defp flat_button(label, tag, opts) do
-    tap = {self(), tag}
-    weight = Keyword.get(opts, :weight)
-    pad = Keyword.get(opts, :padding, 4)
-
-    ~MOB"""
-    <Box
-      weight={weight}
-      fill_width={weight != nil}
-      height={Keyword.get(opts, :height, 44)}
-      corner_radius={12}
-      background={Style.raised_hi()}
-      padding_left={pad}
-      padding_right={pad}
-      align="center"
-      on_tap={tap}
-      on_press_out={held()}
-    >
-      <Text
-        text={label}
-        font={:semibold}
-        text_size={13}
-        text_color={Style.text()}
-        text_align="center"
-        fill_width={false}
-      />
-    </Box>
-    """
-  end
-
   # ── Bluetooth sheet ────────────────────────────────────────────────────────
 
   defp bluetooth_sheet(assigns) do
@@ -381,39 +267,40 @@ defmodule Humdinger.OutputScreen do
     {scan_label, scan_tag} =
       if bt.scanning, do: {"Stop", :stop_scan}, else: {"Scan again", :scan_bluetooth}
 
-    ~MOB"""
-    <Sheet
-      id="bluetooth"
-      detents={[:medium, :large]}
-      on_dismiss={dismiss}
-      background={Style.surface()}
-    >
-      <Column fill_width={true} padding={20} gap={12}>
-        <Text text="Bluetooth MIDI" font={:display} text_size={22} text_color={Style.text()} />
+    sheet(
+      "bluetooth",
+      dismiss,
+      [
+        sheet_title("Bluetooth MIDI", font: :display, size: 22, padding_bottom: 0),
+        ~MOB"""
         <Row :if={bt.scanning} fill_width={true} gap={10} align={:center}>
           <Box width={8} height={8} corner_radius={4} background={Style.fm()} />
-          <Text
-            text="Looking for Bluetooth MIDI devices…"
-            text_size={13}
-            text_color={Style.text_2()}
-          />
+          <Text text="Looking for Bluetooth MIDI devices…" text_size={13} text_color={Style.text_2()} />
         </Row>
-        <Text :if={message} text={message} text_size={13} text_color={Style.danger_text()} />
-        {if bt.paired, do: bt_row(bt.paired, bt_paired_detail(@destinations), :forget, bt)}
-        {Enum.map(found, &bt_row(&1, "#{&1.rssi} dBm", :connect, bt))}
+        """,
+        ~MOB[<Text :if={message} text={message} text_size={13} text_color={Style.danger_text()} />],
+        if(bt.paired, do: bt_row(bt.paired, bt_paired_detail(assigns.destinations), :forget, bt)),
+        Enum.map(found, &bt_row(&1, "#{&1.rssi} dBm", :connect, bt)),
+        ~MOB"""
         <Text
           :if={found == [] and not bt.scanning and bt.paired == nil and message == nil}
           text="Nothing found yet. Switch the synth's Bluetooth MIDI on and scan."
           text_size={13}
           text_color={Style.muted()}
         />
+        """,
+        ~MOB"""
         <Row fill_width={true} gap={8}>
-          {flat_button(scan_label, scan_tag, weight: 1)}
-          {flat_button("Done", :bt_sheet, weight: 1)}
+          {button(scan_label, {self(), scan_tag}, kind: :raised, weight: 1)}
+          {button("Done", dismiss, kind: :raised, weight: 1)}
         </Row>
-      </Column>
-    </Sheet>
-    """
+        """
+      ],
+      detents: [:medium, :large],
+      padding_top: 20,
+      padding_bottom: 20,
+      gap: 12
+    )
   end
 
   defp bt_row(device, detail, action, bt) do
@@ -448,19 +335,7 @@ defmodule Humdinger.OutputScreen do
           <Text text={name} font={:bold} text_size={14} text_color={Style.text()} />
           <Text text={detail} font={:mono} text_size={11} text_color={Style.muted()} />
         </Column>
-        <Box
-          fill_width={false}
-          height={36}
-          corner_radius={10}
-          background={Style.raised_hi()}
-          padding_left={12}
-          padding_right={12}
-          align="center"
-          on_tap={tap}
-          on_press_out={if(tap, do: held())}
-        >
-          <Text text={label} font={:semibold} text_size={13} text_color={color} />
-        </Box>
+        {button(label, tap, kind: :raised, height: 36, radius: 10, padding: 12, color: color)}
       </Row>
     </Box>
     """
@@ -619,12 +494,6 @@ defmodule Humdinger.OutputScreen do
       nil -> "FMutate"
     end
   end
-
-  @doc """
-  Every tap target's `on_press_out` (MOB-509; the screen answers
-  `{:press_out, :held}` with nothing). The Pair screen uses it too.
-  """
-  def held, do: {self(), :held}
 
   defp fmutate, do: Application.get_env(:humdinger, :fmutate, Humdinger.FMutate)
   defp device_calls?, do: Application.get_env(:humdinger, :device_calls, true)

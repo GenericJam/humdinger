@@ -9,16 +9,6 @@
 
 Code.require_file("canvas_svg.exs", __DIR__)
 
-defmodule PreviewAudio do
-  @moduledoc false
-  @behaviour Humdinger.Audio
-  def listen(_owner, _opts), do: {:ok, make_ref()}
-  def set_spectrum(_ref, _on), do: :ok
-  def stop(_ref), do: :ok
-  def inputs, do: []
-  def analyze_file(_owner, _path, _opts), do: {:error, :not_supported}
-end
-
 defmodule PreviewOutput do
   @moduledoc false
   def send_events(_events), do: :ok
@@ -149,17 +139,18 @@ defmodule Preview do
 end
 
 alias Humdinger.{Engine, FirstRunScreen, LiveScreen, SpectrumScreen}
+alias Humdinger.Audio.Fake
 
 out_dir = List.first(System.argv(), "/tmp/humdinger_screens")
 File.mkdir_p!(out_dir)
 
 {:ok, _} = Mob.ScreenCase.StateOwner.checkout()
 Application.put_env(:humdinger, :device_calls, false)
-Application.put_env(:humdinger, :audio, PreviewAudio)
+Application.put_env(:humdinger, :audio, Fake)
 Application.put_env(:humdinger, :output, PreviewOutput)
 Mob.State.delete(:settings)
 {:ok, _} = Humdinger.Settings.update(%{first_run_done: true, range: {40, 84}})
-{:ok, _} = Engine.start_link(audio: PreviewAudio, output: PreviewOutput)
+{:ok, _} = Engine.start_link(audio: Fake, output: PreviewOutput)
 
 # ── Live: singing up to A4, 12 cents flat ──
 live = Preview.mount(LiveScreen)

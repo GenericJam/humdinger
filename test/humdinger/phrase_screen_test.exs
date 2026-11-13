@@ -2,10 +2,10 @@ defmodule Humdinger.PhraseScreenTest do
   # One in-memory database, and doubles configured in the application env.
   use Mob.ScreenCase, async: false
 
-  import Humdinger.Test.ScreenHelpers
+  import Humdinger.Test.Screens
 
   alias Humdinger.{LiveScreen, Phrase, Phrases, PhraseScreen, Repo, Scale}
-  alias Humdinger.Test.Listener
+  alias Humdinger.Test.{FakeOutput, Listener}
   alias Humdinger.Views.PianoRoll
 
   @eighth 60_000 / 96 / 2
@@ -15,14 +15,15 @@ defmodule Humdinger.PhraseScreenTest do
   setup do
     Repo.delete_all(Phrases.Row)
     Listener.listen()
-    Application.put_env(:humdinger, :output, Humdinger.Test.Output)
+    FakeOutput.reset()
+    Application.put_env(:humdinger, :output, FakeOutput)
     Application.put_env(:humdinger, :file_share, Humdinger.Test.FileShare)
     dir = Path.join(System.tmp_dir!(), "humdinger-review-#{System.unique_integer([:positive])}")
     Application.put_env(:humdinger, :export_dir, dir)
 
     on_exit(fn ->
       Enum.each(
-        [:output, :file_share, :export_dir, :test_destinations],
+        [:output, :file_share, :export_dir],
         &Application.delete_env(:humdinger, &1)
       )
 
@@ -97,14 +98,14 @@ defmodule Humdinger.PhraseScreenTest do
   end
 
   test "the play button names the first destination that is on and reachable" do
-    Application.put_env(:humdinger, :test_destinations, [
+    FakeOutput.reset([
       %{id: :fmutate, name: "FMutate", detail: "", enabled: true, available: false},
       %{id: :port, name: "Humdinger port", detail: "", enabled: true, available: true}
     ])
 
     assert "Play out to Humdinger port" in texts(review())
 
-    Application.put_env(:humdinger, :test_destinations, [])
+    FakeOutput.reset([])
     assert "Play out" in texts(review())
   end
 
@@ -324,8 +325,7 @@ defmodule Humdinger.PhraseScreenTest do
           render_info(playing, {:tap, :rename}),
           render_info(playing, {:tap, :discard})
         ] do
-      assert taps(v) != []
-      assert unguarded(v) == []
+      assert_every_tap_held(v)
     end
   end
 end

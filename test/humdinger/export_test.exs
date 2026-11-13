@@ -3,28 +3,13 @@ defmodule Humdinger.ExportTest do
   use ExUnit.Case, async: false
 
   alias Humdinger.{Export, Phrase, Scale}
+  alias Humdinger.Test.{FileShare, Listener}
 
   setup do
     dir = Path.join(System.tmp_dir!(), "humdinger-export-#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
     on_exit(fn -> File.rm_rf!(dir) end)
     %{tmp_dir: dir}
-  end
-
-  defmodule Native do
-    @behaviour Humdinger.Export.Native
-
-    @impl true
-    def share_file(path, mime, title) do
-      send(self(), {:share, path, mime, title})
-      :ok
-    end
-
-    @impl true
-    def print_pdf(path, title) do
-      send(self(), {:print, path, title})
-      :ok
-    end
   end
 
   defp phrase(name \\ "Bus stop riff") do
@@ -93,7 +78,8 @@ defmodule Humdinger.ExportTest do
     assert Export.share(pdf) == {:error, :unsupported}
     assert Export.print(pdf) == {:error, :unsupported}
 
-    Application.put_env(:humdinger, :file_share, Native)
+    Listener.listen()
+    Application.put_env(:humdinger, :file_share, FileShare)
 
     try do
       assert Export.share(xml) == :ok
