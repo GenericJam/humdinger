@@ -197,7 +197,7 @@ defmodule Humdinger.PhraseScreen do
     ~MOB"""
     <Column weight={1} gap={14}>
       <Scroll weight={1}>
-        <Column gap={14}>
+        <Column gap={14} padding_bottom={12}>
           {staff_canvas(data, h)}
           <Column gap={8}>
             {labelled("Clef", 70, segmented(clefs, height: 36))}
@@ -219,7 +219,13 @@ defmodule Humdinger.PhraseScreen do
                 on_change={names}
               />
             </Row>
-            <Text text={caption} text_size={12} text_color={Style.muted()} />
+            <Text
+              text={caption}
+              text_size={12}
+              line_height={1.4}
+              fill_width={true}
+              text_color={Style.muted()}
+            />
             {notice(assigns.notice)}
           </Column>
         </Column>

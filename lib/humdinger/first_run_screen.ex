@@ -66,6 +66,7 @@ defmodule Humdinger.FirstRunScreen do
         destinations: destinations,
         saved_range: nil
       )
+      |> probe_microphone()
       |> enter(step)
 
     {:ok, socket}
@@ -89,13 +90,19 @@ defmodule Humdinger.FirstRunScreen do
     skip_label = if assigns.only, do: "Close", else: "Skip"
 
     skip_button =
-      button(skip_label, skip, kind: :header, background: nil, radius: nil, color: Style.muted())
+      button(skip_label, skip,
+        kind: :header,
+        background: nil,
+        radius: nil,
+        padding: 6,
+        color: Style.muted()
+      )
 
     page(
       [
         ~MOB"""
-        <Row gap={10}>
-          <Row weight={1} gap={6}>
+        <Row gap={4}>
+          <Row weight={1} gap={4}>
             {for step <- steps(), do: step_mark(step, assigns.step)}
           </Row>
           {skip_button}
@@ -124,17 +131,35 @@ defmodule Humdinger.FirstRunScreen do
       end
 
     ~MOB"""
-    <Column weight={1} gap={6}>
+    <Column weight={step_weight(step)} gap={6}>
       <Box height={4} corner_radius={2} background={bar} />
       <Text text={step_label(step)} font={:semibold} text_size={11} text_color={fg} max_lines={1} />
     </Column>
     """
   end
 
+  # Wider for the longer labels, so "Headphones" fits a 342 dp row
+  # (Android honours unequal weights; iOS shares equally).
+  defp step_weight(:mic), do: 0.8
+  defp step_weight(:headphones), do: 1.35
+  defp step_weight(:range), do: 0.9
+  defp step_weight(:send_to), do: 1.0
+
   defp step_label(:mic), do: "Mic"
   defp step_label(:headphones), do: "Headphones"
   defp step_label(:range), do: "Range"
   defp step_label(:send_to), do: "Send to"
+
+  defp body(%{step: :mic, mic: :granted}) do
+    intro(
+      :listening,
+      nil,
+      {0, -0.4},
+      "Mimi can hear you",
+      "The microphone is already on for Humdinger. Nothing is recorded unless you press record.",
+      [{"Continue", :next, :lime}]
+    )
+  end
 
   defp body(%{step: :mic} = a) do
     denied = a.mic == :denied
@@ -580,6 +605,22 @@ defmodule Humdinger.FirstRunScreen do
   end
 
   defp enter(socket, step), do: Mob.Socket.assign(socket, :step, step)
+
+  # A microphone granted earlier (the app restarted mid first run) needs no
+  # asking: the engine's listen/0 checks the permission without a dialog, so
+  # a listening engine means it's granted.
+  defp probe_microphone(socket) do
+    cond do
+      Engine.status() in [:listening, :paused] ->
+        Mob.Socket.assign(socket, mic: :granted, status: Engine.status())
+
+      device_calls?() and Code.ensure_loaded?(Audio.impl()) and Engine.listen() == :ok ->
+        Mob.Socket.assign(socket, mic: :granted, status: Engine.status())
+
+      true ->
+        socket
+    end
+  end
 
   # The range step needs the engine listening (Live hasn't asked yet on a
   # first launch). Nothing to do without the microphone.
