@@ -8,8 +8,16 @@
          Normal (install-time) permission; no runtime request needed. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- Microphone (audio recording). -->
+    <!-- Microphone: the hum_audio engine (c_src/hum_audio.c). Screens ask for
+         it with Mob.Permissions.request(socket, :microphone). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- Listening in the background (HumListenService): a foreground service
+         of type microphone, and its notification (Android 13+ asks for it:
+         Mob.Permissions.request(socket, :notifications)). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Camera. The mob_camera plugin merges the CAMERA permission at build, but
          a plugin manifest can't contribute uses-feature tags. Without these,
@@ -107,6 +115,12 @@
         <!-- Scheduled local notification delivery -->
         <receiver android:name=".NotificationReceiver"
             android:exported="false" />
+
+        <!-- Keeps the microphone running while another app is in front
+             (Humdinger.Background, HumListenService.kt). -->
+        <service android:name=".HumListenService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
 
         <!-- FileProvider for camera temp files (photo / video capture) -->
         <provider

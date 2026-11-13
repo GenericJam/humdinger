@@ -113,9 +113,31 @@ subscribe for display and send commands.
 ### Contracts between parts
 
 **Audio** (`Humdinger.Audio.Native`, `Nif`, `Fake`; `c_src/hum_audio.c`,
-`c_src/pitch_yin.c`): see `Humdinger.Audio`. One listener at a time; a new
-`listen/2` replaces the old one (its ref goes stale). `Fake` is driven by
-tests: `Fake.sing(ref, [reading])`, `Fake.analysis(ref, analysis)`.
+`c_src/pitch_yin.c`, `c_src/spectrum.c`): see `Humdinger.Audio`. One
+listener at a time; a new `listen/2` replaces the old one (its ref goes
+stale); listening stops when the owner exits. `listen/2` answers
+`{:error, :permission}` until the screen has asked for the microphone
+(`Mob.Permissions.request(socket, :microphone)` → `{:permission,
+:microphone, :granted | :denied}`). `Fake` is driven by tests:
+`Fake.sing(ref, [reading])`, `spectrum/2`, `fail/2`, `analysis/2`,
+`analysis_error/2`, `listening?/1`, `spectrum?/1`, `current/0`,
+`set_permission/1`, `reset/0` (one engine per VM: tests that listen are
+not `async`).
+
+**Background** (`Humdinger.Background`, Android `HumListenService`):
+listening on while FMutate is in front, as an ongoing notification (not an
+overlay). `start(owner \\ self(), notice) :: :ok | {:error, :permission |
+:refused | :unavailable}` (while the app is in the foreground),
+`update(notice) :: :ok | {:error, :not_running}` (call on every change;
+unchanged notices are free, the service posts ≤ 4/s), `stop/0`,
+`running?/0`. `notice = %{title, text, state: :listening | :paused |
+:recording}` (e.g. `%{title: "Humdinger · listening", text: "A4 −12¢ →
+FMutate A · ch 1"}`); `state` picks the buttons. Taps arrive at `owner` as
+`{:background, :pause | :resume | :record | :record_stop | :stop}`, or
+`{:background, :failed}` if Android refused the service after `start`.
+The buttons only report: the owner acts and then `update/1`s or `stop/0`s.
+Tests: `Fake.background/0` (`%{owner, notice} | nil`),
+`Fake.tap_background(action)`.
 
 **Tracker** (`Humdinger.Tracker`, pure): readings in, MIDI events out.
 `new(settings)`, `push(tracker, reading) :: {tracker, [event]}`,
@@ -510,6 +532,96 @@ If FMutate isn't running yet, Output retries `subscribe/1` every second.
   shows up as `RECV` lines.
 - USB/Bluetooth need hardware: plug a USB-MIDI synth (OTG) or scan for a
   BLE-MIDI one; the `:usb` / `:bt` rows should change at once.
+
+## The audio engine
+
+`c_src/hum_audio.c` is a static NIF (`mob.exs` `:static_nifs`, Android
+only), `ERL_NIF_INIT(Elixir.Humdinger.Audio.Nif, …)`. It includes
+`pitch_yin.c` and `spectrum.c`, which are plain C and build on the Mac.
+
+- **Microphone.** AAudio input, low-latency performance mode, shared, mono
+  float at the device's rate (48 kHz, 192-frame bursts = 4 ms on the moto g
+  power 2021), VOICE_RECOGNITION preset (no AGC or noise suppression), into
+  a lock-free ring. Opened with dlopen (the app links android-24 headers).
+  `RECORD_AUDIO` is checked over JNI first (`{:error, :permission}`).
+- **Readings.** A listen thread (priority −16, Android's audio priority)
+  runs YIN every 255 samples (5.3 ms) over a 42 ms window decimated to
+  16 kHz, range 60–1600 Hz (a hummed bass to a whistle): threshold 0.15,
+  pitched when the dip is ≤ 0.35, nothing below −70 dBFS. Readings go out
+  in pairs (or alone after 6 ms) as finished `%{t, hz, clarity, db}` maps:
+  the BEAM only receives them. `t` is the window's middle, ms since the
+  `listen/2` call.
+- **Spectrum.** Every 1/30 s while on: Hann window over the last 4096
+  samples (85 ms); bands narrower than two FFT bins (< ~680 Hz) are the
+  window's DFT at the band centre (Goertzel), wider ones the largest bin of
+  a radix-2 FFT inside them; levels as sine amplitude, −90 → 0 … −10 dBFS →
+  255.
+- **Files.** `analyze_file/3`: AMediaExtractor + AMediaCodec on a thread
+  per file (m4a/AAC, MP3, WAV, Ogg Opus all checked on the moto g),
+  mixed to mono and analysed as it decodes (only the readings are kept):
+  readings every 10 ms, a peak byte per 50 ms. A container longer than
+  10 min is refused before decoding (`:too_long`). `Mob.Files.pick/2` hands
+  over a copied local path (never a `content://` URI), so paths are all it
+  takes.
+- **Background.** `HumListenService` (host package,
+  `android/app/src/main/java/com/genericjam/humdinger/HumListenService.kt`)
+  is a foreground service of type microphone; `HumListenBridge` is its JNI
+  face. The NIF finds the bridge through the activity's class loader and
+  registers `nativeAction` with `RegisterNatives`, which sends
+  `{:background, action}`. Without the service Android silences a
+  backgrounded app's microphone as soon as the app goes idle (about a
+  minute; `adb shell am make-uid-idle com.genericjam.humdinger` does it at
+  once): readings keep coming, all at −90 dB. A backgrounded app can't open
+  a new microphone stream either (`listen/2` → `:microphone_unavailable`)
+  unless the service runs; with it, `listen/2` works from the background.
+- **Locks.** `lock` (control path: open/start/stop/close, join) → `send_lock`
+  (the listener's owner and ref) → `BG.lock` (the service). A stream is
+  closed only once it is quiet; one that won't stop is left open, harmless.
+
+Measured on the moto g power 2021 (Android 11), `scripts/audio_check.exs`:
+188 readings/s, 1.85 per message, message interval p50 9.8 ms; from the
+newest analysed sample's arrival to the owner's mailbox p50 3–5 ms, p95
+8–11 ms (the higher with the spectrum on), max ≤ 18 ms; spectrum 29.9
+columns/s. A consumer's per-reading work (match the map, hz → MIDI) is
+6–10 µs, 23–25 heap words per reading. A 440 Hz / 660 Hz sine from the Mac
+speaker in a quiet room: median +1.5 / +2 ¢, p95 |error| 5 / 4 ¢, no
+octave errors, the spectrum's strongest bin 63 (440 Hz) in every column.
+When something else sounds in the room the readings follow the mixture
+(e.g. a D3 under the 440 Hz tone reads as D3/A3): one voice at a time is
+the design. A 12.4 s m4a analyses in 0.8–1.6 s. Input timestamps aren't
+available in shared mode (`input_latency_ms: -1`), so the latencies above
+start at the callback that delivered the samples (192 frames = 4 ms
+bursts).
+
+How to check it:
+
+- Host, detector: `cc -O2 -o /tmp/pitch_host c_src/test/pitch_host.c -lm &&
+  /tmp/pitch_host synth` (sines, saw, formant voice with vibrato, weak
+  fundamental, whistle; prints cents error and octave errors per kind;
+  exit 1 on any octave error or p95 > 10 ¢). A file: `ffmpeg -v error -i
+  voice.m4a -ac 1 -ar 48000 -f f32le - | /tmp/pitch_host 48000 > pitch.csv`
+  (summary of voiced share and octave jumps on stderr).
+- Host, spectrum: `cc -O2 -o /tmp/spectrum_host c_src/test/spectrum_host.c
+  -lm && /tmp/spectrum_host` (harmonics 1–4 of tones 98–659 Hz peak in their
+  bins with valleys between; a −50 dB sine reads ≈128).
+- The C for Android: `$NDK/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang
+  --target=aarch64-linux-android28 --sysroot=$NDK/toolchains/llvm/prebuilt/darwin-x86_64/sysroot
+  -I ~/.mob/cache/otp-android-*/erts-*/include -DSTATIC_ERLANG_NIF_LIBNAME=hum_audio
+  -Wall -Wextra -fsyntax-only c_src/hum_audio.c` (also `armv7a-linux-androideabi28`,
+  `x86_64-linux-android28`).
+- Device: after `mix mob.deploy --native --android --device <serial>` and
+  `mix mob.connect --no-iex --android-only --device <serial>`,
+  `adb shell pm grant com.genericjam.humdinger android.permission.RECORD_AUDIO`,
+  then `SERIAL=<serial> mix run --no-start scripts/audio_check.exs` with the
+  phone by the Mac's speaker: rates, latencies, tone pitch, spectrum, a
+  second listen replacing the first, stop. `FILE=/data/data/com.genericjam.humdinger/files/<f>`
+  adds file analysis (push with `adb push` + `adb shell run-as
+  com.genericjam.humdinger cp`), `BACKGROUND=1 [IDLE=1] [NOSERVICE=1]`
+  listening from the background with the screen off and on (NOSERVICE is
+  the control), `BUTTONS=1` the notification's button intents (sent as the
+  app's uid through `run-as`, the path a tap in the shade takes),
+  listening from the background, update and stop.
+  `Humdinger.Audio.Native.info/0` reports the stream and delivery counters.
 
 ## Rules for Mob screens here (from Choir Coach; avoid its traps)
 
