@@ -101,25 +101,19 @@ defmodule Humdinger.PhraseScreen do
       {:staff, "Staff", {self(), {:tab, :staff}}}
     ]
 
-    ~MOB"""
-    <Column
-      background={Style.bg()}
-      fill_width={true}
-      fill_height={true}
-      padding_left={20}
-      padding_right={20}
-      padding_top={12}
-      padding_bottom={22}
-      gap={14}
-    >
-      {header(back, p.name, Phrase.summary(p), right, title_tap: rename)}
-      <Row fill_width={true}>
-        {segmented(tabs, assigns.tab)}
-      </Row>
-      {tab_body(assigns)}
-      {sheet_for(assigns)}
-    </Column>
-    """
+    page(
+      [
+        header(back, p.name, Phrase.summary(p), right, title_tap: rename),
+        ~MOB"""
+        <Row fill_width={true}>
+          {segmented(tabs, assigns.tab)}
+        </Row>
+        """,
+        tab_body(assigns),
+        sheet_for(assigns)
+      ],
+      14
+    )
   end
 
   def render(assigns) do
@@ -128,21 +122,12 @@ defmodule Humdinger.PhraseScreen do
     message =
       if assigns.phrase == :missing, do: "This phrase isn't on the phone any more.", else: nil
 
-    ~MOB"""
-    <Column
-      background={Style.bg()}
-      fill_width={true}
-      fill_height={true}
-      padding_left={20}
-      padding_right={20}
-      padding_top={12}
-      gap={14}
-    >
-      {header(back, "Phrase", nil, nil)}
-      <Progress :if={message == nil} color={Style.fm()} />
-      <Text :if={message} id="missing" text={message} text_size={14} text_color={Style.text_2()} />
-    </Column>
-    """
+    status =
+      if message,
+        do: ~MOB[<Text id="missing" text={message} text_size={14} text_color={Style.text_2()} />],
+        else: ~MOB[<Progress color={Style.fm()} />]
+
+    page([header(back, "Phrase", nil, nil), status], 14)
   end
 
   defp tab_body(%{tab: :roll} = assigns) do
@@ -235,7 +220,8 @@ defmodule Humdinger.PhraseScreen do
               <Toggle
                 id="note_names"
                 value={assigns.note_names}
-                color={Style.fm()}
+                color={Style.ink()}
+                track_color={Style.fm()}
                 on_change={names}
               />
             </Row>

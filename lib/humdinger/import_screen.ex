@@ -96,22 +96,11 @@ defmodule Humdinger.ImportScreen do
     other =
       if assigns.stage != :choose, do: header_button("other_file", "Other file", {self(), :pick})
 
-    ~MOB"""
-    <Column
-      background={Style.bg()}
-      fill_width={true}
-      fill_height={true}
-      padding_left={20}
-      padding_right={20}
-      padding_top={12}
-      padding_bottom={22}
-      gap={12}
-    >
-      {header(back, "Audio to notes", subtitle(assigns), other)}
-      {body(assigns)}
-      {sheet_for(assigns)}
-    </Column>
-    """
+    page([
+      header(back, "Audio to notes", subtitle(assigns), other),
+      body(assigns),
+      sheet_for(assigns)
+    ])
   end
 
   defp subtitle(%{file: nil}), do: nil

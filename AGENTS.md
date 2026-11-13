@@ -513,6 +513,63 @@ If FMutate isn't running yet, Output retries `subscribe/1` every second.
 - USB/Bluetooth need hardware: plug a USB-MIDI synth (OTG) or scan for a
   BLE-MIDI one; the `:usb` / `:bt` rows should change at once.
 
+## Phrase screens: Phrases, Review, Import
+
+`Humdinger.PhrasesScreen`, `Humdinger.PhraseScreen` (Review: Piano roll |
+Staff) and `Humdinger.ImportScreen` share `Humdinger.Controls` (back
+chevron, header, segmented controls, buttons, stepper, sheets, all with
+`on_press_out={held()}`), `Humdinger.PhraseActions` (write + share sheet,
+print, the "Play out to <destination>" label, error wording) and
+`Humdinger.Player`. Menus, rename and confirmations are `<Sheet>`s in the
+tree (not native alerts), so the tests see them.
+
+**Player** (`Humdinger.Player`, one per screen, linked to it): `play(player,
+notes, tag)` sends `Phrase.quantized_notes/1` out through the output
+(`config :humdinger, :output`) at their times, batches same-time events
+note offs first, re-strikes an overlapping pitch, tells the owner
+`{:player, :finished, tag}`; `stop/1` and the screen going away send the
+note offs. Each tick reads the clock and sends everything due, so a late
+timer delays but never drops or drifts (`clock:` / `output:` options for
+tests).
+
+- **Phrases** (board `saved`): params none (Live pushes it with `%{}`).
+  States: loading (`start_async`), the list (`<LazyList>`), empty (Mimi +
+  hint). Card: play (lime while playing), name + `list_summary/3`, ⋯,
+  thumb; name/thumb open the review. ⋯ sheet: Rename (text field sheet,
+  `Phrases.rename/2`), Sheet music (review on Staff), Export .mid (share
+  sheet), Share (.mid / sheet music PDF / MusicXML), Delete (confirm
+  sheet). "+ From audio file" → Import. Reloads on `:phrases_changed`.
+- **Review** (boards `record_review`, `sheet_music`): params `phrase:`
+  (unsaved, from Live or Import) or `id:` (loaded async; gone → a
+  message), `tab: :roll | :staff`, `notify:` (gets `:phrases_changed` after
+  Save), `return_to:` (Live; gets `:hum_again`, then the screen pops to
+  Live). Roll: notes on the phrase grid (`PhraseScreen.roll_data/2` maps
+  view blocks to `phrase.notes` indexes); a drag's `began` point goes
+  through `PianoRoll.hit/5` on the roll as drawn then: body → rows
+  (`move_note/3`), ends → time (`resize_note/4`); quiet 1 s ends a drag.
+  Quantize, Tempo ±1, Play out / Stop, Save ("Saved" while unchanged),
+  Export .mid, Discard (asks when unsaved; Back asks the same). Name taps
+  open a rename sheet (an edit like the others, kept by Save). Staff: Clef,
+  Rhythm, Note names, key caption, Share as PDF, MusicXML, Print, Play back.
+- **Import** (board `import_audio`): params `notify:`. Stages `:choose`
+  (on the phone the picker opens with the screen: `Mob.Files.pick/2`,
+  audio types; results checked with `Mob.Files.accept/2`), `:analysing`
+  (`Audio.impl().analyze_file/3`; a stale ref is ignored), `:ready`,
+  `{:error, text}` (decoding failed, or no `analyze_file/3` in this build).
+  Ready keeps the analysis and re-runs `Transcribe.take/2` on every
+  change: range (waveform drag: handles, the box, or a touch outside pulls
+  the nearer edge; transcribed when the drag ends), Snap (detected key, a
+  key from the root/mode sheet, Chromatic), Quantize, Ignore (20–300 ms).
+  Edit as a phrase / Sheet music push Review with `Phrase.from_take/2`.
+
+Verifying: `mix test test/humdinger/{player,phrases_screen,phrase_screen,
+import_screen}_test.exs` (doubles in `test/support/phrase_doubles.ex`
+report to the test through `config :humdinger, :test_listener`; the
+database helper is `test/support/database.ex`). On the phone, over dist:
+`Humdinger.Phrases.save/1` a phrase, `Mob.Test.navigate(node,
+Humdinger.PhrasesScreen)`; drag notes with `adb shell input swipe` on the
+roll; Export/Share/Print open the system share sheet and print dialog.
+
 ## Rules for Mob screens here (from Choir Coach; avoid its traps)
 
 - **Every `on_tap` on a screen that re-renders on a timer** (Live,

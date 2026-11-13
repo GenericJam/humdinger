@@ -20,6 +20,39 @@ defmodule Humdinger.Controls do
   @doc "`{self(), :held}`: the press-out every tap target carries, so its tap survives re-renders."
   def held, do: {self(), :held}
 
+  @doc """
+  The width the boards lay out in (390 artboard − 20 a side): canvases are
+  drawn at it, so the whole page is a column this wide, centred (wider
+  phones get wider margins; Mob gives screens no window width).
+  """
+  def content_width, do: 350
+
+  @doc """
+  A screen's page: the app background, and the boards' column (padding 12
+  above, 22 below; `gap` between `children`), `content_width/0` wide and
+  centred between flexible spacers (a column's `align` doesn't move a
+  fixed-width child).
+  """
+  def page(children, gap \\ 12) do
+    children = children |> List.flatten() |> Enum.reject(&is_nil/1)
+
+    ~MOB"""
+    <Row background={Style.bg()} fill_width={true} fill_height={true} align={:top}>
+      <Spacer />
+      <Column
+        width={content_width()}
+        fill_height={true}
+        padding_top={12}
+        padding_bottom={22}
+        gap={gap}
+      >
+        {children}
+      </Column>
+      <Spacer />
+    </Row>
+    """
+  end
+
   @doc "The 44 dp back chevron (the boards' 22 dp icon, stroke 2)."
   def back_button(tap) do
     ~MOB"""

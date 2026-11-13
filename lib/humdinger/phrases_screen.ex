@@ -57,23 +57,14 @@ defmodule Humdinger.PhrasesScreen do
     back = {self(), :back}
     import_tap = {self(), :import}
 
-    ~MOB"""
-    <Column
-      background={Style.bg()}
-      fill_width={true}
-      fill_height={true}
-      padding_left={20}
-      padding_right={20}
-      padding_top={12}
-      padding_bottom={22}
-      gap={12}
-    >
-      {header(back, "Phrases", nil, header_button("import", "+ From audio file", import_tap, Style.raised_hi()), size: 24)}
-      {notice(@notice)}
-      {body(assigns)}
-      {sheet_for(assigns)}
-    </Column>
-    """
+    import_button = header_button("import", "+ From audio file", import_tap, Style.raised_hi())
+
+    page([
+      header(back, "Phrases", nil, import_button, size: 24),
+      notice(assigns.notice),
+      body(assigns),
+      sheet_for(assigns)
+    ])
   end
 
   defp body(%{phrases: :loading}) do
