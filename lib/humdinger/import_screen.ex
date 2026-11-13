@@ -94,7 +94,8 @@ defmodule Humdinger.ImportScreen do
     back = {self(), :back}
 
     other =
-      if assigns.stage != :choose, do: header_button("other_file", "Other file", {self(), :pick})
+      if assigns.stage != :choose,
+        do: button("Other file", {self(), :pick}, kind: :header, id: "other_file")
 
     page([
       header(back, "Audio to notes", subtitle(assigns), other),
@@ -113,7 +114,7 @@ defmodule Humdinger.ImportScreen do
       "Turn a recording into notes",
       "A voice memo or any recording of one voice: humming, singing, whistling.",
       assigns.notice,
-      primary_button("choose", "Choose an audio file", {self(), :pick})
+      button("Choose an audio file", {self(), :pick}, kind: :primary, id: "choose")
     )
   end
 
@@ -133,7 +134,7 @@ defmodule Humdinger.ImportScreen do
       "Couldn't read that one",
       text,
       nil,
-      primary_button("choose", "Choose another file", {self(), :pick})
+      button("Choose another file", {self(), :pick}, kind: :primary, id: "choose")
     )
   end
 
@@ -278,16 +279,29 @@ defmodule Humdinger.ImportScreen do
   end
 
   defp controls(assigns) do
-    snap_label = scale_label(assigns) <> " ▾"
+    chromatic = assigns.snap == :chromatic
 
     snaps = [
-      {:scale, snap_label, {self(), :snap_scale}},
-      {:chromatic, "Chromatic", {self(), :snap_chromatic}}
+      %{
+        id: "seg_scale",
+        label: scale_label(assigns) <> " ▾",
+        tap: {self(), :snap_scale},
+        selected: not chromatic
+      },
+      %{
+        id: "seg_chromatic",
+        label: "Chromatic",
+        tap: {self(), :snap_chromatic},
+        selected: chromatic
+      }
     ]
 
     quantizes =
-      for {q, label} <- [q8: "1/8", q16: "1/16", triplet: "Triplet", off: "Off"],
-          do: {q, label, {self(), {:quantize, q}}}
+      segments(
+        [q8: "1/8", q16: "1/16", triplet: "Triplet", off: "Off"],
+        assigns.quantize,
+        :quantize
+      )
 
     ignore =
       stepper("ignore", "#{assigns.min_ms} ms", {self(), {:min_ms, -20}}, {self(), {:min_ms, 20}},
@@ -297,36 +311,27 @@ defmodule Humdinger.ImportScreen do
 
     ~MOB"""
     <Column gap={8}>
-      {labelled("Snap", 74, segmented(snaps, if(assigns.snap == :chromatic, do: :chromatic, else: :scale), height: 36, text_size: 12))}
-      {labelled("Quantize", 74, segmented(quantizes, assigns.quantize, height: 36, text_size: 12))}
+      {labelled("Snap", 74, segmented(snaps, height: 36, text_size: 12))}
+      {labelled("Quantize", 74, segmented(quantizes, height: 36, text_size: 12))}
       {labelled("Ignore", 74, ignore)}
     </Column>
     """
   end
 
   defp actions(assigns) do
+    action = fn id, label, tag ->
+      button(label, {self(), tag}, kind: :action, id: id, height: 46, text_size: 13)
+    end
+
     buttons = [
-      action_button("export_mid", "Export .mid", {self(), :export_mid}, :flat,
-        height: 46,
-        text_size: 13
-      ),
-      action_button("sheet_music", "Sheet music", {self(), :sheet_music}, :flat,
-        height: 46,
-        text_size: 13
-      ),
-      action_button(
-        "play_out",
-        if(assigns.playing, do: "Stop", else: "Play out"),
-        {self(), :play},
-        :flat,
-        height: 46,
-        text_size: 13
-      )
+      action.("export_mid", "Export .mid", :export_mid),
+      action.("sheet_music", "Sheet music", :sheet_music),
+      action.("play_out", if(assigns.playing, do: "Stop", else: "Play out"), :play)
     ]
 
     ~MOB"""
     <Column gap={8}>
-      {primary_button("edit", "Edit as a phrase", {self(), :edit}, height: 54)}
+      {button("Edit as a phrase", {self(), :edit}, kind: :primary, id: "edit", height: 54)}
       {action_row(buttons)}
     </Column>
     """
@@ -338,11 +343,9 @@ defmodule Humdinger.ImportScreen do
 
     roots =
       for root <- 0..11 do
-        chip(
-          "root_#{root}",
-          Music.pitch_class_name(root),
-          root == current.root,
-          {self(), {:root, root}}
+        chip(Music.pitch_class_name(root), root == current.root, {self(), {:root, root}},
+          kind: :menu,
+          id: "root_#{root}"
         )
       end
 
@@ -351,7 +354,10 @@ defmodule Humdinger.ImportScreen do
         label =
           Scale.name(Scale.new(current.root, mode)) |> String.split(" ", parts: 2) |> List.last()
 
-        chip("mode_#{mode}", label, mode == current.mode, {self(), {:mode, mode}})
+        chip(label, mode == current.mode, {self(), {:mode, mode}},
+          kind: :menu,
+          id: "mode_#{mode}"
+        )
       end
 
     detected =
@@ -364,7 +370,7 @@ defmodule Humdinger.ImportScreen do
           )
 
     sheet("scale", dismiss, [
-      sheet_title("Snap to", "Notes land on this key's notes."),
+      sheet_title("Snap to", note: "Notes land on this key's notes."),
       detected,
       ~MOB"""
       <Wrap spacing={6} run_spacing={6} fill_width={true}>
@@ -376,35 +382,11 @@ defmodule Humdinger.ImportScreen do
         {modes}
       </Wrap>
       """,
-      primary_button("done", "Done", dismiss, height: 48)
+      button("Done", dismiss, kind: :primary, id: "done", height: 48)
     ])
   end
 
   defp sheet_for(_assigns), do: nil
-
-  defp chip(id, label, on, tap) do
-    ~MOB"""
-    <Box
-      id={id}
-      fill_width={false}
-      corner_radius={9}
-      background={if(on, do: Style.selected(), else: Style.raised())}
-      padding_left={12}
-      padding_right={12}
-      padding_top={8}
-      padding_bottom={8}
-      on_tap={tap}
-      on_press_out={held()}
-    >
-      <Text
-        text={label}
-        font={:semibold}
-        text_size={13}
-        text_color={if(on, do: Style.text(), else: Style.muted())}
-      />
-    </Box>
-    """
-  end
 
   # ── Data ────────────────────────────────────────────────────────────────
 

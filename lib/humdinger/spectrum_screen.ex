@@ -20,7 +20,9 @@ defmodule Humdinger.SpectrumScreen do
 
   use Mob.Screen
 
-  alias Humdinger.{Engine, LiveFeed, Music, Style, Widgets}
+  import Humdinger.Controls
+
+  alias Humdinger.{Engine, LiveFeed, Music, Style}
   alias Humdinger.Views.Spectrum
 
   @frame_ms 33
@@ -67,43 +69,40 @@ defmodule Humdinger.SpectrumScreen do
       %{label: "Spectrum", tap: {self(), :spectrum}, selected: true}
     ]
 
-    ~MOB"""
-    <Row background={Style.bg()} fill_width={true} fill_height={true} align={:top}>
-      <Spacer />
-      <Column width={350} fill_height={true} padding_top={12} padding_bottom={22} gap={12}>
-        <Row height={mimi_h} gap={12}>
-          <Canvas width={mimi_w} height={mimi_h} draw={assigns.mimi_ops} />
-          <Row gap={10} align={:bottom} weight={1}>
-            <Text text={name} font={:display} text_size={44} line_height={1.0} text_color={color} />
-            <Text
-              text={readout(shown)}
-              font={:mono_semibold}
-              text_size={12}
-              text_color={Style.muted()}
-            />
-          </Row>
+    page([
+      ~MOB"""
+      <Row height={mimi_h} gap={12}>
+        <Canvas width={mimi_w} height={mimi_h} draw={assigns.mimi_ops} />
+        <Row gap={10} align={:bottom} weight={1}>
+          <Text text={name} font={:display} text_size={44} line_height={1.0} text_color={color} />
+          <Text text={readout(shown)} font={:mono_semibold} text_size={12} text_color={Style.muted()} />
         </Row>
-        <Row>
-          {Widgets.segmented(tabs, height: 38)}
-        </Row>
-        <Canvas width={box_w} height={box_h} draw={assigns.ops} />
-        <Row gap={10}>
-          <Canvas width={98} height={10} draw={Spectrum.legend_ops(98, 10)} />
-          <Text text="quiet → loud" text_size={12} text_color={Style.text_2()} />
-          <Spacer />
-          <Box width={16} height={3} corner_radius={2} background={line_color} />
-          <Text text="pitch it heard" text_size={12} text_color={Style.text_2()} />
-        </Row>
-        <Text
-          text="Your voice is a stack of bright lines. The lowest is the note; the ones above (×2, ×3…) are harmonics that give it its colour. If the coloured line jumps to a harmonic, try a softer, rounder vowel like “oo”."
-          text_size={12}
-          line_height={1.45}
-          text_color={Style.muted()}
-        />
-      </Column>
-      <Spacer />
-    </Row>
-    """
+      </Row>
+      """,
+      ~MOB"""
+      <Row>
+        {segmented(tabs, height: 38)}
+      </Row>
+      """,
+      ~MOB(<Canvas width={box_w} height={box_h} draw={assigns.ops} />),
+      ~MOB"""
+      <Row gap={10}>
+        <Canvas width={98} height={10} draw={Spectrum.legend_ops(98, 10)} />
+        <Text text="quiet → loud" text_size={12} text_color={Style.text_2()} />
+        <Spacer />
+        <Box width={16} height={3} corner_radius={2} background={line_color} />
+        <Text text="pitch it heard" text_size={12} text_color={Style.text_2()} />
+      </Row>
+      """,
+      ~MOB"""
+      <Text
+        text="Your voice is a stack of bright lines. The lowest is the note; the ones above (×2, ×3…) are harmonics that give it its colour. If the coloured line jumps to a harmonic, try a softer, rounder vowel like “oo”."
+        text_size={12}
+        line_height={1.45}
+        text_color={Style.muted()}
+      />
+      """
+    ])
   end
 
   @doc ~S|The line beside the note: "440 Hz · −12¢", or what Mimi is doing.|

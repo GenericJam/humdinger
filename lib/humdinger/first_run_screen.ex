@@ -30,7 +30,9 @@ defmodule Humdinger.FirstRunScreen do
 
   use Mob.Screen
 
-  alias Humdinger.{Audio, Engine, Music, RangeFinder, Style, Widgets}
+  import Humdinger.Controls
+
+  alias Humdinger.{Audio, Engine, Music, RangeFinder, Style}
   alias Humdinger.Views.RangeBar
 
   @steps [:mic, :headphones, :range, :send_to]
@@ -86,31 +88,26 @@ defmodule Humdinger.FirstRunScreen do
     skip = {self(), :skip}
     skip_label = if assigns.only, do: "Close", else: "Skip"
 
-    ~MOB"""
-    <Row background={Style.bg()} fill_width={true} fill_height={true} align={:top}>
-      <Spacer />
-      <Column width={342} fill_height={true} padding_top={20} padding_bottom={24} gap={20}>
+    skip_button =
+      button(skip_label, skip, kind: :header, background: nil, radius: nil, color: Style.muted())
+
+    page(
+      [
+        ~MOB"""
         <Row gap={10}>
           <Row weight={1} gap={6}>
             {for step <- steps(), do: step_mark(step, assigns.step)}
           </Row>
-          <Box
-            fill_width={false}
-            height={40}
-            padding_left={12}
-            padding_right={12}
-            align="center"
-            on_tap={skip}
-            on_press_out={Widgets.held()}
-          >
-            <Text text={skip_label} font={:semibold} text_size={13} text_color={Style.muted()} />
-          </Box>
+          {skip_button}
         </Row>
-        {body(assigns)}
-      </Column>
-      <Spacer />
-    </Row>
-    """
+        """,
+        body(assigns)
+      ],
+      width: 342,
+      padding_top: 20,
+      padding_bottom: 24,
+      gap: 20
+    )
   end
 
   defp steps, do: @steps
@@ -190,9 +187,9 @@ defmodule Humdinger.FirstRunScreen do
       />
       {for d <- a.destinations, do: destination_row(d)}
       <Row gap={10}>
-        {Widgets.button("More in Output ›", more, :flat)}
+        {button("More in Output ›", more, kind: :flat)}
         <Spacer />
-        {Widgets.button("Start humming", finish, :lime)}
+        {button("Start humming", finish, kind: :lime)}
       </Row>
     </Column>
     """
@@ -207,7 +204,7 @@ defmodule Humdinger.FirstRunScreen do
         <Text text={d.name} font={:semibold} text_size={14} text_color={Style.text()} />
         <Text text={d.detail} text_size={12} text_color={Style.muted()} />
       </Column>
-      {Widgets.switch(d.enabled, tap)}
+      {switch(d.enabled, tap)}
     </Row>
     """
   end
@@ -217,7 +214,7 @@ defmodule Humdinger.FirstRunScreen do
 
     ~MOB"""
     <Column gap={10} padding_top={20}>
-      {Widgets.centered(Widgets.mimi(w, h, 166, %{mood: mood, note: note, look: look}))}
+      {centered(mimi(w, h, 166, %{mood: mood, note: note, look: look}))}
       <Text
         text={title}
         font={:display}
@@ -238,7 +235,7 @@ defmodule Humdinger.FirstRunScreen do
       <Row fill_width={true} gap={10}>
         <Spacer />
         {for {label, tag, style} <- actions do
-          Widgets.button(label, {self(), tag}, style)
+          button(label, {self(), tag}, kind: style)
         end}
         <Spacer />
       </Row>
@@ -270,7 +267,7 @@ defmodule Humdinger.FirstRunScreen do
     ~MOB"""
     <Column gap={20} weight={1}>
       <Column gap={10} padding_top={20}>
-        {Widgets.centered(Widgets.mimi(w, h, 166, %{mood: mood, note: holding || 69, look: look}))}
+        {centered(mimi(w, h, 166, %{mood: mood, note: holding || 69, look: look}))}
         <Text
           text={title}
           font={:display}
@@ -299,7 +296,7 @@ defmodule Humdinger.FirstRunScreen do
           text_color={big_color}
         />
         {if finder.phase != :done do
-          Widgets.centered(progress_bar(progress))
+          centered(progress_bar(progress))
         else
           []
         end}
@@ -351,9 +348,9 @@ defmodule Humdinger.FirstRunScreen do
 
     ~MOB"""
     <Row gap={10}>
-      {Widgets.button("Sing it again", again, :flat)}
+      {button("Sing it again", again, kind: :flat)}
       <Spacer />
-      {Widgets.button(label, next, :lime)}
+      {button(label, next, kind: :lime)}
     </Row>
     """
   end

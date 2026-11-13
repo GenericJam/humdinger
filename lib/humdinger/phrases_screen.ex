@@ -57,7 +57,12 @@ defmodule Humdinger.PhrasesScreen do
     back = {self(), :back}
     import_tap = {self(), :import}
 
-    import_button = header_button("import", "+ From audio file", import_tap, Style.raised_hi())
+    import_button =
+      button("+ From audio file", import_tap,
+        kind: :header,
+        id: "import",
+        background: Style.raised_hi()
+      )
 
     page([
       header(back, "Phrases", nil, import_button, size: 24),
@@ -186,7 +191,7 @@ defmodule Humdinger.PhrasesScreen do
     p = find(assigns, id)
 
     sheet("share_#{id}", {self(), :dismiss}, [
-      sheet_title("Share “#{p.name}”", "As a MIDI file, sheet music or MusicXML."),
+      sheet_title("Share “#{p.name}”", note: "As a MIDI file, sheet music or MusicXML."),
       menu_item("share_mid", "MIDI file (.mid)", {self(), {:export, id, :mid}}),
       menu_item("share_pdf", "Sheet music (PDF)", {self(), {:export, id, :pdf}}),
       menu_item("share_musicxml", "MusicXML", {self(), {:export, id, :musicxml}})
@@ -215,8 +220,8 @@ defmodule Humdinger.PhrasesScreen do
       />
       """,
       action_row([
-        action_button("cancel", "Cancel", {self(), :dismiss}),
-        action_button("save_name", "Save", {self(), {:save_name, id}})
+        button("Cancel", {self(), :dismiss}, kind: :action, id: "cancel"),
+        button("Save", {self(), {:save_name, id}}, kind: :action, id: "save_name")
       ])
     ])
   end
@@ -225,10 +230,12 @@ defmodule Humdinger.PhrasesScreen do
     p = find(assigns, id)
 
     sheet("delete_#{id}", {self(), :dismiss}, [
-      sheet_title("Delete “#{p.name}”?", "It's only on this phone, so it can't be brought back."),
+      sheet_title("Delete “#{p.name}”?",
+        note: "It's only on this phone, so it can't be brought back."
+      ),
       action_row([
-        action_button("cancel", "Cancel", {self(), :dismiss}),
-        action_button("confirm_delete", "Delete", {self(), {:confirm_delete, id}}, :outline)
+        button("Cancel", {self(), :dismiss}, kind: :action, id: "cancel"),
+        button("Delete", {self(), {:confirm_delete, id}}, kind: :outline, id: "confirm_delete")
       ])
     ])
   end

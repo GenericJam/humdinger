@@ -28,7 +28,9 @@ defmodule Humdinger.PairScreen do
 
   use Mob.Screen
 
-  alias Humdinger.{Mimi, OutputScreen, Style}
+  import Humdinger.Controls
+
+  alias Humdinger.Style
   alias Humdinger.Views.QrFrame
 
   # The viewfinder canvas: the board's box (390 − 2 × 20 wide), centred in
@@ -73,73 +75,56 @@ defmodule Humdinger.PairScreen do
     border = if assigns.code_valid, do: Style.fm(), else: Style.line()
     border_w = if assigns.code_valid, do: 2, else: 1
 
-    ~MOB"""
-    <Column
-      background={Style.bg()}
-      fill_width={true}
-      fill_height={true}
-      padding_left={20}
-      padding_right={20}
-      padding_top={12}
-      padding_bottom={22}
-      gap={14}
-    >
-      {OutputScreen.header("Pair with FMutate")}
-      <Scroll weight={1} show_indicator={false}>
-        <Column fill_width={true} gap={14}>
-          <Text
-            text="In FMutate, open I/O › Pair an app, then scan its code."
-            text_size={13}
-            text_color={Style.text_2()}
-          />
-          {scanner(@scanner)}
-          <Column fill_width={true} gap={8}>
-            {OutputScreen.heading("OR ENTER THE CODE")}
-            <Row fill_width={true} gap={8} align={:center}>
-              <TextField
-                id="code"
-                weight={1}
-                value={@code}
-                placeholder="XXXX-XXXX"
-                on_change={change}
-                on_submit={change}
-                caret="end"
-                font={:mono_bold}
-                text_size={22}
-                letter_spacing={1.3}
-                text_color={Style.text()}
-                placeholder_color={Style.faint()}
-                background={Style.surface()}
-                border_color={border}
-                border_width={border_w}
-                corner_radius={14}
-                padding={14}
-                underline={false}
-              />
-              <Box
-                fill_width={false}
-                height={52}
-                corner_radius={14}
-                background={Style.raised_hi()}
-                padding_left={14}
-                padding_right={14}
-                align="center"
-                on_tap={paste}
-                on_press_out={OutputScreen.held()}
-              >
-                <Text text="Paste" font={:semibold} text_size={14} text_color={Style.text()} />
-              </Box>
-            </Row>
+    page(
+      [
+        header({self(), :back}, "Pair with FMutate", nil, nil, size: 24),
+        ~MOB"""
+        <Scroll weight={1} show_indicator={false}>
+          <Column fill_width={true} gap={14}>
+            <Text
+              text="In FMutate, open I/O › Pair an app, then scan its code."
+              text_size={13}
+              text_color={Style.text_2()}
+            />
+            {scanner(@scanner)}
+            <Column fill_width={true} gap={8}>
+              {heading("OR ENTER THE CODE")}
+              <Row fill_width={true} gap={8} align={:center}>
+                <TextField
+                  id="code"
+                  weight={1}
+                  value={@code}
+                  placeholder="XXXX-XXXX"
+                  on_change={change}
+                  on_submit={change}
+                  caret="end"
+                  font={:mono_bold}
+                  text_size={22}
+                  letter_spacing={1.3}
+                  text_color={Style.text()}
+                  placeholder_color={Style.faint()}
+                  background={Style.surface()}
+                  border_color={border}
+                  border_width={border_w}
+                  corner_radius={14}
+                  padding={14}
+                  underline={false}
+                />
+                {button("Paste", paste, kind: :raised, height: 52, radius: 14, padding: 14, text_size: 14)}
+              </Row>
+            </Column>
+            <Column fill_width={true} gap={6}>
+              {heading("FOUND NEARBY")}
+              {nearby(shown_candidates(assigns), assigns)}
+            </Column>
           </Column>
-          <Column fill_width={true} gap={6}>
-            {OutputScreen.heading("FOUND NEARBY")}
-            {nearby(shown_candidates(assigns), assigns)}
-          </Column>
-        </Column>
-      </Scroll>
-      {status_card(@status, @matched)}
-    </Column>
-    """
+        </Scroll>
+        """,
+        status_card(assigns.status, assigns.matched)
+      ],
+      width: nil,
+      gap: 14
+    )
   end
 
   defp scanner(state) do
@@ -165,7 +150,7 @@ defmodule Humdinger.PairScreen do
       background={0xFF241F2A}
       align="center"
       on_tap={scan}
-      on_press_out={OutputScreen.held()}
+      on_press_out={held()}
     >
       <Box width={w} height={h} align="bottom_leading">
         <Canvas width={w} height={h} draw={ops} />
@@ -253,7 +238,7 @@ defmodule Humdinger.PairScreen do
       padding_top={10}
       padding_bottom={10}
       on_tap={tap}
-      on_press_out={if(tap, do: OutputScreen.held())}
+      on_press_out={if(tap, do: held())}
     >
       <Row fill_width={true} gap={12} align={:center}>
         <Box width={10} height={10} corner_radius={5} background={dot} />
@@ -311,41 +296,31 @@ defmodule Humdinger.PairScreen do
   end
 
   defp status_card(status, matched) do
-    {mimi, title, body, action} = status_view(status, matched)
-    mimi_ops = Mimi.ops(27, 24, 54, Map.put(mimi, :note, 69))
+    {mimi_state, title, body, action} = status_view(status, matched)
 
-    {label, color, tap} =
+    action_button =
       case action do
-        :cancel -> {"Cancel", Style.danger_text(), {self(), :cancel}}
-        :retry -> {"Try again", Style.fm(), {self(), :retry}}
-        nil -> {nil, nil, nil}
+        :cancel -> status_action("Cancel", Style.danger_text(), :cancel)
+        :retry -> status_action("Try again", Style.fm(), :retry)
+        nil -> nil
       end
 
     ~MOB"""
     <Box id="status" fill_width={true} background={Style.surface()} corner_radius={18} padding={14}>
       <Row fill_width={true} gap={12} align={:center}>
-        <Canvas width={54} height={48} draw={mimi_ops} />
+        {mimi(54, 48, 54, Map.put(mimi_state, :note, 69))}
         <Column weight={1} gap={2}>
           <Text text={title} font={:bold} text_size={14} text_color={Style.text()} />
           <Text text={body} text_size={12} text_color={Style.muted()} />
         </Column>
-        <Box
-          :if={tap}
-          fill_width={false}
-          height={40}
-          corner_radius={12}
-          padding_left={12}
-          padding_right={12}
-          align="center"
-          on_tap={tap}
-          on_press_out={OutputScreen.held()}
-        >
-          <Text text={label} font={:semibold} text_size={13} text_color={color} />
-        </Box>
+        {action_button}
       </Row>
     </Box>
     """
   end
+
+  defp status_action(label, color, tag),
+    do: button(label, {self(), tag}, kind: :header, background: nil, color: color)
 
   @doc """
   The status card for a pairing state: `{mimi_state, title, body, action}`,

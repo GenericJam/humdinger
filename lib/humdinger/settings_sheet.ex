@@ -15,8 +15,9 @@ defmodule Humdinger.SettingsSheet do
 
   import Mob.Canvas, except: [text: 4]
   import Mob.Sigil
+  import Humdinger.Controls
 
-  alias Humdinger.{Music, RangeFinder, Settings, Style, Tracker, Widgets}
+  alias Humdinger.{Music, RangeFinder, Settings, Style, Tracker}
   alias Humdinger.Views.Draw
 
   @bar_w 350
@@ -150,127 +151,113 @@ defmodule Humdinger.SettingsSheet do
       {"Vibrato → CC 1", "mod wheel follows your vibrato", :cc1_from_vibrato}
     ]
 
-    ~MOB"""
-    <Sheet
-      id="settings"
-      detents={[:large]}
-      on_dismiss={dismiss}
-      background={Style.surface()}
-      corner_radius={24}
-    >
-      <Scroll fill_width={true}>
-        <Row fill_width={true} align={:top}>
-          <Spacer />
-          <Column width={350} padding_top={4} padding_bottom={24} gap={16}>
-            <Row gap={12} height={44}>
-              <Canvas width={44} height={40} draw={a.mimi_ops} />
-              <Text text={note_name} font={:display} text_size={36} text_color={note_color} />
-              <Text
-                text="still listening while you adjust"
-                text_size={12}
-                text_color={Style.text_2()}
-              />
-            </Row>
-            <Row>
-              <Text text="Settings" font={:display} text_size={24} text_color={Style.text()} />
-              <Spacer />
-              {Widgets.button("Done", done, :lime, height: 40, radius: 20)}
-            </Row>
-            <Column gap={10}>
-              {Widgets.heading("LISTENING")}
-              <Row>
-                <Text text="Sensitivity" font={:semibold} text_size={14} text_color={Style.text()} />
-                <Spacer />
-                <Text
-                  text="drag the line above the room noise"
-                  text_size={12}
-                  text_color={Style.muted()}
-                />
-              </Row>
-              <Canvas width={bar_w} height={bar_h} draw={a.bar_ops} on_drag={drag} />
-              <Row>
-                <Text text="Response" font={:semibold} text_size={14} text_color={Style.text()} />
-                <Spacer />
-                {Widgets.segmented(responses,
-                  width: 230,
-                  height: 42,
-                  track: Style.bg(),
-                  text_size: 12
-                )}
-              </Row>
-              <Text
-                text="Fast reacts sooner but wobbles on vibrato; Steady waits a little to be sure."
-                text_size={12}
-                line_height={1.4}
-                text_color={Style.muted()}
-              />
-            </Column>
-            <Column gap={10}>
-              {Widgets.heading("NOTES")}
-              <Row>
-                <Text text="Pitch change" font={:semibold} text_size={14} text_color={Style.text()} />
-                <Spacer />
-                {Widgets.segmented(pitch_change,
-                  width: 200,
-                  height: 34,
-                  track: Style.bg(),
-                  text_size: 12
-                )}
-              </Row>
-              <Row>
-                <Text
-                  text="When you stop"
-                  font={:semibold}
-                  text_size={14}
-                  text_color={Style.text()}
-                />
-                <Spacer />
-                {Widgets.segmented(on_stop, width: 200, height: 34, track: Style.bg(), text_size: 12)}
-              </Row>
-              <Row>
-                <Text text="Bend range" font={:semibold} text_size={14} text_color={Style.text()} />
-                <Text text=" (open mode)" text_size={14} text_color={Style.muted()} />
-                <Spacer />
-                <Row gap={4}>
-                  {for n <- Settings.bend_ranges() do
-                    Widgets.chip("±#{n}", s.bend_range == n, set.(:bend_range, n), dim: bend_dim)
-                  end}
-                </Row>
-              </Row>
-              <Text
-                text="Set the same bend range on the synth, or bends will land on the wrong note."
-                text_size={12}
-                line_height={1.4}
-                text_color={Style.muted()}
-              />
-            </Column>
-            <Column gap={4}>
-              {Widgets.heading("EXPRESSION")}
-              {for {name, sub, field} <- toggles do
-                toggle_row(name, sub, Map.fetch!(s, field), set.(field, not Map.fetch!(s, field)))
-              end}
-            </Column>
-            <Box
-              height={52}
-              corner_radius={14}
-              background={Style.raised_hi()}
-              padding_left={16}
-              padding_right={16}
-              on_tap={find_range}
-              on_press_out={Widgets.held()}
-            >
-              <Row height={52}>
-                <Text text="Your range" font={:semibold} text_size={14} text_color={Style.text()} />
-                <Spacer />
-                <Text text={range} font={:mono_semibold} text_size={12} text_color={Style.text_2()} />
-              </Row>
-            </Box>
-          </Column>
-          <Spacer />
-        </Row>
-      </Scroll>
-    </Sheet>
+    header = ~MOB"""
+    <Row gap={12} height={44}>
+      <Canvas width={44} height={40} draw={a.mimi_ops} />
+      <Text text={note_name} font={:display} text_size={36} text_color={note_color} />
+      <Text text="still listening while you adjust" text_size={12} text_color={Style.text_2()} />
+    </Row>
     """
+
+    listening = ~MOB"""
+    <Column gap={10}>
+      {heading("LISTENING")}
+      <Row>
+        <Text text="Sensitivity" font={:semibold} text_size={14} text_color={Style.text()} />
+        <Spacer />
+        <Text text="drag the line above the room noise" text_size={12} text_color={Style.muted()} />
+      </Row>
+      <Canvas width={bar_w} height={bar_h} draw={a.bar_ops} on_drag={drag} />
+      <Row>
+        <Text text="Response" font={:semibold} text_size={14} text_color={Style.text()} />
+        <Spacer />
+        {segmented(responses, width: 230, height: 42, track: Style.bg(), text_size: 12)}
+      </Row>
+      <Text
+        text="Fast reacts sooner but wobbles on vibrato; Steady waits a little to be sure."
+        text_size={12}
+        line_height={1.4}
+        text_color={Style.muted()}
+      />
+    </Column>
+    """
+
+    notes = ~MOB"""
+    <Column gap={10}>
+      {heading("NOTES")}
+      <Row>
+        <Text text="Pitch change" font={:semibold} text_size={14} text_color={Style.text()} />
+        <Spacer />
+        {segmented(pitch_change, width: 200, height: 34, track: Style.bg(), text_size: 12)}
+      </Row>
+      <Row>
+        <Text text="When you stop" font={:semibold} text_size={14} text_color={Style.text()} />
+        <Spacer />
+        {segmented(on_stop, width: 200, height: 34, track: Style.bg(), text_size: 12)}
+      </Row>
+      <Row>
+        <Text text="Bend range" font={:semibold} text_size={14} text_color={Style.text()} />
+        <Text text=" (open mode)" text_size={14} text_color={Style.muted()} />
+        <Spacer />
+        <Row gap={4}>
+          {for n <- Settings.bend_ranges() do
+            chip("±#{n}", s.bend_range == n, set.(:bend_range, n), dim: bend_dim)
+          end}
+        </Row>
+      </Row>
+      <Text
+        text="Set the same bend range on the synth, or bends will land on the wrong note."
+        text_size={12}
+        line_height={1.4}
+        text_color={Style.muted()}
+      />
+    </Column>
+    """
+
+    expression = ~MOB"""
+    <Column gap={4}>
+      {heading("EXPRESSION")}
+      {for {name, sub, field} <- toggles do
+        toggle_row(name, sub, Map.fetch!(s, field), set.(field, not Map.fetch!(s, field)))
+      end}
+    </Column>
+    """
+
+    your_range = ~MOB"""
+    <Box
+      height={52}
+      corner_radius={14}
+      background={Style.raised_hi()}
+      padding_left={16}
+      padding_right={16}
+      on_tap={find_range}
+      on_press_out={held()}
+    >
+      <Row height={52}>
+        <Text text="Your range" font={:semibold} text_size={14} text_color={Style.text()} />
+        <Spacer />
+        <Text text={range} font={:mono_semibold} text_size={12} text_color={Style.text_2()} />
+      </Row>
+    </Box>
+    """
+
+    sheet(
+      "settings",
+      dismiss,
+      [
+        header,
+        sheet_title("Settings", font: :display, size: 24, done: done, padding_bottom: 0),
+        listening,
+        notes,
+        expression,
+        your_range
+      ],
+      detents: [:large],
+      scroll: true,
+      width: content_width(),
+      padding_top: 4,
+      gap: 16
+    )
   end
 
   defp toggle_row(name, sub, on?, tap) do
@@ -280,7 +267,7 @@ defmodule Humdinger.SettingsSheet do
         <Text text={name} font={:semibold} text_size={14} text_color={Style.text()} />
         <Text text={sub} text_size={12} text_color={Style.muted()} />
       </Column>
-      {Widgets.switch(on?, tap)}
+      {switch(on?, tap)}
     </Row>
     """
   end
