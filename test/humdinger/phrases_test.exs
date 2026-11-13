@@ -3,13 +3,9 @@ defmodule Humdinger.PhrasesTest do
   use ExUnit.Case, async: false
 
   alias Humdinger.{Phrase, Phrases, Repo, Scale}
+  alias Humdinger.Test.Database
 
-  setup_all do
-    start_supervised!(Repo)
-    migrations = Application.app_dir(:humdinger, "priv/repo/migrations")
-    Ecto.Migrator.run(Repo, migrations, :up, all: true, log: false)
-    :ok
-  end
+  setup_all do: Database.start!()
 
   setup do
     Repo.delete_all(Phrases.Row)
