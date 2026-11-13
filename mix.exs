@@ -19,14 +19,19 @@ defmodule Humdinger.MixProject do
     [extra_applications: [:logger]]
   end
 
-  # Test doubles (e.g. the scripted microphone) compile in test only.
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  # Test doubles (e.g. the scripted microphone) compile in test only; dev/
+  # holds development aids (the views gallery), in dev and test builds but
+  # never in a release.
+  defp elixirc_paths(:test), do: ["lib", "dev", "test/support"]
+  defp elixirc_paths(:dev), do: ["lib", "dev"]
   defp elixirc_paths(_env), do: ["lib"]
 
   defp deps do
     [
       {:mob, "~> 0.9.27"},
       {:mob_dev, "~> 0.7.31", only: :dev, runtime: false},
+      # Resizes the icon master for `mix mob.icon` (scripts/render_icon.exs).
+      {:image, "~> 0.54", only: :dev, runtime: false},
       {:ecto_sqlite3, "~> 0.18"},
       # USB-MIDI and Bluetooth-MIDI output.
       {:mob_midi, "~> 0.2.0"},

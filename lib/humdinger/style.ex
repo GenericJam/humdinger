@@ -103,6 +103,13 @@ defmodule Humdinger.Style do
   @doc "Font tokens for `font:` props (`font: :display`)."
   def font_names, do: Keyword.keys(@fonts)
 
+  @doc """
+  The font family name behind a token, for `Mob.Canvas.text/4`'s `family:`
+  (canvas text takes a family name, not a token). iOS draws canvas text in
+  it; Android's canvas renderer ignores `family:` and uses the system face.
+  """
+  def font_family(token), do: Keyword.fetch!(@fonts, token)
+
   @doc "The app theme: the palette above and the bundled fonts."
   def theme do
     Mob.Theme.build(

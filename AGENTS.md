@@ -302,7 +302,134 @@ github.com/w3c/musicxml, tag v4.0) and render the PDF with `pdftoppm -png`.
 
 **Views** (pure `Mob.Canvas` op builders under `Humdinger.Views.*`, plus
 `Humdinger.Mimi`): the screens compose them; each takes plain data and a
-size and returns ops (and, for editable ones, a hit-test function).
+size and returns ops (and, for editable ones, a hit-test function). See
+"Views and Mimi" below for each one's data and hit-test.
+
+## Views and Mimi
+
+Every view is `ops(data, w, h) :: [op]`: pure, from plain maps (no domain
+modules), canvas-local dp with the origin top-left, colours as ARGB ints
+from `Humdinger.Style`. Shared helpers live in `Humdinger.Views.Draw`
+(Bézier flattening, `text_width/2`, rounding). Things to know when
+composing them:
+
+- **Hit-tests take `on_drag` coordinates.** A canvas `on_tap` carries no
+  x/y, and on Android a drag only starts past touch slop, so a stationary
+  tap gives no position at all. Drags (move a note, a window, a range
+  handle) use `hit/5` on the `began` point; for taps, lay native tap
+  targets over the geometry the view exposes (`PianoStrip.keys/3`).
+- **Android's canvas renderer ignores `family:`** (it draws the system
+  sans, bold for `:medium` and heavier). Views still pass
+  `Style.font_family/1` for iOS. Music glyphs are therefore drawn as
+  paths, and text a screen wants in a brand font (the big note name,
+  "−12¢ · a little flat") is native text: the views give the strings.
+- **No clipping, gradients or rotation.** Rounded boxes are drawn as
+  clipped polygons, or (PianoStrip's keyboard, Spectrum's box) their
+  corners are masked in `Style.bg()`: those two must sit on the app
+  background.
+- Canvas text width is a guess (≈ 0.56 em per character, MOB-513).
+
+| View | Board | Data | Size | Hit-test |
+|---|---|---|---|---|
+| `PianoStrip` | live (top) | `%{low, high, active, pitch, range}` | w × `height/0` (129) | `{:key, m}`, `{:window, m}`, `:none`; `keys/3` rects |
+| `TuningMeter` | live | `%{cents, tolerance}`; `caption/2`, `velocity_label/1` | w × 22 | — |
+| `PitchRoll` | live (trace) | `%{now_ms, trace, notes, scale, center_midi, window_ms?}` | 350 × 256 | — |
+| `Spectrum` | spectrum | `%{columns: [%{t, bins}], trace, now_ms, pitch, window_ms?, bins_hz?}`; `legend_ops/2` | 350 × 470 | — |
+| `PianoRoll` | record_review, import_audio | `%{notes, trace, scale, tempo_bpm, beats_per_bar?, selected, duration_ms?}`; `layout/3` | 350 × 312 / 210 | `{:note, i, :start \| :end \| :body}`, `{:empty, %{ms, midi}}`, `:none` |
+| `Staff` | sheet_music | `%{layout: Notation.layout(…), note_names}`; `height/2`, `systems/2`, `staff_y/2` | w × `height/2` (316 for the board at 350) | — |
+| `Waveform` | import_audio | `%{peaks, duration_ms, selection}`; `drag/5`, `ms_per_dp/2` | 344 × 62 | `{:handle, :start \| :end}`, `{:range, ms}`, `{:outside, ms}` |
+| `PhraseThumb` | saved | `%{notes}` | 326 × 56 | — |
+| `RangeBar` | first_run | `%{pitch, low, high}`; `marker_x/2` | w × 46 | — |
+| `QrFrame` | pair | `%{state: :scanning \| :found}`; `square/2` | 350 × 300 | — |
+
+Pitches in view data are fractional MIDI numbers (the engine's `pitch`),
+notes are integers; times are ms. Each module's moduledoc has the exact
+geometry and the board it follows.
+
+- **PianoStrip**: an 88-key overview (the visible window boxed, keys
+  outside the singer's `range` dimmed) over a zoomed keyboard of
+  `low..high` (whole white keys ≥ ~36 dp; edge keys cut as on the board).
+  The `active` key is filled in its pitch colour; with `pitch` a dark tick
+  on it shows where the voice sits within the note.
+- **TuningMeter**: track, lime in-tune band (±`tolerance`), centre tick, a
+  marker at `cents / 50 · w/2` from the centre; no marker for nil cents.
+- **PitchRoll**: 22 dp rows centred on `center_midi` (ease it in the
+  screen), in-scale rows striped and labelled bright (naturals when the
+  scale is nil), sent notes as pitch-coloured blocks (opaque while
+  `end_ms: nil`, 0.55 once ended), the sung pitch as a white line broken at
+  nil, the playhead at `w − 44` with a dot on the latest pitch.
+- **Spectrum**: columns placed by time over `window_ms`, bins on a log axis
+  80 Hz…2.4 kHz, levels quantised by `shade/1` to the legend's five violet
+  steps (−62…−30 dBFS, 8 dB apart; retune on a device if real voices look
+  too dark), runs merged (≈ 600 ops for 4 s of voice). The trace in the
+  current note's colour, "note / ×2 / ×3" chips at the harmonics.
+- **PianoRoll**: one row per scale note over the phrase's range (all 12
+  for nil / chromatic), beat and bar lines from `tempo_bpm`, note blocks,
+  the selected one ringed with end handles, unsure notes faded with a
+  "N unsure · faded" chip, the faint sung line. `layout/3` exposes rows,
+  blocks and `x_of/2`, `ms_at/2`, `y_of/2`, `midi_at/2`; `hit/5` accepts a
+  layout or the data. Edge zones are ≥ 12 dp; the selected note wins.
+- **Staff**: the canvas is the paper card (padding 6 / 10 / 6), staff
+  lines 12 apart from x 14 to w − 14, systems 150 apart (more when ledger
+  notes or name dots need it). Each system: barline, clef, key signature;
+  the time signature on the first only. Measures take the width their
+  content needs; a system holds as many as fit (squeezed down to 1/1.2 of
+  natural before wrapping), then stretches to the full width (a last
+  system under 70 % full keeps its natural width); the music ends with a
+  thin + thick barline. Heads,
+  stems (the beam group's farthest note decides), beams, flags, dots,
+  ledger lines, printed accidentals, ties (split at a system break),
+  triplet brackets and rests; clefs, accidentals, rests and flags are
+  filled polygons from `Humdinger.Views.StaffGlyphs`. `note_names: true`
+  adds pitch-coloured letter dots 34 below the staff. `systems/2` gives each
+  system's top, x extent and measure indexes (to scroll to a measure).
+- **Waveform**: one bar per 3 dp (the max of its 50 ms peaks), lime inside
+  the selection, a white box with handles. For a drag keep the `began`
+  target and apply `drag(selection0, target, (x − x0) · ms_per_dp, …)`.
+- **PhraseThumb**: the phrase's notes as 6 dp pills over a dark well.
+- **RangeBar**: the 88-key rainbow, keys outside the chosen low/high dimmed
+  (only below `low` while the highest isn't chosen), a white marker at the
+  sung pitch, A0 / C8 labels.
+- **QrFrame**: lime corner brackets over the camera preview; `:found` adds
+  a soft lime fill.
+
+**Mimi** (`Humdinger.Mimi.ops(cx, cy, size, state)`): the board's 64 × 56
+bird scaled to `size` dp wide, centred on `{cx, cy}`. `state`: `mood`
+(`Mimi.moods/0`: `:idle :listening :singing :aria :flat :sharp
+:headphones :paused :no_mic`, the engine frame's `mood`), `note` (feathers;
+nil → A4 teal), `loudness` (0..1, opens the beak), `beak_open` (overrides),
+`look` (`{dx, dy}`, −1..1; flat/sharp force down/up), `blink` (0..1, the
+screen animates it). Aria shuts the eyes in arcs and sings two notes;
+paused is grey with "zZ"; no mic is grey with bar eyes; flat/sharp add
+↓/↑.
+
+**App icon**: Mimi is the icon. `Mimi.icon_ops/2` is the identity board's
+"Dark + pitch stripe": a #1C1925 (`Style.surface/0`) square, Mimi singing
+A4 looking up at 105.6/140 of the width, centred, and along the bottom a
+10/140-high stripe of eight bands in the pitch colours of MIDI 33 45 52 57
+64 69 81 93. `Mimi.icon_foreground_ops/1` is the Android adaptive
+foreground: Mimi alone on transparent, 0.49 of the width so she stays in
+the 66/108 safe circle; the adaptive background is the colour #1C1925.
+Regenerate everything with
+`mise exec -- mix run --no-start scripts/render_icon.exs`: it writes
+`assets/icon/humdinger-icon-1024.png` (square master; stores and iOS round
+it) and `assets/icon/humdinger-icon-foreground-1024.png`, runs `mix
+mob.icon --source <master> --adaptive --adaptive-bg "#1C1925"` (legacy
+Android, iOS, the adaptive XML and colour), then redraws the five
+`mipmap-*/ic_launcher_foreground.png` from the foreground ops (mob.icon
+would reuse the whole master, stripe included, and the launcher mask
+would crop it). `--assets-only` skips the install.
+
+**Seeing them**: `scripts/canvas_svg.exs` turns ops into SVG and a PNG
+(libvips through the `image` dev dependency, under a second);
+`mise exec -- mix run --no-start scripts/preview_views.exs [out.png]`
+renders every scene of `Humdinger.GalleryScreen` (each view and mood with
+board sample data) to `/tmp/humdinger_views/gallery.png` to compare with
+`design/shots/*`. On a phone, the same gallery is a dev-only screen
+(`dev/` is compiled in dev and test, never in a release) outside the
+navigation: after `mix mob.connect`, `Mob.Test.navigate(node,
+Humdinger.GalleryScreen)`. Tests: `test/humdinger/views/*`,
+`test/humdinger/mimi_test.exs`.
 
 ## Output: where the MIDI goes
 
