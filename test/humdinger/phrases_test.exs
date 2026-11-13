@@ -129,4 +129,55 @@ defmodule Humdinger.PhrasesTest do
     assert Phrases.delete(saved.id) == {:error, :not_found}
     assert Phrases.list() == []
   end
+
+  describe "a row that can't be read" do
+    import ExUnit.CaptureLog
+    import Ecto.Query
+
+    # Saves a good phrase, then breaks one column of its row.
+    defp broken(changes) do
+      {:ok, %{id: id}} = Phrases.save(phrase(name: "Broken"))
+      Repo.update_all(from(r in Phrases.Row, where: r.id == ^id), set: changes)
+      id
+    end
+
+    for {label, changes} <- [
+          {"an unknown scale mode", [scale_mode: "hypermixolydian"]},
+          {"a root out of range", [scale_root: 14]},
+          {"a mode without a root", [scale_root: nil]},
+          {"an unknown grid", [quantize: "q32"]},
+          {"an unknown source", [source: "camera"]},
+          {"notes cut short", [notes: <<0, 0, 0, 0, 0, 0, 2, 88, 62>>]},
+          {"a note count that doesn't match", [note_count: 5]},
+          {"a note out of range",
+           [notes: <<0::32, 600::32, 200, 90, 0, 625::32, 300::32, 64, 101, 1>>]},
+          {"a future format", [format: 2]}
+        ] do
+      test "#{label} is skipped by list/0 and missing to get/1, and logged" do
+        {:ok, good} = Phrases.save(phrase(name: "Good"))
+        id = broken(unquote(Macro.escape(changes)))
+
+        log =
+          capture_log(fn ->
+            assert [%Phrase{name: "Good"}] = Phrases.list()
+            assert Phrases.get(id) == nil
+          end)
+
+        assert log =~ "skipped unreadable phrase #{id}"
+        refute log =~ "Broken"
+        assert Phrases.get(good.id).name == "Good"
+      end
+    end
+
+    test "a trace cut short makes get/1 miss it (list/0 doesn't read traces)" do
+      id = broken(trace: <<0, 0, 0, 1, 2>>)
+      assert capture_log(fn -> assert Phrases.get(id) == nil end) =~ "#{id}: :trace"
+      assert [%Phrase{id: ^id}] = Phrases.list()
+    end
+
+    test "rows written before the format column read as format 1" do
+      {:ok, saved} = Phrases.save(phrase())
+      assert Repo.get(Phrases.Row, saved.id).format == 1
+    end
+  end
 end

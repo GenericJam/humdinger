@@ -61,15 +61,21 @@ fn reasonTerm(env: ?*erts.ErlNifEnv, jenv: *jni.JNIEnv, str: jni.JString) erts.E
 }
 
 // A binary argument (a path, MIME type or title) as a new Java String; null
-// if it isn't a binary, is too long, or the allocation failed.
+// if it isn't a binary, isn't valid UTF-8, is too long, or the allocation
+// failed. Elixir strings are standard UTF-8, which NewStringUTF (JNI's
+// *modified* UTF-8) misreads beyond the BMP (an emoji in a phrase name), so
+// the text goes over as UTF-16 through NewString. mob_zig leaves NewString
+// opaque; give it its JNI signature here.
 fn argString(env: ?*erts.ErlNifEnv, jenv: *jni.JNIEnv, term: erts.ERL_NIF_TERM) jni.JString {
     var bin: erts.ErlNifBinary = undefined;
     if (erts.enif_inspect_binary(env, term, &bin) == 0) return null;
-    var buf: [1024]u8 = undefined;
-    if (bin.size >= buf.len) return null;
-    @memcpy(buf[0..bin.size], bin.data[0..bin.size]);
-    buf[bin.size] = 0;
-    const str = jni.newStringUTF(jenv, @ptrCast(&buf));
+    // UTF-16 never needs more code units than UTF-8 has bytes.
+    var units: [4096]u16 = undefined;
+    if (bin.size > units.len) return null;
+    const len = std.unicode.utf8ToUtf16Le(&units, bin.data[0..bin.size]) catch return null;
+    const new_string: *align(1) const fn (*jni.JNIEnv, [*]const u16, jni.JSize) callconv(.c) jni.JString =
+        @ptrCast(jenv.*.NewString.?);
+    const str = new_string(jenv, &units, @intCast(len));
     if (str == null) _ = clearPendingException(jenv);
     return str;
 }

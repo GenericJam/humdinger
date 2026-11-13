@@ -28,7 +28,8 @@ defmodule Humdinger.ExportTest do
 
   test "writes each kind under the phrase's name", %{tmp_dir: dir} do
     assert {:ok, mid} = Export.write(phrase(), :mid, dir: dir)
-    assert mid == Path.join(dir, "Bus stop riff.mid")
+    assert Path.basename(mid) == "Bus stop riff.mid"
+    assert Path.dirname(Path.dirname(mid)) == dir
     assert <<"MThd", _::binary>> = File.read!(mid)
 
     assert {:ok, xml} = Export.write(phrase(), :musicxml, dir: dir, clef: :bass)
@@ -39,23 +40,54 @@ defmodule Humdinger.ExportTest do
     assert <<"%PDF-", _::binary>> = File.read!(pdf)
   end
 
+  test "two phrases with the same name export to distinct files", %{tmp_dir: dir} do
+    low = %{
+      phrase()
+      | notes: [%{start_ms: 0, dur_ms: 500, midi: 40, velocity: 90, unsure: false}]
+    }
+
+    {:ok, first} = Export.write(phrase(), :mid, dir: dir)
+    {:ok, second} = Export.write(low, :mid, dir: dir)
+
+    assert first != second
+    assert Path.basename(first) == Path.basename(second)
+    assert File.read!(first) != File.read!(second)
+    assert File.read!(first) == Export.render(phrase(), :mid, [])
+  end
+
   test "file names drop characters file systems refuse" do
     assert Export.file_name(phrase(~s(a/b\\c:d*e?"f"<g>|h)), :mid) == "abcdefgh.mid"
     assert Export.file_name(phrase("  ../.hidden  "), :pdf) == "hidden.pdf"
     assert Export.file_name(phrase("   "), :musicxml) == "phrase.musicxml"
-    assert phrase(String.duplicate("x", 200)) |> Export.file_name(:mid) |> String.length() == 84
+  end
+
+  test "long names are cut to 200 bytes on a character boundary, extension included" do
+    ascii = Export.file_name(phrase(String.duplicate("x", 300)), :musicxml)
+    assert byte_size(ascii) == 200
+    assert String.ends_with?(ascii, ".musicxml")
+
+    # 4-byte emoji and a combining sequence: never split.
+    for unit <- ["🎵", "e\u0301", "語"] do
+      name = Export.file_name(phrase(String.duplicate(unit, 120)), :mid)
+      assert byte_size(name) <= 200
+      assert String.valid?(name)
+      base = String.trim_trailing(name, ".mid")
+      assert base == String.duplicate(unit, div(byte_size(base), byte_size(unit)))
+    end
   end
 
   test "writing removes exports older than a day", %{tmp_dir: dir} do
-    old = Path.join(dir, "old.mid")
-    fresh = Path.join(dir, "fresh.pdf")
-    File.write!(old, "x")
-    File.write!(fresh, "x")
+    old = Path.join(dir, "1-1")
+    fresh = Path.join(dir, "2-2")
+    File.mkdir_p!(old)
+    File.mkdir_p!(fresh)
+    File.write!(Path.join(old, "old.mid"), "x")
+    File.write!(Path.join(fresh, "fresh.pdf"), "x")
     File.touch!(old, System.os_time(:second) - 2 * 24 * 3600)
 
     {:ok, _} = Export.write(phrase(), :mid, dir: dir)
     refute File.exists?(old)
-    assert File.exists?(fresh)
+    assert File.exists?(Path.join(fresh, "fresh.pdf"))
   end
 
   test "on Android exports go to the cache directory next to files/" do
@@ -90,6 +122,23 @@ defmodule Humdinger.ExportTest do
       assert Export.print(pdf) == :ok
       assert_received {:print, ^pdf, "Bus stop riff"}
       assert_raise MatchError, fn -> Export.print(xml) end
+    after
+      Application.delete_env(:humdinger, :file_share)
+    end
+  end
+
+  test "a name beyond the BMP reaches the share hook intact, file and title", %{tmp_dir: dir} do
+    name = "Hook 🎵𝄞 bird"
+    {:ok, mid} = Export.write(phrase(name), :mid, dir: dir)
+    assert Path.basename(mid) == name <> ".mid"
+    assert File.exists?(mid)
+
+    Listener.listen()
+    Application.put_env(:humdinger, :file_share, FileShare)
+
+    try do
+      assert Export.share(mid, title: name) == :ok
+      assert_received {:share, ^mid, "audio/midi", ^name}
     after
       Application.delete_env(:humdinger, :file_share)
     end

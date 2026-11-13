@@ -11,12 +11,26 @@ defmodule Humdinger.Phrases do
 
   `list/0` returns light phrases: everything but the trace (`trace: []`),
   enough for the Phrases list rows and their mini piano rolls.
+
+  Each row carries the `format` of its stored representation (1: the
+  packing above). Reading a row decodes it strictly (`decode/1`): a row of
+  an unknown format, an unknown scale mode, grid, or source, packed
+  notes/trace of the wrong length, a note count that doesn't match, or a
+  note out of range is skipped by `list/0` and missing to `get/1`, and
+  logged by id and reason (never its content), so one bad row can't take
+  the others with it.
   """
 
   import Ecto.Query
 
+  require Logger
+
   alias Humdinger.{Phrase, Repo, Scale}
   alias Humdinger.Phrases.Row
+
+  @format 1
+  @note_bytes 11
+  @trace_bytes 6
 
   @trace_step_ms 20
   @unvoiced 0xFFFF
@@ -28,15 +42,22 @@ defmodule Humdinger.Phrases do
     |> select([r], struct(r, ^(Row.__schema__(:fields) -- [:trace])))
     |> order_by([r], desc: r.created_at, desc: r.id)
     |> Repo.all()
-    |> Enum.map(&to_phrase/1)
+    |> Enum.flat_map(fn row ->
+      case decode(row) do
+        {:ok, phrase} -> [phrase]
+        {:error, _} -> []
+      end
+    end)
   end
 
-  @doc "A saved phrase by id, or `nil`."
+  @doc "A saved phrase by id, or `nil` (also for a row that can't be read)."
   @spec get(integer()) :: Phrase.t() | nil
   def get(id) when is_integer(id) do
-    case Repo.get(Row, id) do
-      nil -> nil
-      row -> to_phrase(row)
+    with %Row{} = row <- Repo.get(Row, id),
+         {:ok, phrase} <- decode(row) do
+      phrase
+    else
+      _ -> nil
     end
   end
 
@@ -96,7 +117,13 @@ defmodule Humdinger.Phrases do
     end
   end
 
-  defp stored({:ok, row}), do: {:ok, to_phrase(row)}
+  defp stored({:ok, row}) do
+    case decode(row) do
+      {:ok, phrase} -> {:ok, phrase}
+      {:error, reason} -> {:error, {:unreadable, reason}}
+    end
+  end
+
   defp stored({:error, _} = error), do: error
 
   defp now, do: DateTime.utc_now() |> DateTime.truncate(:second)
@@ -121,37 +148,99 @@ defmodule Humdinger.Phrases do
       quantize: Atom.to_string(p.quantize),
       source: source_to_string(p.source),
       created_at: DateTime.truncate(p.created_at, :second),
-      updated_at: p.updated_at
+      updated_at: p.updated_at,
+      format: @format
     }
   end
 
-  defp to_phrase(%Row{} = r) do
-    %Phrase{
-      id: r.id,
-      name: r.name,
-      notes: unpack_notes(r.notes),
-      trace: unpack_trace(r.trace || <<>>),
-      duration_ms: r.duration_ms,
-      tempo_bpm: r.tempo_bpm,
-      tempo_detected: r.tempo_detected,
-      scale: scale(r.scale_root, r.scale_mode),
-      quantize: atom_in(r.quantize, Phrase.quantizes()),
-      source: source_from_string(r.source),
-      created_at: r.created_at,
-      updated_at: r.updated_at
-    }
+  @doc """
+  A stored row as a phrase, or why it can't be one (logged with the row's
+  id). A row loaded without its trace (`list/0`) gets `trace: []`.
+  """
+  @spec decode(Row.t()) :: {:ok, Phrase.t()} | {:error, term()}
+  def decode(%Row{} = r) do
+    with :ok <- check(r.format == @format, {:format, r.format}),
+         :ok <- check(is_binary(r.name) and String.valid?(r.name), :name),
+         {:ok, notes} <- decode_notes(r.notes, r.note_count),
+         {:ok, trace} <- decode_trace(r.trace),
+         :ok <- check(is_integer(r.duration_ms) and r.duration_ms >= 0, :duration_ms),
+         :ok <- check(is_integer(r.tempo_bpm) and r.tempo_bpm > 0, :tempo_bpm),
+         :ok <- check(is_boolean(r.tempo_detected), :tempo_detected),
+         {:ok, scale} <- decode_scale(r.scale_root, r.scale_mode),
+         {:ok, quantize} <- known(r.quantize, Phrase.quantizes(), :quantize),
+         {:ok, source} <- decode_source(r.source),
+         :ok <- check(match?(%DateTime{}, r.created_at), :created_at) do
+      {:ok,
+       %Phrase{
+         id: r.id,
+         name: r.name,
+         notes: notes,
+         trace: trace,
+         duration_ms: r.duration_ms,
+         tempo_bpm: r.tempo_bpm,
+         tempo_detected: r.tempo_detected,
+         scale: scale,
+         quantize: quantize,
+         source: source,
+         created_at: r.created_at,
+         updated_at: r.updated_at
+       }}
+    else
+      {:error, reason} = error ->
+        Logger.warning("Humdinger.Phrases: skipped unreadable phrase #{r.id}: #{inspect(reason)}")
+        error
+    end
   end
 
-  defp scale(nil, _mode), do: nil
-  defp scale(root, mode), do: Scale.new(root, atom_in(mode, Scale.modes()))
+  defp check(true, _reason), do: :ok
+  defp check(_false, reason), do: {:error, reason}
 
-  defp atom_in(string, atoms), do: Enum.find(atoms, &(Atom.to_string(&1) == string))
+  defp known(string, atoms, field) do
+    case Enum.find(atoms, &(Atom.to_string(&1) == string)) do
+      nil -> {:error, {field, string}}
+      atom -> {:ok, atom}
+    end
+  end
+
+  defp decode_notes(bin, count) when is_binary(bin) and rem(byte_size(bin), @note_bytes) == 0 do
+    raw =
+      for <<start::32, dur::32, midi::8, vel::8, unsure::8 <- bin>>,
+        do: {start, dur, midi, vel, unsure}
+
+    cond do
+      length(raw) != count -> {:error, {:note_count, count}}
+      Enum.all?(raw, &valid_note?/1) -> {:ok, unpack_notes(bin)}
+      true -> {:error, :notes}
+    end
+  end
+
+  defp decode_notes(_bin, _count), do: {:error, :notes}
+
+  defp valid_note?({_start, dur, midi, vel, unsure}),
+    do: dur > 0 and midi in 0..127 and vel in 1..127 and unsure in [0, 1]
+
+  # `list/0` doesn't load the trace.
+  defp decode_trace(nil), do: {:ok, []}
+
+  defp decode_trace(bin) when is_binary(bin) and rem(byte_size(bin), @trace_bytes) == 0,
+    do: {:ok, unpack_trace(bin)}
+
+  defp decode_trace(_bin), do: {:error, :trace}
+
+  defp decode_scale(nil, nil), do: {:ok, nil}
+
+  defp decode_scale(root, mode) when is_integer(root) and root in 0..11 do
+    with {:ok, mode} <- known(mode, Scale.modes(), :scale_mode), do: {:ok, Scale.new(root, mode)}
+  end
+
+  defp decode_scale(root, mode), do: {:error, {:scale, root, mode}}
 
   defp source_to_string(:hum), do: "hum"
   defp source_to_string({:file, name}), do: "file:" <> name
 
-  defp source_from_string("file:" <> name), do: {:file, name}
-  defp source_from_string("hum"), do: :hum
+  defp decode_source("hum"), do: {:ok, :hum}
+  defp decode_source("file:" <> name), do: {:ok, {:file, name}}
+  defp decode_source(other), do: {:error, {:source, other}}
 
   @doc false
   def pack_notes(notes) do

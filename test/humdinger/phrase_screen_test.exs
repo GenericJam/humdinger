@@ -328,4 +328,87 @@ defmodule Humdinger.PhraseScreenTest do
       assert_every_tap_held(v)
     end
   end
+
+  # A screen that opens the review, so system Back has somewhere to go.
+  defmodule Opener do
+    use Mob.Screen
+
+    @impl true
+    def mount(params, _session, socket), do: {:ok, Mob.Socket.assign(socket, :params, params)}
+
+    @impl true
+    def render(_assigns), do: ~MOB(<Column />)
+
+    @impl true
+    def handle_event("open", _params, socket),
+      do: {:noreply, Mob.Socket.push_screen(socket, PhraseScreen, socket.assigns.params)}
+  end
+
+  # The review in a real navigation stack, opened from `Opener`.
+  defp opened(params) do
+    {:ok, nav} = Mob.Screen.start_link(Opener, Map.put(params, :notify, self()))
+    :ok = Mob.Screen.dispatch(nav, "open", %{})
+    assert Mob.Screen.get_current_module(nav) == PhraseScreen
+    nav
+  end
+
+  # System Back, as Android's gesture sends it (what `Mob.Test.back/1` does).
+  defp system_back(nav) do
+    send(nav, {:mob, :back})
+    assert Mob.Screen.get_current_module(nav) == Opener
+  end
+
+  describe "system Back (it pops without asking the screen)" do
+    test "keeps a new phrase: it's saved and the list hears of it" do
+      nav = opened(%{phrase: phrase()})
+      system_back(nav)
+
+      assert_receive :phrases_changed
+      assert [%Phrase{name: "New phrase", tempo_bpm: 96} = saved] = Phrases.list()
+      assert saved.notes == phrase().notes
+    end
+
+    test "keeps edits to a saved phrase; leaves an unchanged one alone" do
+      {:ok, saved} = Phrases.save(phrase())
+      updated_at = Repo.get(Phrases.Row, saved.id).updated_at
+
+      nav = opened(%{phrase: saved})
+      system_back(nav)
+      refute_received :phrases_changed
+      assert Repo.get(Phrases.Row, saved.id).updated_at == updated_at
+
+      nav = opened(%{phrase: saved})
+      send(nav, {:tap, {:tempo, 4}})
+      assert Mob.Screen.get_socket(nav).assigns.phrase.tempo_bpm == 100
+      system_back(nav)
+
+      assert_receive :phrases_changed
+      assert Phrases.get(saved.id).tempo_bpm == 100
+      assert [_one] = Phrases.list()
+    end
+
+    test "Discard and Hum again still drop the phrase" do
+      nav = opened(%{phrase: phrase()})
+      send(nav, {:tap, :leave})
+      assert eventually(fn -> Mob.Screen.get_current_module(nav) == Opener end)
+
+      nav = opened(%{phrase: phrase(), return_to: self()})
+      send(nav, {:tap, :hum_again})
+      assert_receive :hum_again
+      # Opener stands in for Live: pop_to an absent screen leaves the review up.
+      assert Mob.Screen.get_socket(nav).assigns.left
+
+      refute_received :phrases_changed
+      assert Phrases.list() == []
+    end
+  end
+
+  # The tap reaches the screen through the router; its navigation comes back after.
+  defp eventually(check, tries \\ 50) do
+    cond do
+      check.() -> true
+      tries == 0 -> false
+      true -> Process.sleep(10) && eventually(check, tries - 1)
+    end
+  end
 end
