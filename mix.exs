@@ -8,6 +8,7 @@ defmodule Humdinger.MixProject do
       elixir: "~> 1.18",
       start_permanent: false,
       deps: deps(),
+      elixirc_paths: elixirc_paths(Mix.env()),
       aliases: aliases(),
       erlc_paths: ["src"],
       erlc_options: [:debug_info]
@@ -17,6 +18,11 @@ defmodule Humdinger.MixProject do
   def application do
     [extra_applications: [:logger]]
   end
+
+  # dev/ holds development aids (the views gallery): in dev and test builds,
+  # never in a release.
+  defp elixirc_paths(:prod), do: ["lib"]
+  defp elixirc_paths(_env), do: ["lib", "dev"]
 
   defp deps do
     [

@@ -12,7 +12,7 @@
     %{
       name: "default",
       files: %{
-        included: ["lib/", "test/"],
+        included: ["lib/", "test/", "dev/"],
         excluded: [~r"/_build/", ~r"/deps/"]
       },
       strict: true,

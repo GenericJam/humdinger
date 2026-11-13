@@ -137,6 +137,7 @@ defmodule CanvasSvg do
 
   defp op(%{op: :rect} = o, _fonts) do
     r = Map.get(o, :radius, 0)
+
     ~s(<rect x="#{n(o.x)}" y="#{n(o.y)}" width="#{n(o.w)}" height="#{n(o.h)}" rx="#{n(r)}" #{shape_paint(o)}/>)
   end
 
@@ -211,5 +212,9 @@ defmodule CanvasSvg do
   defp n(v) when is_float(v), do: :erlang.float_to_binary(v, decimals: 2)
 
   defp escape(s),
-    do: s |> String.replace("&", "&amp;") |> String.replace("<", "&lt;") |> String.replace(">", "&gt;")
+    do:
+      s
+      |> String.replace("&", "&amp;")
+      |> String.replace("<", "&lt;")
+      |> String.replace(">", "&gt;")
 end
