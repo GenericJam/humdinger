@@ -60,10 +60,14 @@ class HumListenService : Service() {
             } else {
                 startForeground(HumListenBridge.NOTIFICATION_ID, notification)
             }
+            // A stop that came while this start was on its way: only now,
+            // in the foreground, may the service go (see HumListenBridge.stop).
+            if (HumListenBridge.foregrounded()) stopSelf()
         } catch (e: Exception) {
             // Android 14+: not allowed now (the app isn't in the foreground,
             // or RECORD_AUDIO was revoked).
             Log.e(TAG, "startForeground refused", e)
+            HumListenBridge.startFailed()
             try {
                 HumListenBridge.nativeAction("failed")
             } catch (_: UnsatisfiedLinkError) {
@@ -75,6 +79,10 @@ class HumListenService : Service() {
 
     override fun onDestroy() {
         HumListenBridge.detach(this)
+        // A notice update queued before the stop may have reposted the
+        // notification after Android took the foreground one away; it would
+        // stay, ongoing, with dead buttons.
+        (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).cancel(HumListenBridge.NOTIFICATION_ID)
         super.onDestroy()
     }
 
@@ -89,7 +97,14 @@ class HumListenService : Service() {
  * The service's JNI face: static methods the NIF calls, and the native
  * callback it registers. Notice updates are coalesced on the main thread to
  * at most one post every [MIN_POST_MS] (Android drops notifications posted
- * faster than about 5 a second).
+ * faster than about 5 a second), and only posted while the service is in
+ * the foreground and not stopping.
+ *
+ * A stop must not reach a service that was started with
+ * startForegroundService but hasn't called startForeground yet: Android then
+ * crashes the app ("did not then call Service.startForeground()"). So
+ * [stop] waits for every pending start to reach the foreground, and the
+ * service stops itself there ([foregrounded]).
  */
 object HumListenBridge {
     const val NOTIFICATION_ID = 4410
@@ -111,6 +126,13 @@ object HumListenBridge {
     private var lastPost = 0L
     private var postPending = false
 
+    // Under `lock`: starts on their way to startForeground, a stop waiting
+    // for them, and whether the notice may be posted.
+    private val lock = Any()
+    private var pendingStarts = 0
+    private var stopWanted = false
+    private var live = false
+
     /** A notification button: true if a BEAM process took it. Registered by the NIF. */
     @JvmStatic external fun nativeAction(action: String): Boolean
 
@@ -125,12 +147,17 @@ object HumListenBridge {
         }
         setNotice(title, text, state)
         val intent = Intent(context, HumListenService::class.java)
+        synchronized(lock) {
+            pendingStarts++
+            stopWanted = false
+        }
         return try {
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
             main.post { requestPost() }
             null
         } catch (e: Exception) {
             Log.e("HumListenService", "startForegroundService refused", e)
+            synchronized(lock) { if (pendingStarts > 0) pendingStarts-- }
             "refused"
         }
     }
@@ -141,9 +168,37 @@ object HumListenBridge {
         main.post { requestPost() }
     }
 
+    /** Stop the service now, or, if a start hasn't reached the foreground yet, as soon as it does. */
     @JvmStatic
     fun stop(context: Context) {
+        synchronized(lock) {
+            live = false
+            if (pendingStarts > 0) {
+                stopWanted = true
+                return
+            }
+        }
         context.stopService(Intent(context, HumListenService::class.java))
+    }
+
+    /** The service called startForeground. True if it should stop itself now. */
+    fun foregrounded(): Boolean = synchronized(lock) {
+        if (pendingStarts > 0) pendingStarts--
+        if (stopWanted && pendingStarts == 0) {
+            stopWanted = false
+            live = false
+            true
+        } else {
+            live = !stopWanted
+            false
+        }
+    }
+
+    /** startForeground threw: the service stops itself. */
+    fun startFailed() = synchronized(lock) {
+        if (pendingStarts > 0) pendingStarts--
+        if (pendingStarts == 0) stopWanted = false
+        live = false
     }
 
     private fun setNotice(title: String, text: String, state: Int) {
@@ -176,6 +231,7 @@ object HumListenBridge {
 
     private fun post() {
         val s = service ?: return
+        if (!synchronized(lock) { live }) return
         lastPost = SystemClock.uptimeMillis()
         val nm = s.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(NOTIFICATION_ID, build(s))

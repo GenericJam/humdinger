@@ -43,7 +43,8 @@ defmodule Humdinger.Audio.Nif do
   @doc """
   Start (or update and retarget) the background service. `state` is
   `:listening | :paused | :recording`. `:ok` or `{:error, :permission |
-  :refused | :unavailable}`.
+  :refused | :unavailable | :owner_dead}`. `owner` is monitored: the
+  service stops when it exits.
   """
   def background_start(_owner, _title, _text, _state), do: :erlang.nif_error(:nif_not_loaded)
 

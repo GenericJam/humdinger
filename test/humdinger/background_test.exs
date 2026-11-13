@@ -58,6 +58,29 @@ defmodule Humdinger.BackgroundTest do
     assert :ok = Background.stop()
   end
 
+  test "it stops when its owner exits, but not when an earlier owner does" do
+    first = spawn(fn -> receive do: (:go -> :ok) end)
+    second = spawn(fn -> receive do: (:go -> :ok) end)
+    :ok = Background.start(first, [])
+    :ok = Background.start(second, [])
+
+    send(first, :go)
+    # The service hears of exits through its own monitor, in its own time.
+    Process.sleep(20)
+    assert Background.running?()
+
+    send(second, :go)
+    assert Enum.any?(1..200, fn _ -> not Background.running?() or Process.sleep(1) == :never end)
+  end
+
+  test "a dead owner can't start it" do
+    owner = spawn(fn -> :ok end)
+    ref = Process.monitor(owner)
+    assert_receive {:DOWN, ^ref, :process, ^owner, _}
+    assert {:error, :owner_dead} = Background.start(owner, [])
+    refute Background.running?()
+  end
+
   test "without the microphone permission it won't start" do
     :ok = Fake.set_permission(false)
     assert {:error, :permission} = Background.start(self(), [])

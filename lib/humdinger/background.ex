@@ -27,7 +27,12 @@ defmodule Humdinger.Background do
   service to the foreground after `start/2` returned (Android 14+: the app
   went to the background first, or the microphone permission was revoked).
   The buttons do nothing by themselves: the owner acts, then calls
-  `update/1` or `stop/0`.
+  `update/1` or `stop/0`. When the owner exits, the service stops and the
+  notification goes, so it never outlives the process its buttons talk to.
+
+  `stop/0` may follow `start/2` at once: if Android hasn't brought the
+  service to the foreground yet, it stops as soon as it has (stopping it
+  earlier crashes the app on Android).
 
   Start it while the app is in the foreground (Android 14+ refuses
   otherwise) and once the microphone permission is granted
@@ -46,7 +51,8 @@ defmodule Humdinger.Background do
   `text`, `state`; missing fields take the defaults above). Calling it again
   while running updates the notice and moves the buttons to `owner`.
   """
-  @spec start(pid(), map() | keyword()) :: :ok | {:error, :permission | :refused | :unavailable}
+  @spec start(pid(), map() | keyword()) ::
+          :ok | {:error, :permission | :refused | :unavailable | :owner_dead}
   def start(owner \\ self(), notice) when is_pid(owner) do
     Audio.impl().background_start(owner, normalize(notice))
   end

@@ -146,7 +146,8 @@ defmodule Humdinger.Audio.Fake do
       owners: %{},
       analyses: [],
       permission: true,
-      background: nil
+      background: nil,
+      bg_monitor: nil
     }
 
   @impl GenServer
@@ -199,8 +200,16 @@ defmodule Humdinger.Audio.Fake do
   def handle_call({:background_start, _owner, _notice}, _from, %{permission: false} = s),
     do: {:reply, {:error, :permission}, s}
 
-  def handle_call({:background_start, owner, notice}, _from, s),
-    do: {:reply, :ok, %{s | background: %{owner: owner, notice: notice}}}
+  def handle_call({:background_start, owner, notice}, _from, s) do
+    s = stop_background(s)
+
+    if Process.alive?(owner) do
+      bg = %{owner: owner, notice: notice}
+      {:reply, :ok, %{s | background: bg, bg_monitor: Process.monitor(owner)}}
+    else
+      {:reply, {:error, :owner_dead}, s}
+    end
+  end
 
   def handle_call({:background_update, _notice}, _from, %{background: nil} = s),
     do: {:reply, {:error, :not_running}, s}
@@ -208,7 +217,7 @@ defmodule Humdinger.Audio.Fake do
   def handle_call({:background_update, notice}, _from, s),
     do: {:reply, :ok, put_in(s.background.notice, notice)}
 
-  def handle_call(:background_stop, _from, s), do: {:reply, :ok, %{s | background: nil}}
+  def handle_call(:background_stop, _from, s), do: {:reply, :ok, stop_background(s)}
   def handle_call(:background, _from, s), do: {:reply, s.background, s}
 
   def handle_call({:tap_background, _action}, _from, %{background: nil} = s),
@@ -220,7 +229,7 @@ defmodule Humdinger.Audio.Fake do
   end
 
   def handle_call(:reset, _from, s) do
-    _ = stop_current(s)
+    _ = s |> stop_current() |> stop_background()
     {:reply, :ok, fresh()}
   end
 
@@ -229,6 +238,10 @@ defmodule Humdinger.Audio.Fake do
   def handle_info({:DOWN, monitor, :process, _pid, _reason}, %{monitor: monitor} = s),
     do: {:noreply, stop_current(s)}
 
+  # The background service's owner died: the NIF stops the service.
+  def handle_info({:DOWN, monitor, :process, _pid, _reason}, %{bg_monitor: monitor} = s),
+    do: {:noreply, stop_background(s)}
+
   def handle_info({:DOWN, _monitor, :process, _pid, _reason}, s), do: {:noreply, s}
 
   defp stop_current(%{monitor: nil} = s), do: %{s | current: nil, opts: nil}
@@ -236,5 +249,12 @@ defmodule Humdinger.Audio.Fake do
   defp stop_current(s) do
     Process.demonitor(s.monitor, [:flush])
     %{s | current: nil, opts: nil, monitor: nil}
+  end
+
+  defp stop_background(%{bg_monitor: nil} = s), do: %{s | background: nil}
+
+  defp stop_background(s) do
+    Process.demonitor(s.bg_monitor, [:flush])
+    %{s | background: nil, bg_monitor: nil}
   end
 end

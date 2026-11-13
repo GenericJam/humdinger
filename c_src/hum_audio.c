@@ -34,7 +34,8 @@
  * foreground service of type microphone with an ongoing notification, so the
  * microphone keeps running while another app (FMutate) is in front. Its
  * buttons call HumListenBridge.nativeAction, registered here with RegisterNatives, which
- * sends {background, Action} to the process that started it.
+ * sends {background, Action} to the process that started it. That process
+ * is monitored: when it dies, the service stops.
  *
  * AAudio and libmediandk are opened with dlopen: the app links against
  * android-24 headers, where AAudio (API 26) doesn't exist, while the app's
@@ -823,12 +824,88 @@ static struct {
     jmethodID start, update, stop;
     bool running;
     ErlNifPid owner; /* where button taps go, while running */
+    /* Monitors `owner`: when it dies the service stops, so the notification
+     * never outlives the process its buttons talk to. `generation` bumps on
+     * every start and stop; a monitor of an older one says nothing. */
+    struct bg_watch *watch;
+    uint64_t generation;
     /* The notice last handed to Java, to skip unchanged updates. */
     ErlNifBinary title, text;
     int state;
 } BG;
 
 enum { BG_LISTENING = 0, BG_PAUSED = 1, BG_RECORDING = 2 };
+
+typedef struct bg_watch {
+    uint64_t generation;
+} bg_watch;
+
+static ErlNifResourceType *bg_watch_type;
+
+/* Drop the owner's monitor (freeing the resource removes it). Caller holds BG.lock. */
+static void bg_forget_locked(void) {
+    BG.generation++;
+    if (BG.watch) {
+        enif_release_resource(BG.watch);
+        BG.watch = NULL;
+    }
+}
+
+/* Monitor `owner` instead of whoever was. False if it is already dead.
+ * Caller holds BG.lock. */
+static bool bg_watch_locked(ErlNifEnv *env, const ErlNifPid *owner) {
+    bg_forget_locked();
+    bg_watch *w = enif_alloc_resource(bg_watch_type, sizeof(bg_watch));
+    if (!w) return false;
+    w->generation = BG.generation;
+    if (enif_monitor_process(env, w, owner, NULL) != 0) {
+        enif_release_resource(w);
+        return false;
+    }
+    BG.watch = w;
+    return true;
+}
+
+/* Stop the service (Java may be unreachable: `j` NULL) and forget the
+ * owner. Caller holds BG.lock. */
+static void bg_stop_locked(JNIEnv *j) {
+    if (BG.cls && j) {
+        (*j)->CallStaticVoidMethod(j, BG.cls, BG.stop, g_activity);
+        jni_failed(j);
+    }
+    BG.running = false;
+    bg_forget_locked();
+}
+
+/* The owner died: stop the service, unless it was stopped or restarted
+ * since. On a thread of its own: a down callback mustn't call into Java. */
+static void *bg_owner_down_main(void *arg) {
+    uint64_t generation = (uint64_t)(uintptr_t)arg;
+    bool attached = false;
+    JNIEnv *j = jni_env(&attached);
+    pthread_mutex_lock(&BG.lock);
+    if (BG.running && generation == BG.generation) {
+        LOGI("background owner died: service stopped");
+        bg_stop_locked(j);
+    }
+    pthread_mutex_unlock(&BG.lock);
+    if (j) jni_done(attached);
+    return NULL;
+}
+
+static void bg_owner_down(ErlNifEnv *env, void *obj, ErlNifPid *pid, ErlNifMonitor *mon) {
+    (void)env;
+    (void)pid;
+    (void)mon;
+    bg_watch *w = obj;
+    pthread_t t;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&t, &attr, bg_owner_down_main, (void *)(uintptr_t)w->generation) != 0)
+        LOGE("background owner died, and no thread to stop the service");
+    pthread_attr_destroy(&attr);
+}
 
 /* HumListenBridge.nativeAction(action): a notification button. True if a
  * process was there to take it. */
@@ -848,7 +925,10 @@ static jboolean JNICALL native_action(JNIEnv *j, jclass cls, jstring action) {
                         ? JNI_TRUE
                         : JNI_FALSE;
         enif_free_env(env);
-        if (strcmp(name, "failed") == 0) BG.running = false;
+        if (strcmp(name, "failed") == 0) {
+            BG.running = false;
+            bg_forget_locked();
+        }
     }
     pthread_mutex_unlock(&BG.lock);
     return delivered;
@@ -1380,6 +1460,11 @@ static ERL_NIF_TERM nif_background_start(ErlNifEnv *env, int argc, const ERL_NIF
             BG.owner = owner;
             bg_remember(&title, &text, state);
             result = atom(env, "ok");
+            if (!bg_watch_locked(env, &owner)) {
+                /* The owner died meanwhile: nobody to take the buttons. */
+                bg_stop_locked(j);
+                result = error_tuple(env, "owner_dead");
+            }
         }
         (*j)->PopLocalFrame(j, NULL);
     }
@@ -1421,18 +1506,12 @@ static ERL_NIF_TERM nif_background_update(ErlNifEnv *env, int argc, const ERL_NI
 static ERL_NIF_TERM nif_background_stop(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
     (void)argc;
     (void)argv;
+    bool attached = false;
+    JNIEnv *j = jni_env(&attached);
     pthread_mutex_lock(&BG.lock);
-    if (BG.cls) {
-        bool attached;
-        JNIEnv *j = jni_env(&attached);
-        if (j) {
-            (*j)->CallStaticVoidMethod(j, BG.cls, BG.stop, g_activity);
-            jni_failed(j);
-            jni_done(attached);
-        }
-    }
-    BG.running = false;
+    bg_stop_locked(j);
     pthread_mutex_unlock(&BG.lock);
+    if (j) jni_done(attached);
     return atom(env, "ok");
 }
 
@@ -1503,6 +1582,9 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     ErlNifResourceTypeInit init = {.dtor = NULL, .stop = NULL, .down = listener_down, .members = 3};
     listener_type = enif_init_resource_type(env, "hum_audio_listener", &init, ERL_NIF_RT_CREATE, NULL);
     if (!listener_type) return 1;
+    ErlNifResourceTypeInit bg_init = {.dtor = NULL, .stop = NULL, .down = bg_owner_down, .members = 3};
+    bg_watch_type = enif_init_resource_type(env, "hum_audio_background", &bg_init, ERL_NIF_RT_CREATE, NULL);
+    if (!bg_watch_type) return 1;
     libs_ok = bind_libraries();
     if (!libs_ok) LOGE("could not bind %s", libs_error);
     return 0;
