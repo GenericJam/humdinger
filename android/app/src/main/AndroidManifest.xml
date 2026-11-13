@@ -71,6 +71,15 @@
         </intent>
     </queries>
 
+    <!-- mob:plugin-permissions BEGIN (managed — regenerated each build; do not edit) -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- mob:plugin-permissions END -->
     <application
         android:label="Humdinger"
         android:icon="@mipmap/ic_launcher"
@@ -119,5 +128,22 @@
                 android:resource="@xml/file_provider_paths" />
         </provider>
 
+        <!-- mob:plugin-components BEGIN (managed — regenerated each build; do not edit) -->
+        <service
+            android:name="com.genericjam.humdinger.midi.HumdingerMidiService"
+            android:exported="true"
+            android:permission="android.permission.BIND_MIDI_DEVICE_SERVICE">
+            <intent-filter>
+                <action android:name="android.media.midi.MidiDeviceService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.media.midi.MidiDeviceService"
+                android:resource="@xml/humdinger_midi_port" />
+        </service>
+
+        <activity android:name="io.mob.scanner.MobScannerActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.NoActionBar" />
+        <!-- mob:plugin-components END -->
     </application>
 </manifest>

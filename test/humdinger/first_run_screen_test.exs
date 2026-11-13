@@ -35,7 +35,7 @@ defmodule Humdinger.FirstRunScreenTest do
       end)
 
     # The tick that shows it.
-    pump(view, 60)
+    view |> await_tick() |> pump(20)
   end
 
   defp at_range do

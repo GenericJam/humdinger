@@ -1,0 +1,4 @@
+android/app/src/main/java/io/mob/midi/MobMidiBridge.kt
+android/app/src/main/java/com/genericjam/humdinger/midi/HumdingerMidiBridge.kt
+android/app/src/main/java/io/mob/camera/MobCameraBridge.kt
+android/app/src/main/java/io/mob/scanner/MobScannerBridge.kt

@@ -159,7 +159,8 @@ defmodule Humdinger.SettingsSheet do
       corner_radius={24}
     >
       <Scroll fill_width={true}>
-        <Column fill_width={true} align={:center}>
+        <Row fill_width={true} align={:top}>
+          <Spacer />
           <Column width={350} padding_top={4} padding_bottom={24} gap={16}>
             <Row gap={12} height={44}>
               <Canvas width={44} height={40} draw={a.mimi_ops} />
@@ -265,7 +266,8 @@ defmodule Humdinger.SettingsSheet do
               </Row>
             </Box>
           </Column>
-        </Column>
+          <Spacer />
+        </Row>
       </Scroll>
     </Sheet>
     """

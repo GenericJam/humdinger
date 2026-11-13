@@ -65,7 +65,8 @@ defmodule Humdinger.SpectrumScreen do
     ]
 
     ~MOB"""
-    <Column background={Style.bg()} fill_width={true} fill_height={true} align={:center}>
+    <Row background={Style.bg()} fill_width={true} fill_height={true} align={:top}>
+      <Spacer />
       <Column width={350} fill_height={true} padding_top={12} padding_bottom={22} gap={12}>
         <Row height={mimi_h} gap={12}>
           <Canvas width={mimi_w} height={mimi_h} draw={assigns.mimi_ops} />
@@ -97,7 +98,8 @@ defmodule Humdinger.SpectrumScreen do
           text_color={Style.muted()}
         />
       </Column>
-    </Column>
+      <Spacer />
+    </Row>
     """
   end
 

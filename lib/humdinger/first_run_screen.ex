@@ -83,7 +83,8 @@ defmodule Humdinger.FirstRunScreen do
     skip_label = if assigns.only, do: "Close", else: "Skip"
 
     ~MOB"""
-    <Column background={Style.bg()} fill_width={true} fill_height={true} align={:center}>
+    <Row background={Style.bg()} fill_width={true} fill_height={true} align={:top}>
+      <Spacer />
       <Column width={342} fill_height={true} padding_top={20} padding_bottom={24} gap={20}>
         <Row gap={10}>
           <Row weight={1} gap={6}>
@@ -103,7 +104,8 @@ defmodule Humdinger.FirstRunScreen do
         </Row>
         {body(assigns)}
       </Column>
-    </Column>
+      <Spacer />
+    </Row>
     """
   end
 
@@ -210,13 +212,14 @@ defmodule Humdinger.FirstRunScreen do
     {w, h} = @mimi
 
     ~MOB"""
-    <Column gap={10} align={:center} padding_top={20}>
-      {Widgets.mimi(w, h, 166, %{mood: mood, note: note, look: look})}
+    <Column gap={10} padding_top={20}>
+      {Widgets.centered(Widgets.mimi(w, h, 166, %{mood: mood, note: note, look: look}))}
       <Text
         text={title}
         font={:display}
         text_size={30}
         text_align="center"
+        fill_width={true}
         text_color={Style.text()}
       />
       <Text
@@ -224,13 +227,16 @@ defmodule Humdinger.FirstRunScreen do
         text_size={14}
         line_height={1.45}
         text_align="center"
+        fill_width={true}
         text_color={Style.text_2()}
       />
       <Spacer size={10} />
-      <Row gap={10} fill_width={false}>
+      <Row fill_width={true} gap={10}>
+        <Spacer />
         {for {label, tag, style} <- actions do
           Widgets.button(label, {self(), tag}, style)
         end}
+        <Spacer />
       </Row>
     </Column>
     """
@@ -259,13 +265,14 @@ defmodule Humdinger.FirstRunScreen do
 
     ~MOB"""
     <Column gap={20} weight={1}>
-      <Column gap={10} align={:center} padding_top={20}>
-        {Widgets.mimi(w, h, 166, %{mood: mood, note: holding || 69, look: look})}
+      <Column gap={10} padding_top={20}>
+        {Widgets.centered(Widgets.mimi(w, h, 166, %{mood: mood, note: holding || 69, look: look}))}
         <Text
           text={title}
           font={:display}
           text_size={30}
           text_align="center"
+          fill_width={true}
           text_color={Style.text()}
         />
         <Text
@@ -273,25 +280,32 @@ defmodule Humdinger.FirstRunScreen do
           text_size={14}
           line_height={1.45}
           text_align="center"
+          fill_width={true}
           text_color={Style.text_2()}
         />
       </Column>
-      <Column gap={6} align={:center}>
-        <Text text={big} font={:display} text_size={64} line_height={1.0} text_color={big_color} />
-        <Box
-          :if={finder.phase != :done}
-          width={200}
-          height={6}
-          corner_radius={3}
-          background={Style.line_soft()}
-        >
-          <Box width={max(progress * 200, 0.1)} height={6} background={Style.fm()} />
-        </Box>
+      <Column gap={6}>
+        <Text
+          text={big}
+          font={:display}
+          text_size={64}
+          line_height={1.0}
+          text_align="center"
+          fill_width={true}
+          text_color={big_color}
+        />
+        {if finder.phase != :done do
+          Widgets.centered(progress_bar(progress))
+        else
+          []
+        end}
         <Text
           :if={finder.phase != :done}
           text={holding_caption(a, finder, held)}
           font={:mono_semibold}
           text_size={11}
+          text_align="center"
+          fill_width={true}
           text_color={Style.muted()}
         />
       </Column>
@@ -311,9 +325,18 @@ defmodule Humdinger.FirstRunScreen do
         text_size={12}
         line_height={1.45}
         text_align="center"
+        fill_width={true}
         text_color={Style.muted()}
       />
     </Column>
+    """
+  end
+
+  defp progress_bar(progress) do
+    ~MOB"""
+    <Box width={200} height={6} corner_radius={3} background={Style.line_soft()}>
+      <Box width={max(progress * 200, 0.1)} height={6} background={Style.fm()} />
+    </Box>
     """
   end
 

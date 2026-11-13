@@ -87,7 +87,8 @@ defmodule Humdinger.Test.Screens do
     end
   end
 
-  defp await_tick(view) do
+  @doc "Wait (up to 2 s) until the screen's pending tick has been delivered."
+  def await_tick(view) do
     if Mob.ScreenCase.assigns(view).tick_token == nil do
       view
     else

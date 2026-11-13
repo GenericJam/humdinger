@@ -56,9 +56,24 @@ defmodule Humdinger.Widgets do
       on_tap={option.tap}
       on_press_out={held()}
     >
-      <Column align={:center} fill_width={false}>
-        <Text text={option.label} font={:semibold} text_size={size} text_color={color} />
-        <Text :if={sub} text={sub} font={:mono} text_size={9} text_color={sub_color} />
+      <Column fill_width={true}>
+        <Text
+          text={option.label}
+          font={:semibold}
+          text_size={size}
+          text_align="center"
+          fill_width={true}
+          text_color={color}
+        />
+        <Text
+          :if={sub}
+          text={sub}
+          font={:mono}
+          text_size={9}
+          text_align="center"
+          fill_width={true}
+          text_color={sub_color}
+        />
       </Column>
     </Box>
     """
@@ -66,6 +81,20 @@ defmodule Humdinger.Widgets do
 
   # An unselected segment shows the track through it.
   defp track_clear, do: 0x00000000
+
+  @doc """
+  `node` centred across the width (a Row with spacers: Android's Column
+  ignores `align`).
+  """
+  def centered(node) do
+    ~MOB"""
+    <Row fill_width={true}>
+      <Spacer />
+      {node}
+      <Spacer />
+    </Row>
+    """
+  end
 
   @doc "A 48 × 28 switch as on the Settings board: lime with a dark knob when on."
   def switch(on?, tap) do
