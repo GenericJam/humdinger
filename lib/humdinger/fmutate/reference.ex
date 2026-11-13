@@ -13,9 +13,11 @@ defmodule Humdinger.FMutate.Reference do
       SRP, approval, grant), optionally advertised over mDNS with
       `Reference.Responder`.
 
-  FMutate's node itself starts with its boot arguments (`Reference.Epmd`,
-  and for other phones `-proto_dist inet_tls -ssl_dist_optfile <file>`
-  written by `Pairings.write_ssl_dist_optfile/2`).
+  FMutate's node itself starts with `boot_args/1`: no epmd, a fixed port,
+  and either TLS distribution (`-proto_dist inet_tls`, the only carrier a
+  sibling on another phone is granted) or plain distribution bound to
+  loopback (same phone only). Plain distribution has no integrity after the
+  cookie handshake, so it must never listen on Wi-Fi.
   """
 
   use Supervisor
@@ -24,10 +26,47 @@ defmodule Humdinger.FMutate.Reference do
   Starts the registry and the instance, and the pairing endpoint when
   `pairing:` options are given (see `Reference.PairingServer`; it is
   registered as `Humdinger.FMutate.Reference.PairingServer`). `instance:`
-  options go to `Reference.Instance`.
+  options go to `Reference.Instance`, `pairings:` to `Reference.Pairings`.
+  Start FMutate's node (`boot_args/1`) first.
   """
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts \\ []), do: Supervisor.start_link(__MODULE__, opts, name: __MODULE__)
+
+  @doc """
+  FMutate's boot arguments (strings, for `erl`, `:peer` or `Mob.InitArgs`).
+
+  Options: `:dist_port` (required), `:dist_proto` (`:inet_tls`, the default,
+  with `:ssl_dist_optfile` from `Pairings.write_ssl_dist_optfile/2`; or
+  `:inet_tcp`, which binds the listener to 127.0.0.1).
+  """
+  @spec boot_args(keyword()) :: [String.t()]
+  def boot_args(opts) do
+    port = Keyword.fetch!(opts, :dist_port)
+
+    base = [
+      "-start_epmd",
+      "false",
+      "-epmd_module",
+      Atom.to_string(Humdinger.FMutate.Reference.Epmd),
+      "-kernel",
+      "erl_epmd_node_listen_port",
+      Integer.to_string(port)
+    ]
+
+    case Keyword.get(opts, :dist_proto, :inet_tls) do
+      :inet_tls ->
+        base ++
+          [
+            "-proto_dist",
+            "inet_tls",
+            "-ssl_dist_optfile",
+            Keyword.fetch!(opts, :ssl_dist_optfile)
+          ]
+
+      :inet_tcp ->
+        base ++ ["-kernel", "inet_dist_use_interface", "{127,0,0,1}"]
+    end
+  end
 
   @doc "Like `start_link/1`, unlinked from the caller (for scripts and `:peer.call/4`)."
   @spec start(keyword()) :: {:ok, pid()} | {:error, term()}
@@ -58,7 +97,7 @@ defmodule Humdinger.FMutate.Reference do
 
     children =
       [
-        Humdinger.FMutate.Reference.Pairings,
+        {Humdinger.FMutate.Reference.Pairings, Keyword.get(opts, :pairings, [])},
         {Humdinger.FMutate.Reference.Instance, Keyword.get(opts, :instance, [])}
       ] ++ pairing
 

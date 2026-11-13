@@ -52,7 +52,8 @@ defmodule Humdinger.App do
     # distribution starts (including Mob.Dist's development node below).
     FMutate.Transport.setup(dev_node: @dev_node)
     {:ok, _} = FMutate.Supervisor.start_link()
-    Mob.Dist.ensure_started(node: @dev_node, cookie: :mob_secret)
+    # No :cookie: Mob.Dist uses mob_dev's per-project cookie.
+    Mob.Dist.ensure_started(node: @dev_node)
   end
 
   # Returns the path to the migrations directory for the current environment.

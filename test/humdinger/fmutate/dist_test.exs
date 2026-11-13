@@ -32,28 +32,17 @@ defmodule Humdinger.FMutate.DistTest do
     name = "fmutate_t#{System.unique_integer([:positive])}"
     cert = Cert.self_signed("FMutate A")
 
-    tls_args =
-      if proto == :inet_tls do
-        path = Path.join(System.tmp_dir!(), "#{name}_ssl_dist.conf")
-        :ok = Pairings.write_ssl_dist_optfile(path, cert)
-        on_exit(fn -> File.rm(path) end)
-        [~c"-proto_dist", ~c"inet_tls", ~c"-ssl_dist_optfile", String.to_charlist(path)]
-      else
-        []
-      end
+    optfile = Path.join(System.tmp_dir!(), "#{name}_ssl_dist.conf")
+
+    if proto == :inet_tls do
+      :ok = Pairings.write_ssl_dist_optfile(optfile, cert)
+      on_exit(fn -> File.rm(optfile) end)
+    end
+
+    boot = Reference.boot_args(dist_port: port, dist_proto: proto, ssl_dist_optfile: optfile)
 
     args =
-      [
-        ~c"-start_epmd",
-        ~c"false",
-        ~c"-epmd_module",
-        ~c"Elixir.Humdinger.FMutate.Reference.Epmd",
-        ~c"-kernel",
-        ~c"erl_epmd_node_listen_port",
-        ~c"#{port}",
-        ~c"-setcookie",
-        ~c"fmutate_own_#{System.unique_integer([:positive])}"
-      ] ++ tls_args ++ Enum.flat_map(:code.get_path(), &[~c"-pa", &1])
+      Enum.map(boot, &String.to_charlist/1) ++ Enum.flat_map(:code.get_path(), &[~c"-pa", &1])
 
     {:ok, peer, node} =
       :peer.start(%{
@@ -247,6 +236,43 @@ defmodule Humdinger.FMutate.DistTest do
       versions: [:"tlsv1.3"],
       active: false
     ]
+  end
+
+  test "FMutate refuses distribution under any unpaired name, even with its default cookie" do
+    fmutate = start_fmutate(:inet_tcp)
+    default_cookie = :peer.call(fmutate.peer, :erlang, :get_cookie, [])
+
+    {:ok, intruder, _} =
+      :peer.start(%{
+        name: :"intruder_#{System.unique_integer([:positive])}",
+        host: ~c"127.0.0.1",
+        longnames: true,
+        connection: :standard_io,
+        args:
+          [
+            ~c"-setcookie",
+            Atom.to_charlist(default_cookie),
+            ~c"-epmd_module",
+            ~c"Elixir.Humdinger.FMutate.Epmd"
+          ] ++
+            Enum.flat_map(:code.get_path(), &[~c"-pa", &1])
+      })
+
+    on_exit(fn -> if Process.alive?(intruder), do: :peer.stop(intruder) end)
+    :ok = :peer.call(intruder, Epmd, :put_route, [fmutate.node, {{127, 0, 0, 1}, fmutate.port}])
+
+    refute :peer.call(intruder, :net_kernel, :connect_node, [fmutate.node])
+    # FMutate's plain listener (and so every socket on its port) is on loopback only.
+    on_port = tcp_sockets(fmutate.peer) |> Enum.filter(&match?({_, p} when p == fmutate.port, &1))
+    assert on_port != []
+    assert Enum.all?(on_port, &match?({{127, 0, 0, 1}, _}, &1))
+  end
+
+  defp tcp_sockets(peer) do
+    for port <- :peer.call(peer, :erlang, :ports, []),
+        :peer.call(peer, :erlang, :port_info, [port, :name]) == {:name, ~c"tcp_inet"},
+        {:ok, address} <- [:peer.call(peer, :inet, :sockname, [port])],
+        do: address
   end
 
   defp assert_no_epmd(nodes) do

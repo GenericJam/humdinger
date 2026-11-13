@@ -14,6 +14,22 @@ defmodule Humdinger.FMutate.Reference.Pairings do
   the `-ssl_dist_optfile` with `write_ssl_dist_optfile/2`. The registry is in
   memory here; FMutate keeps it in its own secure storage and calls `add/1`
   for each stored pairing at boot.
+
+  On a distributed node (start FMutate's node first) it also:
+
+    * replaces the default cookie with 32 random bytes, so a connection under
+      any unpaired name can't pass the challenge;
+    * with plain (loopback) distribution, restricts it to the paired node
+      names with `:net_kernel.allow/1` (plus `:also_allow`, e.g. a
+      development host), so a connection under any other name is refused
+      before the cookie check. `allow/1` only ever adds names; a revoked name
+      stays allowed but its cookie is random, so it can't get in.
+
+  With TLS distribution the allow list isn't used: `inet_tls_dist` turns it
+  into a check that the client certificate names the node's host, which the
+  pinned self-signed certificates don't. There a connection needs a pinned
+  certificate (`verify_client/4`) and the per-node cookie of the name it
+  declares; any unpaired name meets the random default cookie.
   """
 
   use GenServer
@@ -37,7 +53,7 @@ defmodule Humdinger.FMutate.Reference.Pairings do
 
   @doc "Starts the registry (one per node)."
   @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(_opts \\ []), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
+  def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
   @doc """
   Adds (or replaces) the pairing for `request.node` and returns it with its
@@ -50,6 +66,15 @@ defmodule Humdinger.FMutate.Reference.Pairings do
   @doc "Revokes the pairing of `node` (a string or atom)."
   @spec revoke(node() | String.t()) :: :ok
   def revoke(node), do: GenServer.call(__MODULE__, {:revoke, to_string(node)})
+
+  @doc "The pairing of `node` (a string), or nil."
+  @spec get(String.t()) :: pairing() | nil
+  def get(node) do
+    case :ets.lookup(@table, node) do
+      [{^node, _atom, pairing}] -> pairing
+      [] -> nil
+    end
+  end
 
   @doc "All pairings."
   @spec list() :: [pairing()]
@@ -76,7 +101,7 @@ defmodule Humdinger.FMutate.Reference.Pairings do
   """
   @spec write_ssl_dist_optfile(Path.t(), Cert.t()) :: :ok | {:error, File.posix()}
   def write_ssl_dist_optfile(path, %{cert: cert, key: key}) do
-    File.write(path, """
+    write_private(path, """
     [{server,
       [{certs_keys, [\#{cert => #{erlang_binary(cert)}, key => {'ECPrivateKey', #{erlang_binary(key)}}}]},
        {verify, verify_peer},
@@ -92,11 +117,41 @@ defmodule Humdinger.FMutate.Reference.Pairings do
     """)
   end
 
+  # The file holds FMutate's private key: created 0600 before anything is
+  # written, then renamed into place. Keep it in app-private storage.
+  defp write_private(path, contents) do
+    tmp = "#{path}.tmp-#{System.unique_integer([:positive])}"
+
+    with {:ok, io} <- File.open(tmp, [:write, :exclusive]),
+         :ok <- File.chmod(tmp, 0o600),
+         :ok <- IO.binwrite(io, contents),
+         :ok <- File.close(io),
+         :ok <- File.rename(tmp, path) do
+      :ok
+    else
+      {:error, _} = error ->
+        File.rm(tmp)
+        error
+    end
+  end
+
   defp erlang_binary(bytes), do: "<<" <> Enum.join(:binary.bin_to_list(bytes), ",") <> ">>"
 
+  # net_kernel enforces the allow list only once it is non-empty; this name
+  # never connects.
+  @nobody :nobody@invalid
+
   @impl true
-  def init([]) do
+  def init(opts) do
     :ets.new(@table, [:named_table, :protected, read_concurrency: true])
+
+    if Node.alive?() do
+      :erlang.set_cookie(random_cookie_atom())
+
+      if plain_dist?(),
+        do: :ok = :net_kernel.allow([@nobody | Keyword.get(opts, :also_allow, [])])
+    end
+
     {:ok, nil}
   end
 
@@ -109,7 +164,11 @@ defmodule Humdinger.FMutate.Reference.Pairings do
     # The atoms are the node the player allowed and its cookie: one pair per
     # pairing, never made from an unapproved request.
     atom = String.to_atom(request.node)
-    if Node.alive?(), do: :erlang.set_cookie(atom, String.to_atom(cookie))
+
+    if Node.alive?() do
+      :erlang.set_cookie(atom, String.to_atom(cookie))
+      if plain_dist?(), do: :ok = :net_kernel.allow([atom])
+    end
 
     pairing =
       request
@@ -125,8 +184,7 @@ defmodule Humdinger.FMutate.Reference.Pairings do
       [{^node, atom, _pairing}] ->
         if Node.alive?() do
           :erlang.disconnect_node(atom)
-          random = 32 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
-          :erlang.set_cookie(atom, String.to_atom(random))
+          :erlang.set_cookie(atom, random_cookie_atom())
         end
 
       [] ->
@@ -135,4 +193,14 @@ defmodule Humdinger.FMutate.Reference.Pairings do
 
     {:reply, :ok, state}
   end
+
+  defp plain_dist? do
+    case :init.get_argument(:proto_dist) do
+      {:ok, [[proto | _] | _]} -> proto != ~c"inet_tls"
+      _ -> true
+    end
+  end
+
+  defp random_cookie_atom,
+    do: 32 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false) |> String.to_atom()
 end

@@ -17,8 +17,8 @@ defmodule Humdinger.FMutate.Tunnel do
     2. It listens on a loopback port; `Humdinger.FMutate.Epmd` routes FMutate's
        node there, so `net_kernel` connects to the tunnel.
     3. It accepts exactly one connection, and only from a socket in this BEAM
-       (another app on the phone could otherwise borrow the TLS session), then
-       closes the listener.
+       (another app on the phone could otherwise borrow the TLS session):
+       others are closed and it keeps waiting, then it closes the listener.
     4. It forwards bytes both ways. The only difference between the two
        carriers' wire formats is the handshake framing: `inet_tcp_dist` frames
        handshake messages with a 2-byte length and `inet_tls_dist` with a
@@ -99,7 +99,7 @@ defmodule Humdinger.FMutate.Tunnel do
            ip: {127, 0, 0, 1},
            active: false,
            nodelay: true,
-           backlog: 1
+           backlog: 4
          ]) do
       {:ok, listen} ->
         {:ok, listen}
@@ -114,14 +114,30 @@ defmodule Humdinger.FMutate.Tunnel do
     receive do
       {:sockets, listen, tls} ->
         Process.monitor(owner)
+        deadline = System.monotonic_time(:millisecond) + @accept_timeout
 
-        with {:ok, tcp} <- :gen_tcp.accept(listen, @accept_timeout),
-             :ok <- :gen_tcp.close(listen),
-             true <- own_socket?(tcp) do
+        with {:ok, tcp} <- accept_own(listen, deadline),
+             :ok <- :gen_tcp.close(listen) do
           :ok = :inet.setopts(tcp, active: :once)
           :ok = :ssl.setopts(tls, active: :once)
           loop(%{tcp: tcp, tls: tls, out: {:handshake, ""}, in: {:handshake, ""}})
         end
+    end
+  end
+
+  # Another app on the phone may connect first: close it and keep waiting
+  # for this BEAM's connection until the deadline.
+  defp accept_own(listen, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    with true <- remaining > 0 || {:error, :timeout},
+         {:ok, tcp} <- :gen_tcp.accept(listen, remaining) do
+      if own_socket?(tcp) do
+        {:ok, tcp}
+      else
+        :gen_tcp.close(tcp)
+        accept_own(listen, deadline)
+      end
     end
   end
 

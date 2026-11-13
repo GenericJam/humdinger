@@ -817,6 +817,19 @@ this implementation, for FMutate to implement the other side).
   ships `crypto` 5.10 (with `crypto.so`), `public_key` 1.21.8, `ssl` 11.7.8
   and `asn1` 5.5.2 (ebin 0.2, 2.9, 2.5 and 1.3 MB); a stripped release
   build must keep all four. `mix.exs` lists them in `extra_applications`.
+- **Carriers (security).** Plain `inet_tcp` distribution is loopback only:
+  `Record.validate/1` refuses it to any other host, `Transport.connect/2`
+  refuses it again, and the reference FMutate grants `inet_tls` to every
+  sibling that isn't on its phone (with plain distribution it answers
+  `loopback_only`, and its listener is bound to 127.0.0.1 by
+  `Reference.boot_args/1`). Reference FMutate also sets a random default
+  cookie, restricts plain distribution to paired names
+  (`:net_kernel.allow/1`), refuses `fmutate_*` node names, flags a pairing
+  that would replace another, strips control characters from the names it
+  shows, limits pairing connections to 8, and writes its TLS option file
+  0600. mDNS answers are only tried (never loopback, never another node
+  name) and saved after they connect. `Record` hides `cookie` and `key` from
+  `inspect`.
 - **Atoms.** Node names and cookies become atoms only from the stored
   pairing (validated by `Record`), and for TLS only after the tunnel checked
   FMutate's certificate; mDNS and pairing input never make atoms.
@@ -846,9 +859,8 @@ this implementation, for FMutate to implement the other side).
   `:peer` FMutate with no epmd (loopback TCP, and TLS through the tunnel),
   MIDI received, status events, reconnect, revoke, forget.
 - **Verify (phone, Mac as FMutate).** Start a node on the Mac with
-  `--erl "-start_epmd false -epmd_module Elixir.Humdinger.FMutate.Reference.Epmd
-  -kernel erl_epmd_node_listen_port 45124 -proto_dist inet_tls
-  -ssl_dist_optfile <file from Pairings.write_ssl_dist_optfile/2>"` and
+  `--erl "<Reference.boot_args(dist_port: 45124, ssl_dist_optfile: <file from
+  Pairings.write_ssl_dist_optfile/2>) joined by spaces>"` and
   `ERL_LIBS=_build/dev/lib`, run `Humdinger.FMutate.Reference.start/1` with
   `pairing: [cert:, host: <Mac IP>, port: 45123, dist_port: 45124,
   dist_proto: :inet_tls, approve: fn _ -> :allow end]`, advertise with

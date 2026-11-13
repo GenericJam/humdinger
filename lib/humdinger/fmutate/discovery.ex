@@ -42,8 +42,8 @@ defmodule Humdinger.FMutate.Discovery do
   The instance name is the DNS-SD instance label (`FMutate A`, possibly
   suffixed ` (2)` by the responder). `host` is the A record of the SRV
   target, or the source address of the reply when that is missing.
-  Candidates are deduplicated by `{fp, inst}` (the latest answer wins) and
-  ordered by name. Every string is the binary from the packet; no atoms are
+  Candidates are deduplicated by `{fp, inst, host}` (the latest answer wins:
+  a spoofed answer can't hide FMutate's real address) and ordered by name. Every string is the binary from the packet; no atoms are
   created from network data. Malformed packets are ignored (see
   `Humdinger.FMutate.Dns`).
   """
@@ -334,7 +334,9 @@ defmodule Humdinger.FMutate.Discovery do
       end
     end)
     |> Enum.sort_by(fn {seq, _candidate} -> seq end)
-    |> Map.new(fn {_seq, candidate} -> {{candidate.fp, candidate.inst}, candidate} end)
+    |> Map.new(fn {_seq, candidate} ->
+      {{candidate.fp, candidate.inst, candidate.host}, candidate}
+    end)
     |> Map.values()
     |> Enum.sort_by(& &1.name)
   end

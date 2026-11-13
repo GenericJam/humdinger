@@ -67,7 +67,7 @@ defmodule Humdinger.FMutate.PairingTest do
   end
 
   test "pairs from the QR link: pinned TLS, token, Allow, a record FMutate recognises" do
-    {server, fmutate} = start_server([])
+    {server, fmutate} = start_server(dist_proto: :inet_tcp)
     pairing = start_pairing()
     {:ok, offer} = Pairing.parse_link(PairingServer.link(server))
 
@@ -257,6 +257,115 @@ defmodule Humdinger.FMutate.PairingTest do
     :ok = Pairing.pair(self(), %{code: "KQ7M-X2PD"}, pairing)
     assert_receive {:fmutate_pair, :failed, :not_found}
     assert Pairing.pair(self(), %{code: "KQ7M"}, pairing) == {:error, :invalid_code}
+  end
+
+  describe "carriers" do
+    test "a sibling on another phone is always granted TLS distribution" do
+      lan = lan_ip()
+      {server, fmutate} = start_server(ip: {0, 0, 0, 0}, host: lan, dist_proto: :inet_tls)
+      {:ok, link} = Pairing.parse_link(PairingServer.link(server))
+
+      assert {:ok, record} =
+               Client.pair(
+                 %{target(server, fmutate.fp) | host: lan},
+                 {:token, link.token},
+                 identity()
+               )
+
+      assert {record.dist_proto, record.host} == {:inet_tls, lan}
+    end
+
+    test "an FMutate with plain distribution pairs only apps on its own phone" do
+      lan = lan_ip()
+      {server, fmutate} = start_server(ip: {0, 0, 0, 0}, host: lan, dist_proto: :inet_tcp)
+      {:ok, link} = Pairing.parse_link(PairingServer.link(server))
+      remote = %{target(server, fmutate.fp) | host: lan}
+
+      assert Client.pair(remote, {:token, link.token}, identity()) == {:error, :loopback_only}
+      # Turned away before authenticating: the token is still good on loopback.
+      assert {:ok, record} =
+               Client.pair(target(server, fmutate.fp), {:token, link.token}, identity())
+
+      assert {record.dist_proto, record.host} == {:inet_tcp, "127.0.0.1"}
+    end
+
+    test "plain distribution on a network address refuses to start" do
+      opts = [
+        cert: Cert.self_signed("FMutate A"),
+        ip: {127, 0, 0, 1},
+        dist_port: 1,
+        dist_proto: :inet_tcp,
+        dist_host: "192.168.1.23"
+      ]
+
+      assert {:error, {:plain_distribution_off_loopback, _}} =
+               start_supervised({PairingServer, opts})
+    end
+  end
+
+  describe "requests" do
+    test "a sibling can't take FMutate's node name or any fmutate_ name" do
+      {server, _} = start_server([])
+
+      for node <- ["fmutate_a@127.0.0.1", "fmutate_b@10.0.0.1"] do
+        :ok = PairingServer.renew(server)
+
+        assert Client.pair(target(server), {:code, code(server)}, %{identity() | node: node}) ==
+                 {:error, :bad_node}
+      end
+
+      assert Pairings.list() == []
+    end
+
+    test "the Allow sheet gets clean names and is told when a pairing would be replaced" do
+      {server, _} = start_server(approve: {:ask, self()})
+      sneaky = %{identity() | device_name: "Pixel\n7\u202E", app_name: "Hum\u200Bdinger"}
+      test = self()
+
+      spawn(fn ->
+        send(test, {:first, Client.pair(target(server), {:code, code(server)}, sneaky)})
+      end)
+
+      assert_receive {:fmutate_pair_request, ^server, ref, request}
+
+      assert {request.app_name, request.device_name, request.replaces} ==
+               {"Humdinger", "Pixel7", nil}
+
+      :ok = PairingServer.decide(server, ref, :allow)
+      assert_receive {:first, {:ok, _}}
+
+      :ok = PairingServer.renew(server)
+      spawn(fn -> Client.pair(target(server), {:code, code(server)}, identity()) end)
+      assert_receive {:fmutate_pair_request, ^server, ref, request}
+      assert %{app_name: "Humdinger", device_name: "Pixel7"} = request.replaces
+      :ok = PairingServer.decide(server, ref, :deny)
+    end
+
+    test "the code and token stay out of the server's status and crash reports" do
+      {server, _} = start_server([])
+      {:ok, link} = Pairing.parse_link(PairingServer.link(server))
+      shown = inspect(:sys.get_status(server), limit: :infinity, printable_limit: :infinity)
+      refute shown =~ code(server)
+      refute shown =~ inspect(link.token, limit: :infinity)
+    end
+  end
+
+  test "the TLS distribution option file (FMutate's private key) is private to its owner" do
+    path = Path.join(System.tmp_dir!(), "optfile_#{System.unique_integer([:positive])}.conf")
+    on_exit(fn -> File.rm(path) end)
+    assert Pairings.write_ssl_dist_optfile(path, Cert.self_signed("FMutate A")) == :ok
+    assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o600
+  end
+
+  defp lan_ip do
+    {:ok, interfaces} = :inet.getifaddrs()
+
+    ip =
+      Enum.find_value(interfaces, fn {_name, opts} ->
+        Enum.find(Keyword.get_values(opts, :addr), &match?({a, _, _, _} when a != 127, &1))
+      end) || flunk("needs a non-loopback IPv4 address")
+
+    ip |> :inet.ntoa() |> List.to_string()
   end
 
   defp candidate(nil),

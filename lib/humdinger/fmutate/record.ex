@@ -8,7 +8,7 @@ defmodule Humdinger.FMutate.Record do
     * `node`: FMutate's node name, `host` and `dist_port` its distribution
       endpoint (`host` is `"127.0.0.1"` on the same phone; a Wi-Fi address
       follows FMutate through mDNS), `dist_proto` `:inet_tcp` (loopback) or
-      `:inet_tls`.
+      `:inet_tls`; `validate/1` refuses `:inet_tcp` to any other host.
     * `fp`: SHA-256 of FMutate's TLS certificate, pinned for distribution.
     * `cookie`: the per-app distribution cookie FMutate generated on Allow.
     * `self_node`: the node name Humdinger declared at pairing; FMutate set
@@ -23,6 +23,9 @@ defmodule Humdinger.FMutate.Record do
 
   alias Humdinger.FMutate.Wire
 
+  # The cookie and the TLS key let a node into FMutate: keep them out of
+  # logs and crash reports.
+  @derive {Inspect, except: [:cookie, :key]}
   @enforce_keys [
     :inst,
     :node,
@@ -92,9 +95,28 @@ defmodule Humdinger.FMutate.Record do
 
   def ipv4?(_), do: false
 
-  @doc "Whether the record points at FMutate on this phone."
-  @spec loopback?(t()) :: boolean()
-  def loopback?(%__MODULE__{host: host}), do: String.starts_with?(host, "127.")
+  @doc "Whether the record (or a dotted IPv4 host) points at FMutate on this phone."
+  @spec loopback?(t() | String.t()) :: boolean()
+  def loopback?(%__MODULE__{host: host}), do: loopback?(host)
+  def loopback?(host) when is_binary(host), do: match?({:ok, {127, _, _, _}}, parse(host))
+
+  @doc """
+  Whether `host` is an address FMutate on another phone can have: dotted
+  IPv4, unicast, not loopback, not unspecified. What mDNS says is checked
+  with this before the link follows it.
+  """
+  @spec remote_unicast?(term()) :: boolean()
+  def remote_unicast?(host) when is_binary(host) do
+    case parse(host) do
+      {:ok, {a, _, _, _}} when a in [0, 127] or a >= 224 -> false
+      {:ok, {_, _, _, _}} -> true
+      _ -> false
+    end
+  end
+
+  def remote_unicast?(_), do: false
+
+  defp parse(host), do: :inet.parse_strict_address(String.to_charlist(host))
 
   @doc "Validates a record built from a grant or loaded from storage."
   @spec validate(t()) :: {:ok, t()} | {:error, {:invalid, atom()}}
@@ -104,7 +126,7 @@ defmodule Humdinger.FMutate.Record do
       node: fmutate_node?(record.node),
       host: ipv4?(record.host),
       dist_port: is_integer(record.dist_port) and record.dist_port in 1..65_535,
-      dist_proto: record.dist_proto in [:inet_tcp, :inet_tls],
+      dist_proto: carrier?(record.dist_proto, record.host),
       fp: is_binary(record.fp) and byte_size(record.fp) == 32,
       cookie: cookie?(record.cookie),
       self_node: self_node?(record.self_node),
@@ -117,6 +139,11 @@ defmodule Humdinger.FMutate.Record do
       {field, false} -> {:error, {:invalid, field}}
     end
   end
+
+  # Plain distribution has no integrity after the handshake: loopback only.
+  defp carrier?(:inet_tls, _host), do: true
+  defp carrier?(:inet_tcp, host) when is_binary(host), do: loopback?(host)
+  defp carrier?(_proto, _host), do: false
 
   @doc "The record as JSON, for the secure store."
   @spec to_json(t()) :: String.t()

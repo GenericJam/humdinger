@@ -58,6 +58,25 @@ defmodule Humdinger.FMutate.RecordTest do
     assert Record.validate(record(%{dist_port: 0})) == {:error, {:invalid, :dist_port}}
   end
 
+  test "plain distribution is only valid to FMutate on this phone" do
+    assert Record.validate(record(%{dist_proto: :inet_tcp})) == {:error, {:invalid, :dist_proto}}
+
+    assert {:ok, _} =
+             Record.validate(
+               record(%{dist_proto: :inet_tcp, host: "127.0.0.1", node: "fmutate_a@127.0.0.1"})
+             )
+
+    assert {:ok, _} = Record.validate(record(%{dist_proto: :inet_tls}))
+  end
+
+  test "the cookie and the TLS key never show in inspect (logs, crash reports)" do
+    r = record()
+    shown = inspect(r, limit: :infinity, printable_limit: :infinity)
+    refute shown =~ r.cookie
+    refute shown =~ inspect(r.key, limit: :infinity)
+    assert shown =~ r.node
+  end
+
   test "the secure store keeps, replaces and forgets the pairing" do
     opts = [key: "test.record.#{System.unique_integer([:positive])}"]
     assert Store.load(opts) == :none
