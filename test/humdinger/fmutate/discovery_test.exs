@@ -46,7 +46,12 @@ defmodule Humdinger.FMutate.DiscoveryTest do
     start_supervised!({Responder, opts}, id: make_ref())
   end
 
-  defp browse(targets), do: Discovery.browse(targets: targets, timeout: @timeout)
+  defp browse(targets, timeout \\ @timeout),
+    do: Discovery.browse(targets: targets, timeout: timeout)
+
+  # Tests whose fake responders answer late on purpose browse for longer, so
+  # a busy test run can't push the late reply past the window.
+  @late_timeout 1_000
 
   # A loopback responder that answers each query with `fun.(query)`, a list
   # of datagrams. A reply is only taken when it echoes a query's id.
@@ -188,7 +193,7 @@ defmodule Humdinger.FMutate.DiscoveryTest do
           [reply(query, "FMutate A", forged_txt, target, {10, 0, 0, 66})]
         end)
 
-      assert {:ok, candidates} = browse([genuine, forged])
+      assert {:ok, candidates} = browse([genuine, forged], @late_timeout)
 
       assert candidates |> Enum.map(&{&1.host, &1.node, &1.port, &1.dist_port}) |> Enum.sort() ==
                [
@@ -212,7 +217,7 @@ defmodule Humdinger.FMutate.DiscoveryTest do
         [reply(query, "FMutate A", txt(%{"dport" => "1"}), target, {10, 0, 0, 1})]
       end)
 
-    assert {:ok, candidates} = browse([genuine, forged])
+    assert {:ok, candidates} = browse([genuine, forged], @late_timeout)
 
     assert candidates |> Enum.map(&{&1.host, &1.dist_port}) |> Enum.sort() ==
              [{"10.0.0.1", 1}, {"10.0.0.1", 45_200}]
