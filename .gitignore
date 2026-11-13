@@ -40,3 +40,6 @@ xcuserdata/
 
 # macOS
 .DS_Store
+
+# Gradle reports from native builds
+/android/build/

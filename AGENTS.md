@@ -829,6 +829,81 @@ database helper is `test/support/database.ex`). On the phone, over dist:
 Humdinger.PhrasesScreen)`; drag notes with `adb shell input swipe` on the
 roll; Export/Share/Print open the system share sheet and print dialog.
 
+## Screens: Live, Settings, Spectrum, First run
+
+All four re-render on Engine frames, so every tap target carries
+`on_press_out={held()}` (`Humdinger.Widgets`: segmented controls, chips,
+switches, buttons, Mimi on a canvas, section headings) and each screen's
+tests assert it. Frames arm a token-guarded 33 ms tick (`{:tick, token}`);
+the tick takes the newest frame. Without a screen-size API (Mob's
+`screen_info` is test-only) content sits in a centred 350-wide column,
+the boards' 390 minus 20 a side (30 a side on the 411 dp Moto G).
+
+- **Live** (`Humdinger.LiveScreen`, root). Mount: subscribe to Engine and
+  Output, ask for `:microphone` (then `:notifications`, only for the
+  background notice), `Engine.listen/0`. First launch
+  (`first_run_done` false) pushes First run first and asks for the
+  microphone when First run reports `{:first_run, :done}`. States: listening
+  (note in its pitch colour, `vel N`, tuning meter, `Tracker.cents_label/1`;
+  silent: the last note faint, "hum something" / "listening…"); paused
+  ("Resume", Mimi asleep, "paused · not sending"); no microphone (refused,
+  engine error, or no audio module in the build: Mimi `:no_mic`, what
+  happened, "Try again" / "Open settings"); recording (square stop button,
+  "recording · 0:07"; stop → `Phrase.from_take/2` → push
+  `Humdinger.PhraseScreen` `%{phrase:, return_to: self()}`; an empty take
+  says so). `:hum_again` starts a recording; `{:engine, :phrase_saved, _}`
+  shows "Saved “name”"; frames' `recording` (when present) is followed, except
+  within 0.5 s of a tap here; frames' `background: {:error, _}` adds
+  "listening stops when you leave the app". Canvases are memoised per input
+  key (`refresh/1`), so silence after the roll empties redraws nothing; Mimi
+  blinks on her own timer; the screen is kept awake while the voice is heard
+  and released when Mimi idles, pauses or loses the microphone. Geometry:
+  `LiveFeed` keeps 4.5 s of frames (sung trace, sent notes from the frames'
+  `note`); the roll's centre eases toward the middle of what the last 4 s
+  held (`roll_target/1`, within 4 semitones of the voice); the strip's window
+  is 15 semitones from a white key and moves when the note leaves its inner
+  keys; its overview dims outside the range shifted by octave and transpose.
+  The pill names the first enabled destination and sums up the rest
+  (`destination_summary/2`); Output, Phrases and the review push by module
+  when `Code.ensure_loaded?/1`, else a "not in this build" note.
+- **Settings sheet** (`Humdinger.SettingsSheet`, a `<Sheet>` Live renders
+  while `sheet: :settings`; the scale picker is a second sheet). Every
+  control sends `{:set, field, value}` → `Engine.update_settings/1`. The
+  Sensitivity bar is a dragged canvas: room level (smoothed `db` of unvoiced
+  frames), voice level (voiced), the gate line; saved on the drag's end or
+  after 1 s without drag events (MOB-511). Response shows
+  `Tracker.response_ms/1`; bend chips dim outside Open mode. "Your range …
+  find again ›" pushes First run `%{step: :range, only: true}`. Deviation:
+  the board's dimmed "A4 · still listening" header sits inside the native
+  sheet (as its first row) rather than above it.
+- **Spectrum** (`Humdinger.SpectrumScreen`): `Engine.spectrum(self(), true)`
+  on mount, off in `terminate/2`. Keeps the columns of the last 4 s; a
+  column older than the newest starts over (new listen). The trace is the
+  raw sung pitch (Hz → MIDI) placed at the frame's `t` when it agrees with
+  the columns' clock, else at the newest column's time plus its age.
+  "Notes" pops back.
+- **First run** (`Humdinger.FirstRunScreen`): Mic (asks; refused → Open
+  settings / Try again) · Headphones · Range · Send to (Output's
+  destinations with switches, "More in Output ›"). Range uses
+  `Humdinger.RangeFinder` on the raw sung pitch: a hold starts on a voiced
+  frame, survives gaps ≤ 150 ms and stays within ±1 semitone of its start;
+  2 s sets the lowest, then the highest (a highest not above the lowest is
+  refused). Both in → saved at once with `octave = RangeFinder.octave_for/1`
+  (the shift −3..3 that brings the range's middle nearest E4, MIDI 64: E2–G4
+  → +1). Finishing or Skip saves `first_run_done` and pops; `terminate/2`
+  sends `{:first_run, :done}` to `return_to` however it closes.
+
+Verifying: `mix test test/humdinger/{live_screen,first_run_screen,
+spectrum_screen,range_finder,live_feed}_test.exs` (a real Engine on
+`Humdinger.Test.FakeAudio` and `Humdinger.Test.FakeOutput`;
+`Humdinger.Test.Screens.pump_frame/1` waits for the Engine's frame and the
+screen's tick). `mise exec -- mix run --no-start scripts/preview_screens.exs`
+drives the screens with the boards' data and writes their canvases to
+`/tmp/humdinger_screens/{live,settings,spectrum,first_run}.png`. On the
+phone: deploy, open each screen (`Mob.Test.navigate(node,
+Humdinger.SpectrumScreen)` etc.), `adb exec-out screencap -p`, and tap with
+real `adb shell input tap` (Mob.Test.tap skips the native path).
+
 ## Rules for Mob screens here (from Choir Coach; avoid its traps)
 
 - **Every `on_tap` on a screen that re-renders on a timer** (Live,
