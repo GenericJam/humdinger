@@ -28,6 +28,8 @@ defmodule Humdinger.PhraseScreenTest do
       )
 
       File.rm_rf!(dir)
+      # Mounting a new phrase keeps it as a draft in Mob.State (shared).
+      for {key, _} <- Humdinger.PhraseDraft.all(), do: Humdinger.PhraseDraft.delete(key)
     end)
   end
 
