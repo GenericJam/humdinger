@@ -91,7 +91,10 @@ defmodule Humdinger.SpectrumScreenTest do
 
     FakeAudio.spectrum(ref, column(10, 60))
     view = pump(view)
-    assert [%{t: 10}] = assigns(view).columns
+    # Engine time: the column's audio t plus the listen's offset (0 or a
+    # millisecond or two since the engine started).
+    assert [%{t: t}] = assigns(view).columns
+    assert t in 10..30
   end
 
   test "Notes goes back to Live; every tap target carries the press-out handle" do
