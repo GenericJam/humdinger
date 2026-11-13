@@ -8,8 +8,10 @@
 #   mix mob.connect --no-iex --android-only --device <serial>
 #   SERIAL=<serial> mix run --no-start scripts/engine_check.exs
 #
-# Put the phone next to the Mac's speaker. It changes the saved settings to
-# Scale mode, D Dorian, octave and transpose 0, and leaves the engine off.
+# Put the phone next to the Mac's speaker (VOLUME=<n> scales afplay's
+# volume, default 1). It changes the saved settings to Scale mode, D Dorian,
+# octave and transpose 0, sets the sensitivity 8 dB above the room for the
+# run (then puts it back) and leaves the engine off.
 
 serial = System.fetch_env!("SERIAL")
 app = "com.genericjam.humdinger"
@@ -124,7 +126,7 @@ play = fn tones ->
   for {midi, secs, gap} <- tones do
     path = wav.(440 * :math.pow(2, (midi - 69) / 12), secs)
     started = System.monotonic_time(:microsecond)
-    System.cmd("afplay", [path])
+    System.cmd("afplay", ["-v", System.get_env("VOLUME", "1"), path])
     Process.sleep(gap)
     {midi, started}
   end
@@ -151,6 +153,7 @@ Process.sleep(1_500)
 [{EngineCheck.Collector, _}] = rpc.(Code, :compile_string, [collector_module])
 
 :ok = rpc.(Humdinger.Engine, :stop, [])
+saved_sensitivity = rpc.(Humdinger.Engine, :settings, []).sensitivity_db
 
 {:ok, _} =
   rpc.(Humdinger.Engine, :update_settings, [
@@ -161,18 +164,25 @@ c = rpc.(EngineCheck.Collector, :start, [])
 Process.sleep(200)
 IO.puts("listen: #{inspect(rpc.(Humdinger.Engine, :listen, []))}")
 IO.puts("background service running: #{rpc.(Humdinger.Background, :running?, [])}")
-Process.sleep(800)
-report.(c)
+Process.sleep(1_000)
+
+# Sensitivity as the Settings sheet asks for it: the line above the room
+# noise (its median level + 8 dB).
+room = report.(c).readings |> Enum.flat_map(&elem(&1, 1)) |> Enum.map(& &1.db) |> pct.(0.5)
+{low, high} = Humdinger.Settings.sensitivity_range()
+gate = (room + 8) |> max(low) |> min(high) |> Float.round()
+{:ok, _} = rpc.(Humdinger.Engine, :update_settings, [[sensitivity_db: gate]])
+IO.puts("room #{fmt.(room)} dBFS → sensitivity #{fmt.(gate)} dBFS")
 
 # ── 1. Tones → notes, and how long it takes ───────────────────────────────
 {rtt, offset} = clock_offset.()
 IO.puts("clock: round trip #{fmt.(rtt / 1000)} ms")
-starts = play.([{69, 0.8, 500}, {72, 0.8, 500}, {76, 0.8, 500}, {74, 0.8, 800}])
+starts = play.([{69, 0.8, 500}, {72, 0.8, 500}, {76, 0.8, 500}, {74, 0.8, 500}, {67, 0.8, 800}])
 st = report.(c)
 ons = note_ons.(st)
 
 IO.puts(
-  "\n1. Tones A4 C5 E5 D5 → note ons: #{inspect(Enum.map(ons, fn {_, n, v} -> {Humdinger.Music.note_name(n), v} end))}"
+  "\n1. Tones A4 C5 E5 D5 G4 → note ons (velocity): #{inspect(Enum.map(ons, fn {_, n, v} -> {Humdinger.Music.note_name(n), v} end))}"
 )
 
 for {midi, mac_start} <- starts do
@@ -219,8 +229,11 @@ report.(c)
 # ── 3. In the background ──────────────────────────────────────────────────
 adb.(~w(shell input keyevent KEYCODE_HOME))
 Process.sleep(1_000)
-play.([{69, 1.0, 300}])
+# Read the notification while a tone still sounds.
+playing = Task.async(fn -> play.([{69, 1.5, 300}]) end)
+Process.sleep(1_000)
 mid = notification.()
+Task.await(playing)
 play.([{74, 1.0, 600}])
 st = report.(c)
 
@@ -269,3 +282,4 @@ IO.puts(
 )
 
 send(c, :exit)
+{:ok, _} = rpc.(Humdinger.Engine, :update_settings, [[sensitivity_db: saved_sensitivity]])
