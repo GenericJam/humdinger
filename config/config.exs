@@ -17,7 +17,11 @@ config :humdinger, device_calls: config_env() != :test
 config :humdinger,
   audio: if(config_env() == :test, do: Humdinger.Audio.Fake, else: Humdinger.Audio.Native)
 
-# Host tests use a fresh in-memory database each time the Repo starts.
 if config_env() == :test do
+  # Host tests use a fresh in-memory database each time the Repo starts.
   config :humdinger, Humdinger.Repo, database: ":memory:", log: false
+
+  # Host tests keep secure-store values (the FMutate pairing) in a scratch
+  # directory instead of the developer's data dir.
+  config :mob_secure_store, dir: Path.join(System.tmp_dir!(), "humdinger_test_secure_store")
 end

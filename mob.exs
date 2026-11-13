@@ -53,11 +53,23 @@ config :mob_dev,
 # Zig NIF), part of this repo.
 # mob_camera + mob_scanner: scanning FMutate's pairing QR code (mob_scanner
 # needs mob_camera, which owns the :camera permission).
-config :mob, :plugins, [:mob_midi, :humdinger_midi_port, :mob_camera, :mob_scanner]
+# mob_secure_store: the FMutate pairing (cookie, client key) in the Android
+# Keystore / iOS Keychain.
+config :mob, :plugins, [
+  :mob_midi,
+  :humdinger_midi_port,
+  :mob_camera,
+  :mob_scanner,
+  :mob_secure_store
+]
 
 # humdinger_midi_port is this app's own code, reviewed with it, so it builds
 # unsigned instead of carrying a signing key (mob_dev prints a banner).
-config :mob, :acknowledge_unsafe_plugins, [:humdinger_midi_port]
+# mob_secure_store isn't released yet, so its checkout carries no signature
+# for the trust gate below. It is a git dependency pinned to a commit (mix.lock)
+# of the same first-party repo; once it is on Hex, drop it from this list and
+# add it to :trusted_plugins with the shared release key like the others.
+config :mob, :acknowledge_unsafe_plugins, [:humdinger_midi_port, :mob_secure_store]
 
 # Trust gate for the first-party plugins. Each is signed in CI with the shared
 # mob release key; this is that key's public fingerprint. The build refuses an
