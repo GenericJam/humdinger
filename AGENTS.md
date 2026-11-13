@@ -766,33 +766,78 @@ only), `ERL_NIF_INIT(Elixir.Humdinger.Audio.Nif, …)`. It includes
 `pitch_yin.c` and `spectrum.c`, which are plain C and build on the Mac.
 
 - **Microphone.** AAudio input, low-latency performance mode, shared, mono
-  float at the device's rate (48 kHz, 192-frame bursts = 4 ms on the moto g
-  power 2021), VOICE_RECOGNITION preset (no AGC or noise suppression), into
+  float at the device's rate (48 kHz everywhere so far), VOICE_PERFORMANCE
+  preset (VOICE_RECOGNITION before Android 10, where it doesn't exist), into
   a lock-free ring. Opened with dlopen (the app links android-24 headers).
-  `RECORD_AUDIO` is checked over JNI first (`{:error, :permission}`).
+  `RECORD_AUDIO` is checked over JNI first (`{:error, :permission}`). Why
+  that preset, measured with `realtime_check.exs PRESETS=1` (room level,
+  then a 220 Hz tone from the Mac at `afplay -v 8`, 5 s each):
+
+  | phone | preset | burst | room | tone (± spread) |
+  |---|---|---|---|---|
+  | moto e 2020 (A10, armv7) | VOICE_RECOGNITION | 240 | | −21.5 ± 0.2 |
+  | | VOICE_PERFORMANCE | 240 | | −21.6 ± 0.1 |
+  | | UNPROCESSED | 240 | | −18.6 ± 0.1 |
+  | moto g power 2021 (A11) | VOICE_RECOGNITION | 192 | −58.5 | −40.2 ± 3.6 |
+  | | VOICE_PERFORMANCE | 192 | −59.4 | −29.0 ± 3.1 |
+  | | UNPROCESSED | 960 | −62.5 | −31.8 ± 3.2 |
+  | moto g power 5G 2024 (A15) | VOICE_RECOGNITION | 960 (not low latency) | −51.6 | −21.7 ± 0.2 |
+  | | VOICE_PERFORMANCE | 240 | −51.2 | −20.7 ± 0.1 |
+  | | UNPROCESSED | 960 | −69.2 | −44.1 ± 0.1 |
+
+  None shows AGC (a steady tone stays steady; the moto g 2021's ±3 dB is
+  the room, alike in every preset) and all hear the tone's pitch alike.
+  VOICE_PERFORMANCE ("live performance": no processing, low latency) is
+  never worse: it keeps the moto g 2021's voice 11 dB further above its
+  room than VOICE_RECOGNITION, and gets the 2024 phone's low-latency path
+  (5 ms bursts instead of 20 ms). UNPROCESSED is optional per device and
+  hears the 2024 phone's voice 22 dB quieter. `Nif.set_input_preset/1`
+  exists only for such measurements.
 - **Readings.** A listen thread (priority −16, Android's audio priority)
   runs YIN every 255 samples (5.3 ms) over a 42 ms window decimated to
   16 kHz, range 60–1600 Hz (a hummed bass to a whistle): threshold 0.15,
-  pitched when the dip is ≤ 0.35, nothing below −70 dBFS. Readings go out
-  in pairs (or alone after 6 ms) as finished `%{t, hz, clarity, db}` maps:
-  the BEAM only receives them. `t` is the window's middle, ms since the
-  `listen/2` call.
-- **Spectrum.** Every 1/30 s while on: Hann window over the last 4096
-  samples (85 ms); bands narrower than two FFT bins (< ~680 Hz) are the
-  window's DFT at the band centre (Goertzel), wider ones the largest bin of
-  a radix-2 FFT inside them; levels as sine amplitude, −90 → 0 … −10 dBFS →
-  255.
+  pitched when the dip is ≤ 0.35, nothing below −70 dBFS. The difference
+  function, most of a reading, sums in eight independent partial sums
+  (NEON on arm64, VFP registers on 32-bit ARM). Readings go out in pairs
+  (or alone after 6 ms) as finished `%{t, hz, clarity, db}` maps: the BEAM
+  only receives them. `t` is the window's middle, ms since the `listen/2`
+  call. More than 30 ms of unread audio (or two bursts and a hop, or a
+  window and a hop) means the thread is behind: it restarts on the newest
+  window and drops the readings in between (`skipped_ms`, `skips` in
+  `info/0`) rather than deliver them late.
+- **Spectrum.** Every 1/30 s while on, and only when the readings have
+  caught up: Hann window over the last 4096 samples (85 ms); bands narrower
+  than two FFT bins (< ~680 Hz) read a second, zoomed FFT of the same
+  window low-passed and decimated by 4 (bins 2.9 Hz apart), interpolated at
+  the band centre (Goertzel at rates too low to decimate); wider bands the
+  largest bin of the radix-2 FFT inside them; levels as sine amplitude,
+  −90 → 0 … −10 dBFS → 255.
+- **32-bit ARM.** zig builds `armeabi-v7a` soft-float by default (its
+  androideabi ABI), which turns every C float operation into a library
+  call: a reading cost 11 ms on the moto e 2020, more than its 5.3 ms hop,
+  so readings arrived seconds late. `android/app/src/main/jni/build.zig`
+  adds `-mfloat-abi=softfp` for that ABI (hardware VFP/NEON, floats passed
+  in core registers as the NDK's armeabi-v7a does, so it links with the
+  rest), and `hum_audio.c` refuses to compile soft-float. NEON vector
+  intrinsics still don't compile under zig's settings there (the backend
+  crashes), hence scalar partial sums on 32-bit ARM. The same template
+  flaw affects every app built from mob_new's `build.zig` that does float
+  math in C on armeabi-v7a.
 - **Files.** `analyze_file/3`: AMediaExtractor + AMediaCodec on a thread
-  per file (m4a/AAC, MP3, WAV, Ogg Opus all checked on the moto g),
+  per owner (m4a/AAC, MP3, WAV, Ogg Opus all checked on the moto g),
   mixed to mono and analysed as it decodes (only the readings are kept):
   readings every 10 ms, a peak byte per 50 ms. A container longer than
   10 min is refused before decoding (`:too_long`). `Mob.Files.pick/2` hands
   over a copied local path (never a `content://` URI), so paths are all it
   takes. A job ends early and sends nothing on `cancel_analysis/1`, on a
   newer analysis by the same owner (one per owner), or when the owner
-  exits (monitored); the decoder checks its cancel flag every buffer. At
-  most two owners analyse at once (a third gets `{:error, :busy}`).
-  `info/0`'s `analyses` counts the threads still running. The Import
+  exits (monitored); the decoder checks its cancel flag every buffer. Each
+  owner has one thread: a newer analysis while the owner's previous one is
+  still stopping waits for that thread, which then runs it, and an even
+  newer one replaces the waiting one, so a burst of replacements never
+  piles up decoders. While two other owners have a thread running
+  (cancelled ones too, until they notice) a third owner gets `{:error,
+  :busy}`. `info/0`'s `analyses` counts the running threads. The Import
   screen cancels its analysis on Back, on `terminate/2` and before another
   file.
 - **Background.** `HumListenService` (host package,
@@ -825,6 +870,27 @@ available in shared mode (`input_latency_ms: -1`), so the latencies above
 start at the callback that delivered the samples (192 frames = 4 ms
 bursts).
 
+Keeping up, `scripts/realtime_check.exs` (5 s each; "lag" is `info/0`'s:
+from the input callback that delivered a batch's newest sample to the send,
+the stream's burst comes before it; "reading" and "column" are what one
+costs on the listen thread, which a phone at rest runs at a low clock):
+
+| phone | build | readings/s | lag p50 / p95 / max | reading | column |
+|---|---|---|---|---|---|
+| moto e 2020 (armv7) | before (soft-float, master) | ≈ 92 | mean ≈ 850, max ≈ 2800 | — | — |
+| | soft-float + catch-up | 82 (1.2 s skipped / 5 s) | p95 ≈ 64 | 11.2 ms | 44 ms |
+| | now, spectrum off | 188 | 2.0 / 2.5 / 8 | 0.6–0.7 ms | — |
+| | now, spectrum on | 188 | 2.0 / 5.5 / 9 | 0.65 ms | 5.3 ms |
+| moto g power 2021 (arm64) | before, spectrum on | 188 | (old metric) max 19 | 1.36–1.7 ms | 9.2 ms |
+| | now, spectrum on | 188 | 1.5 / 8.0 / 10 | 0.45 ms | 4.5–5.1 ms |
+| moto g power 5G 2024 | now, VOICE_RECOGNITION (20 ms bursts) | 188 | 1.0 / 7.5 / 9 | 0.06 ms | 0.6 ms |
+| | now, VOICE_PERFORMANCE (5 ms bursts) | 188 | 1.5 / 3.5 / 9 | 0.07–0.3 ms | 0.6–3 ms |
+
+The p95 near 8 ms on some rows is the 6 ms wait of a lone reading for its
+partner. Host (Apple silicon, `-Os`): a reading 90 → 13 µs, a column 455
+→ 69 µs; the host harness's numbers (cents, octave errors, voiced share)
+are unchanged to the printed digit.
+
 How to check it:
 
 - Host, detector: `cc -O2 -o /tmp/pitch_host c_src/test/pitch_host.c -lm &&
@@ -854,6 +920,13 @@ How to check it:
   app's uid through `run-as`, the path a tap in the shade takes),
   listening from the background, update and stop.
   `Humdinger.Audio.Native.info/0` reports the stream and delivery counters.
+- Device, keeping up: `SERIAL=<serial> mix run --no-start
+  scripts/realtime_check.exs` listens with the spectrum off, then on, and
+  prints readings/s, batch size, capture→mailbox delay p50/p95/max, what a
+  reading and a column cost, and audio skipped; `PRESETS=1` compares the
+  input presets on a 220 Hz tone from the Mac (`afplay -v 8`).
+  `scripts/first_run_check.exs` plays 220 Hz then 330 Hz and checks the
+  First run range step takes {A3, E4}.
 - Device, the service's lifecycle: `SERIAL=<serial> mix run --no-start
   scripts/background_check.exs` (grant POST_NOTIFICATIONS on Android 13+):
   20 × start then immediate stop, start/stop/start, 30 updates then stop,
@@ -863,8 +936,9 @@ How to check it:
 - Device, file analyses ending: `SERIAL=<serial> mix run --no-start
   scripts/analysis_check.exs` with a long (< 10 min) file pushed into the
   app's `files/`: cancel_analysis, a second analysis by the same owner, the
-  owner's death, the two-owner cap, and the Import screen (another file,
-  Back, pop); each checks the running count, the app's CPU and logcat.
+  owner's death, the two-owner cap, a burst of 20 replacements (at most one
+  thread), and the Import screen (another file, Back, pop); each checks the
+  running count, the app's CPU and threads, and logcat.
 
 ## FMutate link
 

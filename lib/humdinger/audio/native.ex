@@ -4,13 +4,16 @@ defmodule Humdinger.Audio.Native do
   (`c_src/hum_audio.c`, Android).
 
   The microphone is an AAudio input stream in low-latency mode (mono, the
-  device's rate, 48 kHz on the phones tried; VOICE_RECOGNITION preset, so no
-  automatic gain or noise suppression bends the pitch). A thread reads it
-  and runs YIN (`c_src/pitch_yin.c`, 60–1600 Hz, from a hummed bass to a
-  whistle) over a 42 ms window every 5.3 ms, and, while asked, a spectrum
-  column (`c_src/spectrum.c`) every 1/30 s. The NIF sends readings in
-  batches of two (or one that has waited 6 ms), already as
-  `%{t, hz, clarity, db}` maps, so the owner does no decoding.
+  device's rate, 48 kHz on the phones tried; VOICE_PERFORMANCE preset, or
+  VOICE_RECOGNITION before Android 10, so no automatic gain or noise
+  suppression bends the pitch). A thread reads it and runs YIN
+  (`c_src/pitch_yin.c`, 60–1600 Hz, from a hummed bass to a whistle) over a
+  42 ms window every 5.3 ms, and, while asked, a spectrum column
+  (`c_src/spectrum.c`) every 1/30 s. The NIF sends readings in batches of
+  two (or one that has waited 6 ms), already as `%{t, hz, clarity, db}`
+  maps, so the owner does no decoding. A phone too slow to keep up loses
+  readings (the thread skips to the newest audio) rather than delivering
+  them late.
 
   The sensitivity gate is not here: a reading carries `hz` whenever the
   window was pitched at all (above −70 dBFS); the Tracker decides what counts.

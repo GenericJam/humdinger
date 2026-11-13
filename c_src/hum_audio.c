@@ -3,17 +3,19 @@
  * analysis of audio files, and the background-listening service (Android).
  *
  *   input callback   AAudio microphone, low-latency mode, mono float
- *                    (VOICE_RECOGNITION preset: no AGC or noise suppression
- *                    bending the pitch) into a lock-free ring.
+ *                    (VOICE_PERFORMANCE preset, VOICE_RECOGNITION before
+ *                    Android 10: neither applies AGC or noise suppression)
+ *                    into a lock-free ring.
  *   listen thread    YIN (pitch_yin.c) every hop (~5.3 ms) over a 42 ms
  *                    window, and a spectrum column (spectrum.c) every 1/30 s
  *                    while asked for. Readings go to the owner in batches as
  *                    soon as two are ready (or one has waited 6 ms), so each
  *                    message leaves within ~12 ms of the newest sample's
- *                    arrival.
+ *                    arrival. A thread that falls behind restarts on the
+ *                    newest audio rather than deliver late readings.
  *   file threads     analyze_file/3: AMediaExtractor + AMediaCodec decode a
  *                    file, mixed down to mono and analysed as it decodes
- *                    (nothing but the readings is kept), one thread per file.
+ *                    (nothing but the readings is kept), one thread per owner.
  *                    A job ends early, silently, on cancel_analysis/1, on a
  *                    newer analysis by the same owner, or when the owner
  *                    dies; at most MAX_ANALYSES owners analyse at once.
@@ -316,6 +318,12 @@ typedef struct {
     _Atomic int64_t sum_ns, max_ns, count;
 } cost;
 
+/* Batch lag histogram: LAG_BUCKET_US wide, the last bucket is "more". */
+#define LAG_BUCKETS 200
+#define LAG_BUCKET_US 500
+/* Recent input callbacks: the ring index they delivered up to, and when. */
+#define ARRIVALS 64
+
 static struct {
     pthread_mutex_t lock;
     pthread_mutex_t send_lock;
@@ -346,11 +354,16 @@ static struct {
     _Atomic int64_t callbacks, last_burst;
     _Atomic int64_t readings_sent, batches_sent, spectra_sent;
     _Atomic int64_t lag_sum_ns, lag_max_ns;
+    _Atomic int64_t lag_hist[LAG_BUCKETS];
+    struct {
+        _Atomic int64_t end, ns;
+    } arrivals[ARRIVALS];
+    _Atomic int64_t arrivals_n;
     cost detect_cost, column_cost;  /* one pitch reading, one spectrum column */
     _Atomic int64_t skipped, skips; /* audio dropped to catch up */
 
     int in_burst;          /* the stream's frames per burst */
-    _Atomic int32_t preset; /* AAudio input preset for the next listen */
+    _Atomic int32_t preset; /* AAudio input preset for the next listen (VOICE_PERFORMANCE) */
 } E;
 
 static ERL_NIF_TERM atom(ErlNifEnv *env, const char *name) { return enif_make_atom(env, name); }
@@ -450,6 +463,9 @@ static int32_t input_cb(AAudioStream *s, void *user, void *data, int32_t frames)
     int64_t w = atomic_load_explicit(&E.written, memory_order_relaxed);
     for (int32_t i = 0; i < frames; i++) E.ring[(w + i) & (RING_SIZE - 1)] = x[i];
     atomic_store_explicit(&E.written, w + frames, memory_order_release);
+    int64_t k = atomic_fetch_add_explicit(&E.arrivals_n, 1, memory_order_relaxed) & (ARRIVALS - 1);
+    atomic_store_explicit(&E.arrivals[k].end, w + frames, memory_order_relaxed);
+    atomic_store_explicit(&E.arrivals[k].ns, now_ns(), memory_order_relaxed);
     atomic_fetch_add_explicit(&E.callbacks, 1, memory_order_relaxed);
     atomic_store_explicit(&E.last_burst, frames, memory_order_relaxed);
     return AA_CALLBACK_CONTINUE;
@@ -469,7 +485,7 @@ static void input_error_cb(AAudioStream *s, void *user, aaudio_result_t err) {
     send_to_listener(generation, env, enif_make_tuple2(env, atom(env, "error"), atom(env, reason)));
 }
 
-static aaudio_result_t open_input_on(int32_t device, uint64_t generation) {
+static aaudio_result_t open_input_on(int32_t device, int32_t preset, uint64_t generation) {
     AAudioStreamBuilder *b;
     aaudio_result_t r = aa.createStreamBuilder(&b);
     if (r != AA_OK) return r;
@@ -479,7 +495,7 @@ static aaudio_result_t open_input_on(int32_t device, uint64_t generation) {
     aa.setFormat(b, AA_FORMAT_PCM_FLOAT);
     aa.setSharingMode(b, AA_SHARING_SHARED);
     aa.setPerformanceMode(b, AA_PERF_LOW_LATENCY);
-    aa.setInputPreset(b, atomic_load(&E.preset));
+    aa.setInputPreset(b, preset);
     aa.setDataCallback(b, input_cb, NULL);
     aa.setErrorCallback(b, input_error_cb, (void *)(uintptr_t)generation);
     AAudioStream *s = NULL;
@@ -513,11 +529,22 @@ static void send_batch(uint64_t generation, batch *b, int64_t newest_sample) {
     for (int i = b->count - 1; i >= 0; i--) list = enif_make_list_cell(env, reading_term(env, &b->items[i], keys), list);
     send_to_listener(generation, env, enif_make_tuple2(env, atom(env, "readings"), list));
 
-    /* Lag: from the arrival of the newest sample analysed to the send. */
-    int64_t first = atomic_load(&E.first_ns);
-    int64_t lag = now_ns() - (first + (int64_t)((double)newest_sample * 1e9 / E.in_rate));
-    atomic_fetch_add(&E.lag_sum_ns, lag);
-    if (lag > atomic_load(&E.lag_max_ns)) atomic_store(&E.lag_max_ns, lag);
+    /* Lag: from the input callback that delivered the newest sample analysed
+     * to the send (what this engine adds; the stream's own buffering, a burst
+     * at most, comes before). Diagnostics: a callback overwriting an entry
+     * mid-read only skews one batch. */
+    int64_t now = now_ns(), arrived = -1, n = atomic_load_explicit(&E.arrivals_n, memory_order_relaxed);
+    for (int64_t k = n - 1; k >= 0 && k >= n - ARRIVALS; k--) {
+        if (atomic_load_explicit(&E.arrivals[k & (ARRIVALS - 1)].end, memory_order_relaxed) < newest_sample) break;
+        arrived = atomic_load_explicit(&E.arrivals[k & (ARRIVALS - 1)].ns, memory_order_relaxed);
+    }
+    if (arrived > 0 && arrived <= now) {
+        int64_t lag = now - arrived;
+        atomic_fetch_add(&E.lag_sum_ns, lag);
+        if (lag > atomic_load(&E.lag_max_ns)) atomic_store(&E.lag_max_ns, lag);
+        int64_t bucket = lag / (LAG_BUCKET_US * 1000LL);
+        atomic_fetch_add_explicit(&E.lag_hist[bucket < LAG_BUCKETS ? bucket : LAG_BUCKETS - 1], 1, memory_order_relaxed);
+    }
     atomic_fetch_add(&E.batches_sent, 1);
     atomic_fetch_add(&E.readings_sent, b->count);
     b->count = 0;
@@ -1433,10 +1460,17 @@ static ERL_NIF_TERM nif_listen(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv
         return error_tuple(env, "microphone_unavailable");
     }
     uint64_t generation = atomic_fetch_add(&E.generation, 1) + 1;
-    aaudio_result_t r = open_input_on(device, generation);
+    int32_t preset = atomic_load(&E.preset);
+    aaudio_result_t r = open_input_on(device, preset, generation);
+    if (r != AA_OK && preset == AA_PRESET_VOICE_PERFORMANCE) {
+        /* VOICE_PERFORMANCE is Android 10+. */
+        LOGE("input preset %d refused (%d): using VOICE_RECOGNITION", preset, r);
+        preset = AA_PRESET_VOICE_RECOGNITION;
+        r = open_input_on(device, preset, generation);
+    }
     if (r != AA_OK && device > 0) {
         LOGE("input device %d unavailable (%d): using the default", device, r);
-        r = open_input_on(AA_UNSPECIFIED, generation);
+        r = open_input_on(AA_UNSPECIFIED, preset, generation);
     }
     if (r != AA_OK) {
         LOGE("input open failed: %d", r);
@@ -1455,6 +1489,9 @@ static ERL_NIF_TERM nif_listen(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv
     atomic_store(&E.spectra_sent, 0);
     atomic_store(&E.lag_sum_ns, 0);
     atomic_store(&E.lag_max_ns, 0);
+    memset((void *)E.lag_hist, 0, sizeof(E.lag_hist));
+    atomic_store(&E.arrivals_n, 0);
+    memset((void *)E.arrivals, 0, sizeof(E.arrivals));
     memset((void *)&E.detect_cost, 0, sizeof(E.detect_cost));
     memset((void *)&E.column_cost, 0, sizeof(E.column_cost));
     atomic_store(&E.skipped, 0);
@@ -1759,12 +1796,25 @@ static ERL_NIF_TERM nif_background_running(ErlNifEnv *env, int argc, const ERL_N
     return atom(env, running ? "true" : "false");
 }
 
+/* The lag below which `share` of the batches since listen were sent (the
+ * histogram bucket's upper edge), ms; −1 before any. */
+static double lag_percentile(double share) {
+    int64_t total = 0, seen = 0;
+    for (int i = 0; i < LAG_BUCKETS; i++) total += atomic_load_explicit(&E.lag_hist[i], memory_order_relaxed);
+    if (total == 0) return -1.0;
+    for (int i = 0; i < LAG_BUCKETS; i++) {
+        seen += atomic_load_explicit(&E.lag_hist[i], memory_order_relaxed);
+        if (seen >= share * total) return (i + 1) * LAG_BUCKET_US / 1000.0;
+    }
+    return LAG_BUCKETS * LAG_BUCKET_US / 1000.0;
+}
+
 /* info() -> map of diagnostics: the stream, and how readings have been
  * delivered since listen. Dirty IO (takes the lock). */
 static ERL_NIF_TERM nif_info(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
     (void)argc;
     (void)argv;
-    enum { N = 24 };
+    enum { N = 26 };
     /* File analysis threads running (cancelled ones until they notice). */
     int analyses = 0;
     pthread_mutex_lock(&FJ.lock);
@@ -1782,6 +1832,8 @@ static ERL_NIF_TERM nif_info(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]
     int64_t batches = atomic_load(&E.batches_sent);
     int64_t first = atomic_load(&E.first_ns);
     int64_t detect_n = atomic_load(&E.detect_cost.count), column_n = atomic_load(&E.column_cost.count);
+    int64_t lag_n = 0;
+    for (int i = 0; i < LAG_BUCKETS; i++) lag_n += atomic_load_explicit(&E.lag_hist[i], memory_order_relaxed);
     ERL_NIF_TERM keys[N] = {atom(env, "libraries"),     atom(env, "listening"),       atom(env, "rate"),
                             atom(env, "device"),        atom(env, "burst"),           atom(env, "buffer"),
                             atom(env, "low_latency"),   atom(env, "xruns"),           atom(env, "callbacks"),
@@ -1790,7 +1842,8 @@ static ERL_NIF_TERM nif_info(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]
                             atom(env, "input_latency_ms"), atom(env, "analyses"), atom(env, "preset"),
                             atom(env, "detect_us_mean"), atom(env, "detect_us_max"),
                             atom(env, "column_us_mean"), atom(env, "column_us_max"),
-                            atom(env, "skipped_ms"), atom(env, "skips")};
+                            atom(env, "skipped_ms"), atom(env, "skips"), atom(env, "lag_p50_ms"),
+                            atom(env, "lag_p95_ms")};
     ERL_NIF_TERM vals[N] = {
         libs_ok ? atom(env, "ok") : atom(env, libs_error ? libs_error : "unknown"),
         atom(env, s && atomic_load(&E.run) ? "true" : "false"),
@@ -1805,7 +1858,7 @@ static ERL_NIF_TERM nif_info(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]
         enif_make_int64(env, atomic_load(&E.readings_sent)),
         enif_make_int64(env, batches),
         enif_make_int64(env, atomic_load(&E.spectra_sent)),
-        enif_make_double(env, batches ? atomic_load(&E.lag_sum_ns) / 1e6 / batches : 0.0),
+        enif_make_double(env, lag_n ? atomic_load(&E.lag_sum_ns) / 1e6 / lag_n : 0.0),
         enif_make_double(env, atomic_load(&E.lag_max_ns) / 1e6),
         enif_make_double(env, first >= 0 ? input_latency_ms : -1.0),
         enif_make_int(env, analyses),
@@ -1816,6 +1869,8 @@ static ERL_NIF_TERM nif_info(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]
         enif_make_double(env, atomic_load(&E.column_cost.max_ns) / 1e3),
         enif_make_double(env, s ? 1000.0 * atomic_load(&E.skipped) / E.in_rate : 0.0),
         enif_make_int64(env, atomic_load(&E.skips)),
+        enif_make_double(env, lag_percentile(0.50)),
+        enif_make_double(env, lag_percentile(0.95)),
     };
     pthread_mutex_unlock(&E.lock);
     ERL_NIF_TERM map;
@@ -1823,10 +1878,10 @@ static ERL_NIF_TERM nif_info(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]
     return map;
 }
 
-/* set_input_preset(voice_recognition | unprocessed | voice_performance |
+/* set_input_preset(voice_performance | voice_recognition | unprocessed |
  * generic) -> ok: the AAudio input preset the next listen opens with. For
  * measuring a phone (scripts/realtime_check.exs); the app keeps the default,
- * voice_recognition. */
+ * voice_performance (see AGENTS.md, "The audio engine"). */
 static ERL_NIF_TERM nif_set_input_preset(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
     (void)argc;
     char name[24];
@@ -1849,7 +1904,7 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     pthread_mutex_init(&BG.lock, NULL);
     pthread_mutex_init(&FJ.lock, NULL);
     atomic_store(&E.first_ns, -1);
-    atomic_store(&E.preset, AA_PRESET_VOICE_RECOGNITION);
+    atomic_store(&E.preset, AA_PRESET_VOICE_PERFORMANCE);
     ErlNifResourceTypeInit init = {.dtor = NULL, .stop = NULL, .down = listener_down, .members = 3};
     listener_type = enif_init_resource_type(env, "hum_audio_listener", &init, ERL_NIF_RT_CREATE, NULL);
     if (!listener_type) return 1;

@@ -76,9 +76,10 @@ defmodule Humdinger.Audio.Nif do
   def info, do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
-  The AAudio input preset the next listen opens with: `:voice_recognition`
-  (the default, what the app uses), `:unprocessed`, `:voice_performance` or
-  `:generic`. For comparing presets on a phone (`scripts/realtime_check.exs`).
+  The AAudio input preset the next listen opens with: `:voice_performance`
+  (the default, what the app uses; `:voice_recognition` before Android 10),
+  `:voice_recognition`, `:unprocessed` or `:generic`. For comparing presets
+  on a phone (`scripts/realtime_check.exs`).
   """
   def set_input_preset(_preset), do: :erlang.nif_error(:nif_not_loaded)
 end
