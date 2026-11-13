@@ -44,15 +44,19 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
 import java.io.IOException
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import org.json.JSONArray
 import org.json.JSONObject
 
 object HumdingerMidiBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPermissionProvider {
     @JvmStatic external fun nativeRegister()
 
-    // {:humdinger_midi, tag, json} to the subscribed pid.
-    @JvmStatic external fun nativeDeliver(pid: Long, tag: String, json: String)
+    // {:humdinger_midi, tag, json} to the subscribed pid. The JSON goes as
+    // UTF-8 bytes: a String would reach the NIF as modified UTF-8.
+    @JvmStatic external fun nativeDeliver(pid: Long, tag: String, json: ByteArray)
 
     // portSend() results; humdinger_midi_port_nif.zig maps them to
     // :ok / {:error, :no_client} / {:error, :send_failed}.
@@ -125,7 +129,7 @@ object HumdingerMidiBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPe
 
     private fun deliver(tag: String, json: JSONObject) {
         val pid = subscriber
-        if (pid != 0L) nativeDeliver(pid, tag, json.toString())
+        if (pid != 0L) nativeDeliver(pid, tag, json.toString().toByteArray(Charsets.UTF_8))
     }
 
     // ── The Humdinger port ──────────────────────────────────────────────────
@@ -150,17 +154,28 @@ object HumdingerMidiBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPe
     @JvmStatic
     fun portConnections(): Int = connections
 
+    // Writes to the port happen on one thread of their own: MidiReceiver.send
+    // writes to a socket per connected app and blocks while a client stops
+    // reading, which must not hold up the BEAM. A full queue (a client stuck
+    // for 512 messages) drops the newest bytes, as a cable would.
+    private val portWriter = ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue(512), ThreadPoolExecutor.DiscardPolicy(),
+    )
+
     @JvmStatic
     fun portSend(bytes: ByteArray): Int {
         val s = service ?: return SEND_NO_CLIENT
         if (connections == 0) return SEND_NO_CLIENT
         val receiver = s.outputPortReceivers?.firstOrNull() ?: return SEND_NO_CLIENT
-        return try {
-            receiver.send(bytes, 0, bytes.size, System.nanoTime())
-            SEND_OK
-        } catch (e: IOException) {
-            SEND_FAILED
+        val timestamp = System.nanoTime()
+        portWriter.execute {
+            try {
+                receiver.send(bytes, 0, bytes.size, timestamp)
+            } catch (e: IOException) {
+                // The client went away mid-send; the status callback follows.
+            }
         }
+        return SEND_OK
     }
 
     // ── Devices ─────────────────────────────────────────────────────────────
@@ -187,10 +202,10 @@ object HumdingerMidiBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPe
 
     @JvmStatic
     @Suppress("DEPRECATION") // getDevicesForTransport is API 33+
-    fun devices(): String {
+    fun devices(): ByteArray {
         val arr = JSONArray()
         midiManager()?.devices?.forEach { arr.put(describe(it)) }
-        return arr.toString()
+        return arr.toString().toByteArray(Charsets.UTF_8)
     }
 
     // The address is the Bluetooth device's ("" for USB and virtual devices),
@@ -243,8 +258,9 @@ object HumdingerMidiBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPe
         val adapter = bluetoothAdapter(ctx) ?: return "no_bluetooth"
         if (!hasBluetoothPermissions(ctx)) return "no_permission"
         if (!adapter.isEnabled) return "bluetooth_off"
-        // API <= 30 scans find nothing while location is switched off.
-        if (Build.VERSION.SDK_INT <= 30 && !locationOn(ctx)) return "location_off"
+        // Scans find nothing while location is switched off: on API <= 30
+        // always, on 31+ because BLUETOOTH_SCAN isn't neverForLocation here.
+        if (!locationOn(ctx)) return "location_off"
         val leScanner = adapter.bluetoothLeScanner ?: return "bluetooth_off"
         main.post { startScan(leScanner, ms) }
         return ""

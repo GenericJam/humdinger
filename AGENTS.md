@@ -518,10 +518,12 @@ Humdinger.GalleryScreen)`. Tests: `test/humdinger/views/*`,
 Tracker events once on the channel and sends every message to each
 destination that is enabled (Settings `destinations`) and available. It
 tracks the notes it left sounding per destination as `{channel, note}`:
-turning a destination off sends it exactly those note-offs (USB/Bluetooth
-outputs are closed after), `panic/0` sends them plus CC 123 on every channel
-used and the current one, and a destination that drops out (FMutate
-disconnects, a device is unplugged) forgets its notes.
+turning a destination off sends it exactly those note-offs, then pitch bend
+centre, CC 1 = 0 and CC 11 = 127 on each channel it used and the current one
+(USB/Bluetooth outputs are closed after); `panic/0` sends the note-offs, CC
+123 and the same resets; a destination that drops out (FMutate disconnects,
+a device is unplugged, the last app leaves the port) forgets its notes.
+Nothing is sent to the port while no app has it open.
 
 | Row (board `output`) | `detail` |
 |---|---|
@@ -546,9 +548,12 @@ holds:
   `<output-port name="Humdinger">` (a service's output port is what other
   apps receive from). Android lists it whenever the app is installed and
   binds the service in the app's process when an app opens the port.
-  `Humdinger.Output.Port.send/1` → `portSend` → the port's
-  `getOutputPortReceivers()[0].send(bytes, 0, n, System.nanoTime())`; with no
-  app connected it returns `{:error, :no_client}` and the bytes are dropped.
+  `Humdinger.Output.Port.send/1` → `portSend` (a dirty IO NIF whose thread
+  stays attached to the JVM) → queued for the port's own writer thread,
+  which calls `getOutputPortReceivers()[0].send(bytes, 0, n, timestamp)`, so
+  a client that stops reading can't block the BEAM (a full queue of 512
+  drops). With no app connected it returns `{:error, :no_client}`. JSON from
+  the bridge travels as UTF-8 `byte[]`, not as a JNI String (modified UTF-8).
   `connections/0` comes from `onDeviceStatusChanged`
   (`getOutputPortOpenCount(0)`).
 - **Device watcher** (`MidiManager.DeviceCallback`) and the device list
@@ -574,7 +579,9 @@ Without the plugin (host, iOS) the NIF stub answers `{:error,
 Output reads the FMutate and Settings modules from `Application.get_env(:humdinger,
 :fmutate | :settings, …)`; one that isn't loaded is left out (FMutate
 unavailable; defaults channel 1, FMutate + port on, USB + Bluetooth off).
-If FMutate isn't running yet, Output retries `subscribe/1` every second.
+If FMutate isn't running yet, Output retries `subscribe/1` every second; it
+monitors the FMutate process and, when it restarts, marks it disconnected and
+subscribes again.
 
 ### Verifying Output on the phone
 

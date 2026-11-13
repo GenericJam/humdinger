@@ -25,8 +25,21 @@ defmodule Humdinger.OutputTest do
 
   defmodule Port do
     def available?, do: true
-    def connections, do: 0
+    def connections, do: 1
     def send(bytes), do: Humdinger.OutputTest.report_from_double({:port, bytes})
+  end
+
+  # A registered FMutate process, so Output can monitor it and see it restart.
+  defmodule FMutateProc do
+    def start(status), do: Agent.start(fn -> status end, name: __MODULE__)
+    def status, do: Agent.get(__MODULE__, & &1)
+
+    def subscribe(pid) do
+      _ = status()
+      Humdinger.OutputTest.report_from_double({:subscribed, pid})
+    end
+
+    def send_midi(_bytes), do: :ok
   end
 
   defmodule Device do
@@ -128,6 +141,7 @@ defmodule Humdinger.OutputTest do
     test "skips destinations that are off or can't be reached" do
       output = start()
       Output.set_enabled(:port, false, output)
+      flush_port()
 
       Output.send_events([{:note_on, 60, 100}], output)
       assert Output.last_sent(output) == nil
@@ -168,9 +182,16 @@ defmodule Humdinger.OutputTest do
       assert_receive {:port, <<0x80, 60, 64>>}
     end
 
-    test "with nothing sounding sends nothing, and turning it back on sends nothing" do
+    test "puts bend, modulation and expression back, and turning it on again sends nothing" do
       output = start()
+      Output.send_events([{:pitch_bend, 2000}, {:cc, 11, 20}], output)
+      flush_port()
+
       Output.set_enabled(:port, false, output)
+
+      assert port_messages() ==
+               MapSet.new([<<0xE0, 0x00, 0x40>>, <<0xB0, 1, 0>>, <<0xB0, 11, 127>>])
+
       Output.set_enabled(:port, true, output)
       assert_receive {:saved, %{port: true}}
       refute_receive {:port, _}
@@ -198,17 +219,23 @@ defmodule Humdinger.OutputTest do
 
       :ok = Output.panic(output)
 
+      resets = fn ch ->
+        [<<0xE0 + ch, 0x00, 0x40>>, <<0xB0 + ch, 1, 0>>, <<0xB0 + ch, 11, 127>>]
+      end
+
       assert port_messages() ==
-               MapSet.new([
-                 <<0x80, 60, 64>>,
-                 <<0xB0, 123, 0>>,
-                 <<0x81, 67, 64>>,
-                 <<0xB1, 123, 0>>,
-                 <<0xB3, 123, 0>>
-               ])
+               MapSet.new(
+                 [
+                   <<0x80, 60, 64>>,
+                   <<0xB0, 123, 0>>,
+                   <<0x81, 67, 64>>,
+                   <<0xB1, 123, 0>>,
+                   <<0xB3, 123, 0>>
+                 ] ++ resets.(0) ++ resets.(1) ++ resets.(3)
+               )
 
       :ok = Output.panic(output)
-      assert port_messages() == MapSet.new([<<0xB3, 123, 0>>])
+      assert port_messages() == MapSet.new([<<0xB3, 123, 0>> | resets.(3)])
     end
   end
 
@@ -221,7 +248,22 @@ defmodule Humdinger.OutputTest do
     flush_fmutate()
 
     Output.set_enabled(:fmutate, false, output)
-    refute_receive {:fmutate, _}
+    refute_receive {:fmutate, <<0x80, _, _>>}
+  end
+
+  test "re-subscribes to FMutate after it restarts" do
+    {:ok, fmutate} = FMutateProc.start(@connected)
+    output = start(fmutate: FMutateProc)
+    assert_receive {:subscribed, ^output}
+    assert row(output, :fmutate).available
+
+    Process.exit(fmutate, :kill)
+    assert eventually(fn -> row(output, :fmutate).detail == "sibling app · not connected" end)
+
+    {:ok, restarted} = FMutateProc.start(@connected)
+    assert_receive {:subscribed, ^output}, 2_000
+    assert row(output, :fmutate).available
+    Agent.stop(restarted)
   end
 
   test "test_note/0 plays A4 at velocity 92 for 300 ms" do
@@ -293,7 +335,7 @@ defmodule Humdinger.OutputTest do
                %{
                  id: :port,
                  name: "Humdinger port",
-                 detail: "virtual MIDI · any app can pick it",
+                 detail: "virtual MIDI · 1 app listening",
                  enabled: true,
                  available: true
                },
@@ -325,12 +367,22 @@ defmodule Humdinger.OutputTest do
       assert %{name: "FMutate", detail: "sibling app · not connected"} = row(output, :fmutate)
     end
 
-    test "apps listening on the port" do
+    test "apps listening on the port, and nothing sent to it while none is" do
       output = start()
       send(output, {:humdinger_midi, :port, ~s({"connections":2})})
       assert row(output, :port).detail == "virtual MIDI · 2 apps listening"
+      Output.send_events([{:note_on, 60, 100}], output)
+      assert_receive {:port, <<0x90, 60, 100>>}
+
+      send(output, {:humdinger_midi, :port, ~s({"connections":0})})
+      assert %{available: true, detail: "virtual MIDI · any app can pick it"} = row(output, :port)
+      Output.send_events([{:note_off, 60}], output)
+      refute_receive {:port, _}
+
+      # The app that held the note has gone: a new one doesn't get a stray note-off.
       send(output, {:humdinger_midi, :port, ~s({"connections":1})})
-      assert row(output, :port).detail == "virtual MIDI · 1 app listening"
+      Output.set_enabled(:port, false, output)
+      refute_receive {:port, <<0x80, 60, _>>}
     end
 
     test "where the port doesn't exist" do
