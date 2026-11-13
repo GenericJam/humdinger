@@ -174,7 +174,11 @@ while pairing is open), `dport` (distribution port), `fw` (running firmware's na
 port other than 5353), which responders answer by unicast to the querier, so a sibling never
 has to receive multicast (no `WifiManager.MulticastLock`). On Android FMutate advertises with
 `NsdManager`; `Humdinger.FMutate.Reference.Responder` is the same thing in Erlang for tests and
-hosts.
+hosts. Responders must echo the query id (RFC 6762 §6.7); a sibling ignores replies that don't
+carry one of its queries' ids, and keeps each reply source's (`{ip, port}`) PTR, SRV, TXT and A
+records apart, so a forged reply under FMutate's own instance label becomes a second candidate
+rather than replacing FMutate's records. Candidates that differ in host or `dport` stay
+separate.
 
 **After pairing (distribution).**
 
@@ -199,8 +203,8 @@ hosts.
   repeat FMutate's public `fp` and `inst`), so a candidate is only *tried*: same `fp` and
   `inst`, a unicast non-loopback host, the pairing's node name with the new host part
   (`fmutate_a@<new host>`), nothing while FMutate's current address is still answering, and
-  each failed host once per outage. The sibling saves the new address only after it has
-  connected (TLS pinned to `fp`, then the cookie handshake).
+  each failed host and `dport` once per outage. The sibling saves the new address only after
+  it has connected (TLS pinned to `fp`, then the cookie handshake).
 - Forgetting: the sibling calls `{:unpair, node}` (§4), drops the connection, replaces the
   cookie for FMutate's node and deletes its record. FMutate answers `:ok` and then revokes as
   for Disconnect.

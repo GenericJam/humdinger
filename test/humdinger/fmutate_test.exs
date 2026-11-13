@@ -273,6 +273,40 @@ defmodule Humdinger.FMutateTest do
              Store.load(key: ctx.key)
   end
 
+  test "a forged answer for FMutate's new host with another dport doesn't use up the genuine one's trial",
+       ctx do
+    genuine = %{
+      name: "FMutate A",
+      inst: "a",
+      node: "fmutate_a@192.168.1.40",
+      host: "192.168.1.40",
+      port: nil,
+      dist_port: 45_125,
+      fp: record().fp,
+      firmware: nil,
+      device: nil
+    }
+
+    forged = %{genuine | dist_port: 1}
+
+    ScriptedTransport.script(fn
+      %{host: "192.168.1.40", dist_port: 45_125} -> {:ok, @conn}
+      _ -> {:error, :unreachable}
+    end)
+
+    link = start_link(ctx, discovery: fn _ -> {:ok, [forged, genuine]} end, backoff: [20])
+    :ok = FMutate.install(record(), link)
+
+    assert_receive {:connect, %{host: "192.168.1.40", dist_port: 1}, _}, 2_000
+    assert_receive {:connect, %{host: "192.168.1.40", dist_port: 45_125}, _}, 2_000
+
+    await_status(
+      {:connected, %{name: "FMutate A", firmware: "X0X", device: "Pixel 7", emulator: nil}}
+    )
+
+    assert {:ok, %Record{host: "192.168.1.40", dist_port: 45_125}} = Store.load(key: ctx.key)
+  end
+
   test "FMutate on the same phone is never looked up over mDNS", ctx do
     test = self()
     ScriptedTransport.script(fn _ -> {:error, :unreachable} end)
