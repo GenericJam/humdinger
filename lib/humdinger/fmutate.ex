@@ -33,8 +33,11 @@ defmodule Humdinger.FMutate do
       channels, `Humdinger.Midi.panic/0`) is retried every 50 ms until it
       goes through (`:ready`). After 2 s of failures the connection is
       dropped; FMutate releases the notes of a sibling whose node goes
-      (protocol §4.1). Every (re)connection starts with that panic, before
-      any other MIDI.
+      (protocol §4.1). A (re)connection is set up the same way: the
+      `:status` subscription (on which FMutate's release depends) and then
+      that panic must both go out, in order, before any other MIDI; a
+      dropped one leaves the link `:resyncing` (sent to subscribers before
+      the connected status) and retried like a dropped panic.
     * `forget/0`: tells FMutate (when connected), drops the connection,
       revokes the cookie on this side and deletes the pairing.
     * `install/1`: the hand-off from `Humdinger.FMutate.Pairing`: store a new
@@ -145,7 +148,9 @@ defmodule Humdinger.FMutate do
       timer: nil,
       # nil, or the failed panics since MIDI was dropped (see the moduledoc).
       resync: nil,
-      resync_timer: nil
+      resync_timer: nil,
+      # The :status subscription went out on this connection.
+      subscribed: false
     }
 
     {:ok, state, {:continue, {:load, Keyword.get_lazy(opts, :grace_ms, &default_grace/0)}}}
@@ -179,6 +184,8 @@ defmodule Humdinger.FMutate do
         do: state,
         else: put_in(state.subscribers[pid], Process.monitor(pid))
 
+    # Resyncing first, so a subscriber never takes the link as usable.
+    if state.resync != nil, do: send(pid, {:fmutate, :midi, :resyncing})
     send(pid, {:fmutate, :status, status_of(state)})
     {:reply, :ok, state}
   end
@@ -260,42 +267,46 @@ defmodule Humdinger.FMutate do
     old = state
     state = adopt(state)
     record = remember_firmware(state, firmware)
-    # Subscribed only now, so FMutate's first status event can't overtake this.
-    state.transport.cast(conn, record.inst, {:subscribe, self(), [:status]})
-    # FMutate may still hold notes from before (a dropped connection, a
-    # restarted Humdinger): silence it before any other MIDI.
-    _ = state.transport.cast(conn, record.inst, {:midi, @panic})
     info = %{name: record.name, firmware: record.firmware, device: record.device, emulator: nil}
 
     state = %{
-      state
+      end_resync(state)
       | record: record,
         conn: conn,
         node: conn.node,
         info: info,
         connecting: nil,
         attempt: 0,
-        tried: MapSet.new()
+        tried: MapSet.new(),
+        subscribed: false
     }
 
-    {:noreply, state |> end_resync() |> notify(old)}
+    case settle(state) do
+      {:ok, state} ->
+        {:noreply, notify(state, old)}
+
+      {:dropped, state} ->
+        Logger.warning("FMutate: connection setup dropped (connection busy); resynchronising")
+        notify_midi(state, :resyncing)
+        {:noreply, %{state | resync: 0} |> schedule_resync() |> notify(old)}
+    end
   end
 
   def handle_info(:resync, %{resync: n, conn: conn} = state) when n != nil and conn != nil do
     state = %{state | resync_timer: nil}
 
-    case state.transport.cast(conn, state.record.inst, {:midi, @panic}) do
-      :ok ->
+    case settle(state) do
+      {:ok, state} ->
         {:noreply, end_resync(state)}
 
-      _dropped when n + 1 >= @resync_tries ->
+      {:dropped, state} when n + 1 >= @resync_tries ->
         Logger.warning("FMutate: still can't send MIDI; dropping the connection")
         old = state
         state.transport.disconnect(conn)
         state = end_resync(%{state | conn: nil, info: nil})
         {:noreply, state |> notify(old) |> retry()}
 
-      _dropped ->
+      {:dropped, state} ->
         {:noreply, schedule_resync(%{state | resync: n + 1})}
     end
   end
@@ -545,6 +556,22 @@ defmodule Humdinger.FMutate do
 
   defp notify_midi(state, what),
     do: for(pid <- Map.keys(state.subscribers), do: send(pid, {:fmutate, :midi, what}))
+
+  # Subscribed only now (FMutate's first status event can't overtake the
+  # connection), then FMutate silenced: it may hold notes from before (a
+  # dropped connection, a restarted Humdinger). Each goes through the lossy
+  # cast; `{:ok, state}` once both have gone out, in order.
+  defp settle(%{conn: conn, record: %{inst: inst}} = state) do
+    state =
+      if not state.subscribed and
+           state.transport.cast(conn, inst, {:subscribe, self(), [:status]}) == :ok,
+         do: %{state | subscribed: true},
+         else: state
+
+    if state.subscribed and state.transport.cast(conn, inst, {:midi, @panic}) == :ok,
+      do: {:ok, state},
+      else: {:dropped, state}
+  end
 
   defp default_grace do
     if Application.get_env(:humdinger, :fmutate_dev_node) && System.get_env("MOB_BEAMS_DIR") &&

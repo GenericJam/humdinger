@@ -182,6 +182,47 @@ defmodule Humdinger.FMutateTest do
 
   @connected {:connected, %{name: "FMutate A", firmware: "X0X", device: "Pixel 7", emulator: nil}}
 
+  test "a connection is usable only once its subscription and panic went out, in order", ctx do
+    link = start_link(ctx)
+    panic = IO.iodata_to_binary(Humdinger.Midi.panic())
+    # The status subscription is lost as the connection comes up.
+    ScriptedTransport.drop(1)
+    :ok = FMutate.install(record(), link)
+
+    assert_receive {:dropped, {:subscribe, ^link, [:status]}}, 2_000
+    # Resyncing comes before the connected status, so Output never sends meanwhile.
+    first =
+      receive do
+        {:fmutate, :midi, _} = m -> m
+        {:fmutate, :status, {:connected, _}} = m -> m
+      after
+        2_000 -> :none
+      end
+
+    assert first == {:fmutate, :midi, :resyncing}
+    await_status(@connected)
+    FMutate.send_midi(<<0x90, 60, 100>>, link)
+
+    assert_receive {:cast, {:subscribe, ^link, [:status]}}, 1_000
+    assert_receive {:cast, {:midi, ^panic}}, 1_000
+    assert_receive {:fmutate, :midi, :ready}
+    refute_received {:cast, {:midi, <<0x90, 60, 100>>}}
+
+    FMutate.send_midi(<<0x90, 60, 100>>, link)
+    assert_receive {:cast, {:midi, <<0x90, 60, 100>>}}
+  end
+
+  test "a subscriber joining while the link resyncs hears it first", ctx do
+    link = start_link(ctx)
+    ScriptedTransport.drop(1_000)
+    :ok = FMutate.install(record(), link)
+    assert_receive {:fmutate, :midi, :resyncing}, 2_000
+
+    late = self()
+    spawn(fn -> FMutate.subscribe(self(), link) && send(late, receive(do: (m -> m))) end)
+    assert_receive {:fmutate, :midi, :resyncing}
+  end
+
   test "a dropped MIDI message stops MIDI until a panic gets through", ctx do
     link = start_link(ctx)
     :ok = FMutate.install(record(), link)

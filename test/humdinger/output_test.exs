@@ -47,6 +47,13 @@ defmodule Humdinger.OutputTest do
     end
   end
 
+  # A port whose native side throws on every send (a NIF exception).
+  defmodule RaisingPort do
+    def available?, do: true
+    def connections, do: 1
+    def send(_bytes), do: raise(ArgumentError, "port gone")
+  end
+
   # A registered FMutate process, so Output can monitor it and see it restart.
   defmodule FMutateProc do
     def start(status), do: Agent.start(fn -> status end, name: __MODULE__)
@@ -112,7 +119,27 @@ defmodule Humdinger.OutputTest do
     ]
 
     {:ok, pid} = Output.start_link(Keyword.merge(defaults, opts))
+    # A fresh Output resets the port's 16 channels (tested on its own).
+    Output.sync(pid)
+    for bytes <- port_reset(), do: receive(do: ({:port, ^bytes} -> :ok), after: (0 -> :ok))
     pid
+  end
+
+  defp port_reset, do: Humdinger.Midi.panic()
+
+  test "a fresh Output resets all 16 channels of the port before anything else" do
+    {:ok, output} =
+      Output.start_link(
+        name: nil,
+        fmutate: FMutate,
+        settings: Settings,
+        port: Port,
+        device: Device
+      )
+
+    Output.send_events([{:note_on, 60, 100}], output)
+    for bytes <- port_reset(), do: assert_receive({:port, ^bytes})
+    assert_receive {:port, <<0x90, 60, 100>>}
   end
 
   defp connect_fmutate(output) do
@@ -302,6 +329,8 @@ defmodule Humdinger.OutputTest do
   test "a second test note restarts the first instead of being cut short by it" do
     output = start()
     Output.test_note(output)
+    # Taking the output from the singer puts its controllers back first.
+    for bytes <- Humdinger.Midi.reset_controllers(1), do: assert_receive({:port, ^bytes})
     assert_receive {:port, <<0x90, 69, 92>>}, 1_000
     Process.sleep(150)
     second = System.monotonic_time(:millisecond)
@@ -313,6 +342,68 @@ defmodule Humdinger.OutputTest do
     assert_receive {:port, <<0x80, 69, 64>>}, 1_000
     assert System.monotonic_time(:millisecond) - second >= 300
     refute_receive {:port, _}, 400
+  end
+
+  describe "one source at a time" do
+    defp session_note(output, ref, event), do: Output.session_events(ref, [event], output)
+
+    test "a session takes over: the live note goes off, live events are dropped until release" do
+      output = start()
+      Output.follow_session(self(), output)
+      assert_receive {:output, :session, :idle}
+      Output.send_events([{:note_on, 60, 100}, {:pitch_bend, 900}], output)
+      flush_port()
+
+      {:ok, ref} = Output.acquire(self(), output)
+      assert_receive {:output, :session, :active}
+      # The singer's note off and its controllers back before the session plays.
+      for bytes <- [<<0x80, 60, 64>> | Humdinger.Midi.reset_controllers(1)],
+          do: assert_receive({:port, ^bytes})
+
+      # The same pitch from both: the singer's events can't touch the session's.
+      session_note(output, ref, {:note_on, 60, 90})
+      Output.send_events([{:note_off, 60}, {:note_on, 64, 100}], output)
+      assert_receive {:port, <<0x90, 60, 90>>}
+      refute_receive {:port, _}
+
+      :ok = Output.release(ref, output)
+      assert_receive {:port, <<0x80, 60, 64>>}
+      assert_receive {:output, :session, :idle}
+      Output.send_events([{:note_on, 64, 100}], output)
+      assert_receive {:port, <<0x90, 64, 100>>}
+    end
+
+    test "a newer session preempts: the older one's notes go off and its owner is told" do
+      output = start()
+      {:ok, first} = Output.acquire(self(), output)
+      session_note(output, first, {:note_on, 60, 90})
+      flush_port()
+
+      owner = spawn(fn -> Process.sleep(:infinity) end)
+      {:ok, second} = Output.acquire(owner, output)
+      assert_receive {:output, :session_ended, ^first}
+      assert_receive {:port, <<0x80, 60, 64>>}
+
+      # The old session's events are dropped; the new one's go out.
+      session_note(output, first, {:note_on, 62, 90})
+      session_note(output, second, {:note_on, 64, 90})
+      assert_receive {:port, <<0x90, 64, 90>>}
+      refute_received {:port, <<0x90, 62, 90>>}
+    end
+
+    test "a session whose owner is killed has its notes released" do
+      output = start()
+      Output.follow_session(self(), output)
+      assert_receive {:output, :session, :idle}
+      owner = spawn(fn -> Process.sleep(:infinity) end)
+      {:ok, ref} = Output.acquire(owner, output)
+      session_note(output, ref, {:note_on, 67, 90})
+      flush_port()
+
+      Process.exit(owner, :kill)
+      assert_receive {:port, <<0x80, 67, 64>>}
+      assert_receive {:output, :session, :idle}
+    end
   end
 
   describe "never leaving a receiver stuck" do
@@ -341,8 +432,7 @@ defmodule Humdinger.OutputTest do
       send(output, {:humdinger_midi, :port, ~s({"connections":1})})
       Output.send_events([{:note_on, 64, 100}], output)
 
-      panic = Humdinger.Midi.panic([2])
-      for bytes <- panic, do: assert_receive({:port, ^bytes})
+      for bytes <- Humdinger.Midi.panic(), do: assert_receive({:port, ^bytes})
       assert_receive {:port, <<0x91, 64, 100>>}
     end
 
@@ -365,7 +455,7 @@ defmodule Humdinger.OutputTest do
       send(output, {:humdinger_midi, :port, ~s({"connections":1,"drained":true})})
       assert_receive {:port, <<0x80, 60, 64>>}
 
-      for bytes <- Humdinger.Midi.panic([1]), do: assert_receive({:port, ^bytes})
+      for bytes <- Humdinger.Midi.panic(), do: assert_receive({:port, ^bytes})
       Output.send_events([{:note_on, 65, 100}], output)
       assert_receive {:port, <<0x90, 65, 100>>}
     end
@@ -396,8 +486,50 @@ defmodule Humdinger.OutputTest do
       send(output, {:midi, :opened, %{device: 7, direction: :output}})
       Output.send_events([{:note_on, 62, 100}], output)
 
-      for bytes <- Humdinger.Midi.panic([1]), do: assert_receive({:device, 7, ^bytes})
+      for bytes <- Humdinger.Midi.panic(), do: assert_receive({:device, 7, ^bytes})
       assert_receive {:device, 7, <<0x90, 62, 100>>}
+    end
+
+    test "a port refusing a note doesn't stop USB from getting and tracking it" do
+      key = {RefusingPort, self()}
+      on_exit(fn -> :persistent_term.erase(key) end)
+      output = start(port: RefusingPort)
+      plug(output, 7, "usb")
+      flush_devices()
+
+      :persistent_term.put(key, true)
+      Output.send_events([{:note_on, 60, 100}], output)
+      assert_receive {:refused, <<0x90, 60, 100>>}
+      assert_receive {:device, 7, <<0x90, 60, 100>>}
+
+      Output.set_enabled(:usb, false, output)
+      assert_receive {:device, 7, <<0x80, 60, 64>>}
+    end
+
+    test "a drain this Output didn't see the refusal for still resets the port" do
+      output = start()
+      send(output, {:humdinger_midi, :port, ~s({"connections":1,"drained":true,"generation":3})})
+      for bytes <- Humdinger.Midi.panic(), do: assert_receive({:port, ^bytes})
+    end
+
+    @tag :capture_log
+    test "a destination that raises doesn't keep the others from their notes or their panic" do
+      output = start(port: RaisingPort)
+      connect_fmutate(output)
+      plug(output, 7, "usb")
+      flush_devices()
+
+      Output.send_events([{:note_on, 60, 100}], output)
+      assert_receive {:fmutate, <<0x90, 60, 100>>}
+      assert_receive {:device, 7, <<0x90, 60, 100>>}
+
+      Process.unlink(output)
+      :ok = GenServer.stop(output, :shutdown)
+      assert_receive {:fmutate, <<0x80, 60, 64>>}
+      assert_receive {:fmutate, <<0xB0, 123, 0>>}
+      # USB comes after the port that raised: it is silenced too.
+      assert_receive {:device, 7, <<0x80, 60, 64>>}
+      assert_receive {:device, 7, <<0xB0, 123, 0>>}
     end
   end
 
@@ -650,6 +782,14 @@ defmodule Humdinger.OutputTest do
       true ->
         Process.sleep(10)
         eventually(check, tries - 1)
+    end
+  end
+
+  defp flush_devices do
+    receive do
+      {:device, _, _} -> flush_devices()
+    after
+      50 -> :ok
     end
   end
 

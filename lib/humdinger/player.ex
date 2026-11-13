@@ -14,28 +14,27 @@ defmodule Humdinger.Player do
   `%{start_ms, dur_ms, midi, velocity}` (`Humdinger.Phrase.quantized_notes/1`),
   played from time 0. Events due at the same time go out in one batch, note
   offs first, so a repeated pitch re-strikes. When the last note ends the
-  owner gets `{:player, :finished, tag}`; `stop/1` ends early (note-offs, no
-  message).
+  owner gets `{:player, :finished, tag}`, sent only once the note-offs are
+  out and the session is released (below); `stop/1` ends early (note-offs,
+  no message).
 
-  One source at a time: while it plays, the player holds the Engine
-  (`Humdinger.Engine.hold/2`), which releases the singer's note and stops
-  listening until the player lets go (finished, stopped, or the player gone),
-  then listens again if it was. Playback and the singer never share notes
-  or controllers on a channel. The player waits for Output to have its
-  last note-offs (`sync`) before letting go.
+  One source at a time: the player plays in an Output session
+  (`Humdinger.Output.acquire/2`), which takes the output from the singer
+  for as long as it plays (see `Humdinger.Output`). Output monitors the
+  player, so a player killed outright still has its notes released. When
+  another session preempts this one (`{:output, :session_ended, ref}`), or
+  Output goes (its own `terminate/2` silences everything), the player stops
+  and the owner gets `{:player, :finished, tag}`.
 
   Timing: on every tick the player reads its clock, sends everything due
   and sets a timer for the next event. A late timer only delays the batch;
   nothing is skipped or drifts, because times are measured from the start
   on the clock. Options for tests: `clock:` (a zero-arity function → ms),
-  `output:` (a module with `send_events/1`, or `{module, server}` for
-  `send_events/2`), `engine:` (the Engine to hold, default `config
-  :humdinger, :engine` else `Humdinger.Engine`; nil for none).
+  `output:` (a module with `acquire/1`, `session_events/2`, `release/1`, or
+  `{module, server}` for the versions taking a server).
   """
 
   use GenServer
-
-  alias Humdinger.Engine
 
   @typedoc "A note to play; extra keys are ignored."
   @type note :: %{
@@ -95,11 +94,8 @@ defmodule Humdinger.Player do
          Keyword.get_lazy(opts, :output, fn ->
            Application.get_env(:humdinger, :output, Humdinger.Output)
          end),
-       engine:
-         Keyword.get_lazy(opts, :engine, fn ->
-           Application.get_env(:humdinger, :engine, Engine)
-         end),
-       held: false,
+       # The Output session while playing: %{ref, mon}.
+       session: nil,
        clock: Keyword.get(opts, :clock, fn -> System.monotonic_time(:millisecond) end),
        tag: nil,
        t0: nil,
@@ -111,7 +107,7 @@ defmodule Humdinger.Player do
 
   @impl true
   def handle_call({:play, notes, tag}, _from, state) do
-    state = state |> silence() |> hold()
+    state = state |> silence() |> acquire()
 
     state = %{
       state
@@ -131,6 +127,17 @@ defmodule Humdinger.Player do
   def handle_info({:tick, token}, %{token: token} = state), do: {:noreply, advance(state)}
   def handle_info({:tick, _stale}, state), do: {:noreply, state}
 
+  # Another session took over: its notes were released by Output.
+  def handle_info({:output, :session_ended, ref}, %{session: %{ref: ref}} = state),
+    do: {:noreply, lost(state)}
+
+  # Output went: its terminate/2 silenced everything.
+  def handle_info({:DOWN, mon, :process, _pid, _reason}, %{session: %{mon: mon}} = state),
+    do: {:noreply, lost(state)}
+
+  def handle_info({:output, :session_ended, _stale}, state), do: {:noreply, state}
+  def handle_info({:DOWN, _mon, :process, _pid, _reason}, state), do: {:noreply, state}
+
   def handle_info({:EXIT, owner, reason}, %{owner: owner} = state),
     do: {:stop, if(reason == :normal, do: :normal, else: :shutdown), state}
 
@@ -149,8 +156,11 @@ defmodule Humdinger.Player do
 
     case rest do
       [] ->
-        send(state.owner, {:player, :finished, state.tag})
-        finish(state)
+        tag = state.tag
+        state = finish(state)
+        # Only now: the note-offs are out and the singer has the output back.
+        send(state.owner, {:player, :finished, tag})
+        state
 
       [{t, _} | _] ->
         Process.send_after(self(), {:tick, state.token}, max(ceil(t - elapsed), 0))
@@ -158,8 +168,16 @@ defmodule Humdinger.Player do
     end
   end
 
-  # Silence, then hand the output back to the Engine.
-  defp finish(state), do: state |> silence() |> unhold()
+  # Silence, then release the session (Output has the note-offs before it
+  # answers: same sender, same order).
+  defp finish(state), do: state |> silence() |> release()
+
+  # The session is gone without us: forget everything, tell the owner.
+  defp lost(state) do
+    if state.session.mon, do: Process.demonitor(state.session.mon, [:flush])
+    if state.tag != nil, do: send(state.owner, {:player, :finished, state.tag})
+    %{state | session: nil, tag: nil, pending: [], sounding: MapSet.new(), token: nil}
+  end
 
   # Note-offs for what's sounding; forget the rest.
   defp silence(state) do
@@ -184,41 +202,46 @@ defmodule Humdinger.Player do
     %{state | sounding: sounding}
   end
 
-  defp out(%{output: {module, server}}, events), do: module.send_events(events, server)
-  defp out(%{output: module}, events), do: module.send_events(events)
+  defp out(%{session: nil}, _events), do: :ok
 
-  # Holding is best effort: no Engine (host tests, being restarted) means
-  # there is no singer to keep out.
-  defp hold(%{held: true} = state), do: state
-  defp hold(%{engine: nil} = state), do: state
+  defp out(%{output: {module, server}, session: s}, events),
+    do: module.session_events(s.ref, events, server)
 
-  defp hold(state) do
-    case GenServer.whereis(state.engine) do
-      nil -> state
-      _pid -> %{state | held: Engine.hold(state.engine, self()) == :ok}
+  defp out(%{output: module, session: s}, events), do: module.session_events(s.ref, events)
+
+  defp acquire(%{session: %{}} = state), do: state
+
+  defp acquire(state) do
+    {:ok, ref} = call_output(state, :acquire, [self()])
+
+    mon =
+      case GenServer.whereis(server(state)) do
+        nil -> nil
+        pid -> Process.monitor(pid)
+      end
+
+    %{state | session: %{ref: ref, mon: mon}}
+  end
+
+  defp release(%{session: nil} = state), do: state
+
+  defp release(%{session: session} = state) do
+    if session.mon, do: Process.demonitor(session.mon, [:flush])
+    # Output may be gone (restarting, or stopping with us): nothing to release.
+    try do
+      call_output(state, :release, [session.ref])
+    catch
+      :exit, _ -> :gone
     end
-  catch
-    :exit, _ -> state
+
+    %{state | session: nil}
   end
 
-  defp unhold(%{held: false} = state), do: state
+  defp call_output(%{output: {module, server}}, fun, args),
+    do: apply(module, fun, args ++ [server])
 
-  defp unhold(state) do
-    safely(fn -> sync_output(state) end)
-    safely(fn -> Engine.unhold(state.engine, self()) end)
-    %{state | held: false}
-  end
+  defp call_output(%{output: module}, fun, args), do: apply(module, fun, args)
 
-  # Output or the Engine may be gone (being restarted, or stopping with us).
-  defp safely(fun) do
-    fun.()
-  catch
-    :exit, _ -> :gone
-  end
-
-  defp sync_output(%{output: {module, server}}), do: module.sync(server)
-
-  defp sync_output(%{output: module}) do
-    if Code.ensure_loaded?(module) and function_exported?(module, :sync, 0), do: module.sync()
-  end
+  defp server(%{output: {_module, server}}), do: server
+  defp server(%{output: module}), do: module
 end

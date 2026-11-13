@@ -220,21 +220,6 @@ defmodule Humdinger.Engine do
   @spec stop(GenServer.server()) :: :ok
   def stop(server \\ __MODULE__), do: GenServer.call(server, :stop)
 
-  @doc """
-  Keeps the singer off the output while `owner` (a `Humdinger.Player`) plays:
-  if listening, the engine pauses (the sounding note and controllers are
-  released, and Output has those events before this returns). While held,
-  `listen/0` and `resume/0` only note that listening should follow; when
-  the last holder calls `unhold/2` or exits, the engine listens again if it
-  was listening or was asked to.
-  """
-  @spec hold(GenServer.server(), pid()) :: :ok
-  def hold(server \\ __MODULE__, owner), do: GenServer.call(server, {:hold, owner})
-
-  @doc "Ends `owner`'s hold (see `hold/2`)."
-  @spec unhold(GenServer.server(), pid()) :: :ok
-  def unhold(server \\ __MODULE__, owner), do: GenServer.call(server, {:unhold, owner})
-
   @spec status(GenServer.server()) :: status()
   def status(server \\ __MODULE__), do: GenServer.call(server, :status)
 
@@ -298,10 +283,9 @@ defmodule Humdinger.Engine do
        background: :off,
        notice: nil,
        notice_at: nil,
-       # Players holding the engine (`hold/2`): pid => monitor.
-       holds: %{},
-       # Listen once the holds end (it was listening, or was asked to).
-       after_hold: nil
+       # A player has the output (`{:output, :session, :active}`): the
+       # singer's events go nowhere until it is `:idle` again.
+       held: false
      }}
   end
 
@@ -321,23 +305,12 @@ defmodule Humdinger.Engine do
     {:reply, :ok, sync_spectrum(state, before)}
   end
 
-  def handle_call({:hold, owner}, _from, state), do: {:reply, :ok, add_hold(state, owner)}
-  def handle_call({:unhold, owner}, _from, state), do: {:reply, :ok, drop_hold(state, owner)}
-
-  def handle_call(:listen, _from, state) when state.holds != %{},
-    do: {:reply, :ok, %{state | after_hold: :listen}}
-
-  def handle_call(:resume, _from, state) when state.holds != %{},
-    do: {:reply, :ok, %{state | after_hold: if(state.status == :off, do: nil, else: :listen)}}
-
   def handle_call(:listen, _from, %{status: :listening} = state), do: {:reply, :ok, state}
   def handle_call(:listen, _from, state), do: reply(start_listening(state))
 
-  def handle_call(:pause, _from, state),
-    do: {:reply, :ok, pause_listening(%{state | after_hold: nil})}
-
+  def handle_call(:pause, _from, state), do: {:reply, :ok, pause_listening(state)}
   def handle_call(:resume, _from, state), do: reply(resume_listening(state))
-  def handle_call(:stop, _from, state), do: {:reply, :ok, stop_all(%{state | after_hold: nil})}
+  def handle_call(:stop, _from, state), do: {:reply, :ok, stop_all(state)}
   def handle_call(:status, _from, state), do: {:reply, state.status, state}
   def handle_call(:settings, _from, state), do: {:reply, state.settings, state}
 
@@ -394,15 +367,20 @@ defmodule Humdinger.Engine do
 
   def handle_info({:hold, _stale}, state), do: {:noreply, state}
 
+  # A player has the output, or gives it back (see `Humdinger.Output`). On
+  # acquire Output released the singer's note; the tracker forgets it too,
+  # so the next sung note starts afresh, during or after the session.
+  def handle_info({:output, :session, what}, state) do
+    {tracker, _released} = Tracker.release(state.tracker)
+    {:noreply, %{state | held: what == :active, tracker: tracker} |> cancel_hold()}
+  end
+
   def handle_info({:DOWN, mon, :process, pid, _reason}, state) do
-    case state do
-      %{subscribers: %{^pid => %{mon: ^mon}}} ->
+    case state.subscribers do
+      %{^pid => %{mon: ^mon}} ->
         before = wants_spectrum?(state)
         state = %{state | subscribers: Map.delete(state.subscribers, pid)}
         {:noreply, sync_spectrum(state, before)}
-
-      %{holds: %{^pid => ^mon}} ->
-        {:noreply, drop_hold(state, pid)}
 
       _other ->
         {:noreply, state}
@@ -423,7 +401,7 @@ defmodule Humdinger.Engine do
     if state.ref, do: state.audio.stop(state.ref)
     {_tracker, events} = Tracker.release(state.tracker)
 
-    if events != [] and state.holds == %{} do
+    if events != [] and not state.held do
       state.output.send_events(events)
       sync_output(state)
     end
@@ -433,46 +411,6 @@ defmodule Humdinger.Engine do
   end
 
   defp reply({result, state}), do: {:reply, result, state}
-
-  # ── Holding (one source at a time, see hold/2) ─────────────────────────
-
-  # The first hold pauses a listening engine; its release goes out (and
-  # reaches Output) before the holder is recorded, as emit/3 sends nothing
-  # while held.
-  defp add_hold(state, owner) when is_map_key(state.holds, owner), do: state
-
-  defp add_hold(state, owner) do
-    state =
-      if state.holds == %{} and state.status == :listening do
-        state = pause_listening(state)
-        sync_output(state)
-        %{state | after_hold: :listen}
-      else
-        state
-      end
-
-    %{state | holds: Map.put(state.holds, owner, Process.monitor(owner))}
-  end
-
-  defp drop_hold(state, owner) do
-    case Map.pop(state.holds, owner) do
-      {nil, _} ->
-        state
-
-      {mon, holds} ->
-        Process.demonitor(mon, [:flush])
-        state = %{state | holds: holds}
-        if holds == %{}, do: after_hold(state), else: state
-    end
-  end
-
-  defp after_hold(%{after_hold: :listen} = state),
-    do: %{state | after_hold: nil} |> resume_or_listen() |> elem(1)
-
-  defp after_hold(state), do: %{state | after_hold: nil}
-
-  defp resume_or_listen(%{status: :off} = state), do: start_listening(state)
-  defp resume_or_listen(state), do: resume_listening(state)
 
   # Waits until Output has what this process sent it. Output may be gone
   # (restarting): then there is nothing to wait for.
@@ -529,11 +467,14 @@ defmodule Humdinger.Engine do
     |> cancel_hold()
   end
 
-  # Output tells the engine where the notes go (for the notification). A
-  # double without `subscribe/1` is fine: the notice leaves the name out.
+  # Output tells the engine where the notes go (for the notification) and
+  # when a player has the output. A double without `subscribe/1` /
+  # `follow_session/1` is fine: the notice leaves the name out, and nothing
+  # holds the singer.
   defp subscribe_output(%{output_subscribed: false, output: output} = state) do
     if Code.ensure_loaded?(output) and function_exported?(output, :subscribe, 1) do
       :ok = output.subscribe(self())
+      if function_exported?(output, :follow_session, 1), do: :ok = output.follow_session(self())
       %{state | output_subscribed: true}
     else
       state
@@ -585,10 +526,12 @@ defmodule Humdinger.Engine do
 
   defp emit(state, [], _t), do: state
 
-  # While a player holds the engine nothing it sends reaches the output
-  # (a settings change's controller restores, say): the player owns it.
+  # While a player has the output the singer's events go nowhere: not to
+  # Output (it would drop them) and not into a take.
+  defp emit(%{held: true} = state, _events, _t), do: state
+
   defp emit(state, events, t) do
-    if state.holds == %{}, do: state.output.send_events(events)
+    state.output.send_events(events)
 
     state =
       if state.record,
@@ -639,11 +582,7 @@ defmodule Humdinger.Engine do
 
   # ── Background service ────────────────────────────────────────────────
 
-  defp background(:pause, state), do: pause_listening(%{state | after_hold: nil})
-
-  defp background(:resume, state) when state.holds != %{},
-    do: %{state | after_hold: if(state.status == :off, do: nil, else: :listen)}
-
+  defp background(:pause, state), do: pause_listening(state)
   defp background(:resume, state), do: state |> resume_listening() |> elem(1)
   defp background(:record, state), do: start_recording(state)
   defp background(:record_stop, state), do: save_recording(state)

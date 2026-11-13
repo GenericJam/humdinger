@@ -150,8 +150,15 @@ object HumdingerMidiBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPe
     internal fun setConnections(count: Int) {
         if (count == connections) return
         connections = count
-        // With nobody left there's nothing to drain into.
-        if (count == 0) refusing = false
+        // With nobody left, queued bytes (and a pending drain) are for no one:
+        // a new generation makes the writer skip them.
+        if (count == 0) {
+            synchronized(portLock) {
+                generation++
+                refusing = false
+                portQueue.clear()
+            }
+        }
         deliver("port", JSONObject().put("connections", count))
     }
 
@@ -160,42 +167,69 @@ object HumdingerMidiBridge : io.mob.plugin.MobActivityAware, io.mob.plugin.MobPe
 
     // Writes to the port happen on one thread of their own: MidiReceiver.send
     // writes to a socket per connected app and blocks while a client stops
-    // reading, which must not hold up the BEAM. Nothing is dropped silently:
-    // when the queue is full (a client stuck for 512 messages) the queued
-    // messages are stale, so they are dropped, portSend answers
-    // SEND_QUEUE_FULL and keeps refusing until the writer has finished the
-    // blocked write; then a "drained" port event tells Output to release
-    // what the clients may hold before sending anything new.
+    // reading, which must not hold up the BEAM. Nothing is dropped silently.
+    // When the queue is full (a client stuck for 512 messages) the queued
+    // messages are stale: under portLock they are dropped, a new generation
+    // starts, portSend answers SEND_QUEUE_FULL and keeps refusing, and a
+    // drain sentinel is queued, which the writer reaches only after the
+    // blocked write. The sentinel reopens admission and sends a "drained"
+    // port event; Output then releases what the clients may hold before
+    // anything new. Every task carries its generation: the writer skips
+    // stale ones (dropped by an overflow or by the last client leaving).
+    private val portLock = Any()
     private val portQueue = ArrayBlockingQueue<Runnable>(512)
     private val portWriter = ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, portQueue)
-    @Volatile private var refusing = false
+    private var refusing = false // guarded by portLock
+    private var generation = 0L // guarded by portLock
 
     @JvmStatic
     fun portSend(bytes: ByteArray): Int {
         val s = service ?: return SEND_NO_CLIENT
         if (connections == 0) return SEND_NO_CLIENT
-        if (refusing) return SEND_QUEUE_FULL
         val receiver = s.outputPortReceivers?.firstOrNull() ?: return SEND_NO_CLIENT
         val timestamp = System.nanoTime()
-        return try {
-            portWriter.execute { write(receiver, bytes, timestamp) }
-            SEND_OK
-        } catch (e: RejectedExecutionException) {
-            refusing = true
-            portQueue.clear()
-            SEND_QUEUE_FULL
+        synchronized(portLock) {
+            if (refusing) return SEND_QUEUE_FULL
+            val gen = generation
+            return try {
+                portWriter.execute { write(gen, receiver, bytes, timestamp) }
+                SEND_OK
+            } catch (e: RejectedExecutionException) {
+                refusing = true
+                generation++
+                portQueue.clear()
+                val sentinel = generation
+                // The queue is empty now, so this one fits.
+                portWriter.execute { drained(sentinel) }
+                SEND_QUEUE_FULL
+            }
         }
     }
 
-    private fun write(receiver: MidiReceiver, bytes: ByteArray, timestamp: Long) {
+    private fun write(gen: Long, receiver: MidiReceiver, bytes: ByteArray, timestamp: Long) {
+        if (synchronized(portLock) { gen != generation }) return
         try {
             receiver.send(bytes, 0, bytes.size, timestamp)
         } catch (e: IOException) {
             // The client went away mid-send; the status callback follows.
         }
-        if (refusing && portQueue.isEmpty()) {
-            refusing = false
-            deliver("port", JSONObject().put("connections", connections).put("drained", true))
+    }
+
+    // Reached after the write that blocked: admission reopens.
+    private fun drained(gen: Long) {
+        val current = synchronized(portLock) {
+            if (gen == generation && refusing) {
+                refusing = false
+                true
+            } else {
+                false
+            }
+        }
+        if (current) {
+            deliver(
+                "port",
+                JSONObject().put("connections", connections).put("drained", true).put("generation", gen),
+            )
         }
     }
 
