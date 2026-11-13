@@ -125,6 +125,12 @@ pub fn build(b: *std.Build) void {
         b.fmt("{s}/usr/include/{s}", .{ ndk_sysroot, arch_triple }),
     };
     for (base_c_flags) |f| c_flags_buf.append(b.allocator, f) catch unreachable;
+    // armeabi-v7a: zig's androideabi target is soft-float, so every float
+    // operation in C became a library call (hum_audio's pitch detector ran
+    // at half real time on a moto e 2020). Android's armeabi-v7a ABI is
+    // "softfp": VFP/NEON instructions, floats passed in core registers, as
+    // the NDK compiles it, so these objects still link with soft-float ones.
+    if (std.mem.eql(u8, abi, "armeabi-v7a")) c_flags_buf.append(b.allocator, "-mfloat-abi=softfp") catch unreachable;
     if (nxeigen_static) c_flags_buf.append(b.allocator, "-DMOB_STATIC_NX_EIGEN_NIF") catch unreachable;
     // Per-NIF compiles (project + plugin C NIFs) start from this snapshot and
     // add only -DSTATIC_ERLANG_NIF_LIBNAME=<name>: erl_nif.h derives
