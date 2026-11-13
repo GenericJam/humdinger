@@ -156,13 +156,24 @@ summary}` (e.g. `"A4 on · vel 92 · ch 1"`, throttled). `Midi.encode(event,
 channel) :: binary`, `Midi.describe(event, channel) :: String.t()`.
 
 **FMutate link** (`Humdinger.FMutate`, GenServer): `status/0 :: :unpaired |
-:disconnected | {:connected, %{name, firmware, device}}`, `subscribe(pid)` →
-`{:fmutate, :status, status}`, `send_midi(binary)` (dropped while not
-connected), `forget/0`. Pairing (`Humdinger.FMutate.Pairing`):
-`parse_link/1`, `normalize_code/1`, `discover(owner)` → `{:fmutate_pair,
-:found, [candidate]}`, `pair(owner, offer)` → `{:fmutate_pair, :waiting}`,
-`{:fmutate_pair, :paired, info}`, `{:fmutate_pair, :failed, reason}`,
-`cancel/0`. Messages to FMutate follow `design/fmutate/protocol.md` §4.
+:disconnected | {:connected, %{name, firmware, device, emulator}}` (`emulator`:
+FMutate's last `:status` event or nil), `subscribe(pid)` → `{:fmutate,
+:status, status}` (now and on change), `unsubscribe(pid)`,
+`send_midi(binary)` (dropped while not connected or when the link is
+backed up), `forget/0 :: :ok | {:error, reason}`, `reconnect/0` (retry now),
+`install(record)` (Pairing's hand-off). Pairing
+(`Humdinger.FMutate.Pairing`): `parse_link/1 :: {:ok, offer} | {:error,
+reason}`, `normalize_code/1 :: {:ok, "KQ7M-X2PD"} | {:error, :invalid_code}`,
+`discover(owner)` → `{:fmutate_pair, :found, [candidate]}` on each change
+(candidate `%{name, inst, node, host, port, dist_port, fp, firmware,
+device}`; `port` nil = not showing its code), `pair(owner, offer)` (offer: a
+parsed link, or `%{code: code}` / `%{code: code, candidate: candidate}`) →
+`{:fmutate_pair, :matched, candidate}` ("code matches"), `{:fmutate_pair,
+:waiting}`, `{:fmutate_pair, :paired, %{name, device, firmware, inst,
+same_phone}}`, `{:fmutate_pair, :failed, reason}`, `cancel/0`. Each function
+also takes the server as an optional last argument. Messages to FMutate
+follow `design/fmutate/protocol.md` §1.5 and §4; details in "FMutate link"
+below.
 
 **Phrases** (`Humdinger.Phrase` pure, `Humdinger.Phrases` storage):
 `Phrase.from_take(take, opts)`, `summary/1` ("8 notes · 2 bars at 96 · D
@@ -176,6 +187,72 @@ rhythm:)` (measures of notes/rests for the staff), `Humdinger.Transcribe`
 **Views** (pure `Mob.Canvas` op builders under `Humdinger.Views.*`, plus
 `Humdinger.Mimi`): the screens compose them; each takes plain data and a
 size and returns ops (and, for editable ones, a hit-test function).
+
+## FMutate link
+
+`lib/humdinger/fmutate.ex` and `lib/humdinger/fmutate/`; the wire protocol
+and trust model are `design/fmutate/protocol.md` §1.5 and §3 (written from
+this implementation, for FMutate to implement the other side).
+
+- **Modules.** `FMutate` (the link: load, connect, reconnect with backoff 1,
+  2, 5, 10, 30 s, follow a moved FMutate over mDNS, status, MIDI),
+  `Pairing` (the Pair screen's service) and `Pairing.Client` (one exchange),
+  `PairLink` (the QR/link), `Code` (Crockford codes), `Srp` (SRP-6a),
+  `Wire` (JSON frames over TLS 1.3), `Cert` (self-signed ECDSA certificates,
+  pinning `verify_fun`), `Record` + `Store` (the pairing in
+  `mob_secure_store`), `Transport` (node, cookie, connection), `Epmd` (port
+  mapper), `Tunnel` (TLS distribution), `Discovery` + `Dns` (mDNS browse),
+  `Supervisor` (started in `App.on_start`).
+- **Reference FMutate side** (`Humdinger.FMutate.Reference.*`: `Epmd`,
+  `Pairings`, `Instance`, `PairingServer`, `Responder`; `Reference.start/1`
+  runs them). Shippable code FMutate can copy; the tests run it in a
+  `:peer` node, and a Mac can stand in for FMutate with it.
+- **Distribution on Mob.** Humdinger only connects out: when it starts its
+  own node it is hidden, without a listener (`dist_listen: false`),
+  auto-connect off, random default cookie, so a release build listens on
+  nothing. FMutate's node gets the pairing's cookie (`:erlang.set_cookie/2`)
+  and a hidden connection (`hidden_connect_node/1`, messages to
+  `:fmutate_instance`). In a dev build on Android, `Mob.Dist` starts the
+  loopback dev node a few seconds after boot; the link uses that node (its
+  name is what the pairing declares) and waits 15 s for it before starting
+  its own under the same name, so `mix mob.connect` keeps working.
+  `Transport.setup/1` (in `App.on_start`, before `Mob.Dist`) makes
+  `Humdinger.FMutate.Epmd` the kernel `epmd_module`: FMutate's node is
+  routed to its port from the pairing, everything else (the dev node's
+  registration with the Mac's epmd) goes to OTP's `erl_epmd`.
+- **TLS across phones without a relaunch.** `-proto_dist` is an init
+  argument (read at boot; `Mob.InitArgs` would only apply it at the next
+  launch, and Android starts distribution at runtime anyway). Humdinger's
+  node stays on `inet_tcp`; `Tunnel` connects to FMutate's stock
+  `inet_tls` listener (mutual TLS 1.3, both certificates pinned), accepts
+  one loopback connection from this BEAM only, and reframes the handshake
+  (2-byte vs 4-byte lengths) before passing bytes through.
+- **OTP on Android.** The Android runtime (`~/.mob/cache/otp-android-d199a49a`)
+  ships `crypto` 5.10 (with `crypto.so`), `public_key` 1.21.8, `ssl` 11.7.8
+  and `asn1` 5.5.2 (ebin 0.2, 2.9, 2.5 and 1.3 MB); a stripped release
+  build must keep all four. `mix.exs` lists them in `extra_applications`.
+- **Atoms.** Node names and cookies become atoms only from the stored
+  pairing (validated by `Record`), and for TLS only after the tunnel checked
+  FMutate's certificate; mDNS and pairing input never make atoms.
+- **mDNS.** One-shot legacy unicast queries (from an ephemeral port), so
+  replies come back unicast and Android needs no `MulticastLock`.
+- **Storage.** `mob_secure_store` (git dependency pinned to a commit; not on
+  Hex yet, so `mob.exs` acknowledges it as an unsigned plugin). On a phone
+  without the plugin's NIF (BEAM-only deploy after adding it) it fails
+  closed: pairing reports `{:store, :secure_store_unavailable}` until
+  `mix mob.deploy --native`.
+- **Not done here:** waking FMutate on the same phone through its
+  signature-permission service (FMutate doesn't have it yet); Humdinger
+  sends `signing_cert_sha256: null` (a self-reported hash proves nothing;
+  protocol §3).
+- **Verify.** `mix test test/humdinger/fmutate*`: pairing by link and by
+  code (SRP, mDNS on loopback), wrong code ×5, expiry, single use,
+  fingerprint mismatch, Allow/Deny/withdraw, then real distribution to a
+  `:peer` FMutate with no epmd (loopback TCP and TLS through the tunnel),
+  MIDI received, status events, reconnect, revoke, forget. A Mac can play
+  FMutate for a phone: run `Humdinger.FMutate.Reference.start/1` in a node
+  started with `Reference.Epmd` (and `-proto_dist inet_tls
+  -ssl_dist_optfile` for TLS), pairing on `0.0.0.0` with `advertise:`.
 
 ## Rules for Mob screens here (from Choir Coach; avoid its traps)
 
