@@ -857,6 +857,14 @@ only), `ERL_NIF_INIT(Elixir.Humdinger.Audio.Nif, …)`. It includes
   :busy}`. `info/0`'s `analyses` counts the running threads. The Import
   screen cancels its analysis on Back, on `terminate/2` and before another
   file.
+  The generated Android bridge copies picker results into random cache
+  filenames, obtains their original names from `OpenableColumns.DISPLAY_NAME`,
+  and serializes metadata with `JSONObject`. A document's `lastPathSegment`
+  is an opaque ID, not a filename: Downloads can return `raw:/storage/…`,
+  which previously made the copy fail and report cancellation. Failed copies
+  remove their temporary files. Checked through the real Android Downloads
+  picker on the moto g power 2021: a three-tone WAV reaches Import's ready
+  state with A4, C5 and E5, then opens Review.
 - **Background.** `HumListenService` (host package,
   `android/app/src/main/java/com/genericjam/humdinger/HumListenService.kt`)
   is a foreground service of type microphone; `HumListenBridge` is its JNI

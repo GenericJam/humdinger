@@ -2095,18 +2095,30 @@ object MobBridge {
         if (uris.isEmpty()) { nativeDeliverAtom2(pid, "files", "cancelled"); return }
         val activity = activityRef?.get() ?: return
         Thread {
+            val copied = mutableListOf<File>()
             try {
-                val items = uris.mapIndexed { i, uri ->
-                    val name = uri.lastPathSegment ?: "file_$i"
-                    val tmp = File(activity.cacheDir, "mob_file_${System.currentTimeMillis()}_$name")
-                    activity.contentResolver.openInputStream(uri)?.use { it.copyTo(tmp.outputStream()) }
-                    val size = tmp.length()
+                val items = org.json.JSONArray()
+                uris.forEachIndexed { i, uri ->
+                    val name = activity.contentResolver.query(
+                        uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null
+                    )?.use { cursor ->
+                        val column = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (column >= 0 && cursor.moveToFirst()) cursor.getString(column) else null
+                    } ?: "file_$i"
+                    // Document IDs can contain a whole path; never use one as a cache filename.
+                    val tmp = File.createTempFile("mob_file_", ".tmp", activity.cacheDir)
+                    copied.add(tmp)
+                    val input = activity.contentResolver.openInputStream(uri)
+                        ?: throw java.io.IOException("The selected file could not be opened")
+                    input.use { source -> tmp.outputStream().use { source.copyTo(it) } }
                     val mime = activity.contentResolver.getType(uri) ?: "application/octet-stream"
-                    """{"path":"${tmp.absolutePath}","name":"$name","mime":"$mime","size":$size}"""
+                    items.put(org.json.JSONObject().put("path", tmp.absolutePath).put("name", name)
+                        .put("mime", mime).put("size", tmp.length()))
                 }
-                val json = "[${items.joinToString(",")}]"
+                val json = items.toString()
                 nativeDeliverFileResult(pid, "files", "picked", json)
             } catch (e: Exception) {
+                copied.forEach { it.delete() }
                 nativeDeliverAtom2(pid, "files", "cancelled")
             }
         }.start()
