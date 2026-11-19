@@ -70,6 +70,40 @@ defmodule Humdinger.Audio.Native do
   @impl true
   def background_running?, do: Nif.background_running()
 
+  @impl true
+  def play_piano(owner, notes) when is_pid(owner) and is_list(notes) do
+    ref = make_ref()
+
+    case Nif.play_piano(owner, ref, notes, piano_dir()) do
+      :ok -> {:ok, ref}
+      {:error, _} = error -> error
+    end
+  rescue
+    e in ErlangError ->
+      case e.original do
+        :nif_not_loaded -> {:error, :unsupported}
+        _ -> reraise e, __STACKTRACE__
+      end
+  end
+
+  @impl true
+  def cancel_piano(ref) when is_reference(ref) do
+    Nif.cancel_piano(ref)
+  rescue
+    e in ErlangError ->
+      case e.original do
+        :nif_not_loaded -> :ok
+        _ -> reraise e, __STACKTRACE__
+      end
+  end
+
   @doc "Engine diagnostics; see `Humdinger.Audio.Nif.info/0`."
   def info, do: Nif.info()
+
+  defp piano_dir do
+    case System.get_env("MOB_BEAMS_DIR") do
+      nil -> Application.app_dir(:humdinger, "priv/piano")
+      beams_dir -> Path.join([beams_dir, "priv", "piano"])
+    end
+  end
 end

@@ -21,7 +21,8 @@ defmodule Humdinger.Audio.Fake do
   exits; `analysing?/1` tells whether one still runs.
 
   The background service is recorded too: `background/0` shows what it
-  shows, `tap_background/1` presses a button.
+  shows, `tap_background/1` presses a button. `play_piano/2` and
+  `cancel_piano/1` (always `:ok` in `Fake`) drive sampled-piano previews.
   """
 
   @behaviour Humdinger.Audio
@@ -33,8 +34,10 @@ defmodule Humdinger.Audio.Fake do
     %{id: 7, name: "Headset", kind: :wired_headset}
   ]
 
-  # Like the NIF's MAX_ANALYSES.
+  # Like the NIF's MAX_ANALYSES and piano limits.
   @max_analyses 2
+  @max_piano_notes 4096
+  @max_piano_ms 600_000
 
   # ── Humdinger.Audio ──────────────────────────────────────────────────────
 
@@ -69,6 +72,15 @@ defmodule Humdinger.Audio.Fake do
 
   @impl Humdinger.Audio
   def background_running?, do: background() != nil
+
+  @impl Humdinger.Audio
+  @spec play_piano(pid(), [Humdinger.Player.note()]) :: {:ok, reference()} | {:error, term()}
+  def play_piano(owner, notes) when is_pid(owner) and is_list(notes),
+    do: call({:play_piano, owner, notes})
+
+  @impl Humdinger.Audio
+  @spec cancel_piano(reference()) :: :ok | {:error, :stream_stuck}
+  def cancel_piano(ref) when is_reference(ref), do: call({:cancel_piano, ref})
 
   # ── Driving it from a test ───────────────────────────────────────────────
 
@@ -135,6 +147,34 @@ defmodule Humdinger.Audio.Fake do
   def tap_background(action) when action in [:pause, :resume, :record, :record_stop, :stop],
     do: call({:tap_background, action})
 
+  @doc "Deliver `{:hum_audio, ref, {:piano_position, ms}}` to `ref`'s owner."
+  def piano_position(ref, ms) when is_reference(ref) and is_number(ms) and ms >= 0,
+    do: deliver(ref, {:piano_position, ms})
+
+  @doc "Deliver `{:hum_audio, ref, :piano_finished}` and end piano playback."
+  def piano_finished(ref) when is_reference(ref) do
+    :ok = deliver(ref, :piano_finished)
+    call({:cancel_piano, ref})
+  end
+
+  @doc "Deliver `{:hum_audio, ref, {:piano_error, reason}}` and end piano playback."
+  def piano_error(ref, reason) when is_reference(ref) do
+    :ok = deliver(ref, {:piano_error, reason})
+    call({:cancel_piano, ref})
+  end
+
+  @doc "Whether `ref` is the current piano playback."
+  def piano_playing?(ref) when is_reference(ref), do: current_piano() == ref
+
+  @doc "The current piano playback's reference, or nil."
+  def current_piano, do: call(:current_piano)
+
+  @doc "The notes of the current piano playback, or nil."
+  def current_piano_notes, do: call(:current_piano_notes)
+
+  @doc "Force `play_piano/2` to fail with `reason`, or `nil` to clear."
+  def set_piano_error(reason), do: call({:set_piano_error, reason})
+
   @doc "Forget everything: no listener, permission granted, no service."
   def reset, do: call(:reset)
 
@@ -153,7 +193,8 @@ defmodule Humdinger.Audio.Fake do
   defp deliver(ref, payload) do
     case call({:owner, ref}) do
       nil ->
-        raise ArgumentError, "#{inspect(ref)} was never returned by listen/2 or analyze_file/3"
+        raise ArgumentError,
+              "#{inspect(ref)} was never returned by listen/2, analyze_file/3, or play_piano/2"
 
       owner ->
         send(owner, {:hum_audio, ref, payload})
@@ -172,6 +213,10 @@ defmodule Humdinger.Audio.Fake do
       permission: true,
       background: nil,
       bg_monitor: nil,
+      piano_ref: nil,
+      piano_notes: nil,
+      piano_monitor: nil,
+      piano_error: nil,
       # analyze_file/3 jobs still "decoding": ref => {owner, monitor}
       running: %{}
     }
@@ -267,8 +312,48 @@ defmodule Humdinger.Audio.Fake do
     {:reply, :ok, s}
   end
 
+  def handle_call({:play_piano, owner, notes}, _from, s) do
+    case validate_piano_notes(notes) do
+      :ok ->
+        cond do
+          s.piano_error != nil ->
+            {:reply, {:error, s.piano_error}, s}
+
+          not Process.alive?(owner) ->
+            {:reply, {:error, :owner_dead}, s}
+
+          true ->
+            s = stop_piano(s)
+            ref = make_ref()
+
+            s = %{
+              s
+              | piano_ref: ref,
+                piano_notes: notes,
+                piano_monitor: Process.monitor(owner),
+                owners: Map.put(s.owners, ref, owner)
+            }
+
+            {:reply, {:ok, ref}, s}
+        end
+
+      {:error, _} = error ->
+        {:reply, error, s}
+    end
+  end
+
+  def handle_call({:cancel_piano, ref}, _from, %{piano_ref: ref} = s),
+    do: {:reply, :ok, stop_piano(s)}
+
+  def handle_call({:cancel_piano, _ref}, _from, s), do: {:reply, :ok, s}
+  def handle_call(:current_piano, _from, s), do: {:reply, s.piano_ref, s}
+  def handle_call(:current_piano_notes, _from, s), do: {:reply, s.piano_notes, s}
+
+  def handle_call({:set_piano_error, reason}, _from, s),
+    do: {:reply, :ok, %{s | piano_error: reason}}
+
   def handle_call(:reset, _from, s) do
-    _ = s |> stop_current() |> stop_background()
+    _ = s |> stop_current() |> stop_background() |> stop_piano()
     Enum.each(s.running, fn {_ref, {_owner, m}} -> Process.demonitor(m, [:flush]) end)
     {:reply, :ok, fresh()}
   end
@@ -309,6 +394,10 @@ defmodule Humdinger.Audio.Fake do
   def handle_info({:DOWN, monitor, :process, _pid, _reason}, %{bg_monitor: monitor} = s),
     do: {:noreply, stop_background(s)}
 
+  # The piano preview's owner died: the NIF stops playback.
+  def handle_info({:DOWN, monitor, :process, _pid, _reason}, %{piano_monitor: monitor} = s),
+    do: {:noreply, stop_piano(s)}
+
   # An analysis's owner died: the NIF cancels it.
   def handle_info({:DOWN, monitor, :process, _pid, _reason}, s),
     do: {:noreply, %{s | running: Map.reject(s.running, fn {_ref, {_o, m}} -> m == monitor end)}}
@@ -326,4 +415,43 @@ defmodule Humdinger.Audio.Fake do
     Process.demonitor(s.bg_monitor, [:flush])
     %{s | background: nil, bg_monitor: nil}
   end
+
+  defp stop_piano(%{piano_monitor: nil} = s), do: %{s | piano_ref: nil, piano_notes: nil}
+
+  defp stop_piano(s) do
+    Process.demonitor(s.piano_monitor, [:flush])
+    %{s | piano_ref: nil, piano_notes: nil, piano_monitor: nil}
+  end
+
+  defp validate_piano_notes([]), do: {:error, :empty}
+
+  defp validate_piano_notes(notes) when length(notes) > @max_piano_notes,
+    do: {:error, :too_many_notes}
+
+  defp validate_piano_notes(notes) do
+    Enum.reduce_while(notes, :ok, fn note, :ok ->
+      case validate_piano_note(note) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_piano_note(%{start_ms: start_ms, dur_ms: dur_ms, midi: midi} = note)
+       when is_number(start_ms) and start_ms >= 0 and is_number(dur_ms) and dur_ms > 0 and
+              is_integer(midi) and midi in 0..127 do
+    validate_piano_limits(start_ms + dur_ms, Map.get(note, :velocity))
+  end
+
+  defp validate_piano_note(_), do: {:error, :invalid_notes}
+
+  defp validate_piano_limits(_end_ms, velocity)
+       when not is_nil(velocity) and
+              (not is_integer(velocity) or velocity < 1 or velocity > 127),
+       do: {:error, :invalid_notes}
+
+  defp validate_piano_limits(end_ms, _velocity) when end_ms > @max_piano_ms,
+    do: {:error, :too_long}
+
+  defp validate_piano_limits(_end_ms, _velocity), do: :ok
 end

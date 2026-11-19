@@ -82,4 +82,20 @@ defmodule Humdinger.Audio.Nif do
   on a phone (`scripts/realtime_check.exs`).
   """
   def set_input_preset(_preset), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Synthesizes and plays `notes` using sampled piano WAVs in `samples_dir`,
+  sending `{:hum_audio, ref, ...}` messages to `owner`. Preempts any active
+  preview; returns `{:error, :stream_stuck}` if a previous output stream
+  could not yet be stopped.
+  """
+  def play_piano(_owner, _ref, _notes, _samples_dir), do: :erlang.nif_error(:nif_not_loaded)
+
+  @doc """
+  Cancel active piano playback for `ref`: stops the render thread, prevents
+  further messages for `ref`, and stops the AAudio output stream. Returns `:ok`
+  (also for an unknown `ref`) or `{:error, :stream_stuck}` if the stream could
+  not be stopped within the timeout.
+  """
+  def cancel_piano(_ref), do: :erlang.nif_error(:nif_not_loaded)
 end

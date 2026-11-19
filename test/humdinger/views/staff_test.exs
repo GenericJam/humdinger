@@ -520,4 +520,87 @@ defmodule Humdinger.Views.StaffTest do
       names: true
     )
   end
+
+  describe "playhead and active-note highlight" do
+    test "highlights note items matching active_index and renders the playhead bar" do
+      d =
+        data(
+          [
+            [
+              note(0.0, :quarter, -5, %{midi: 62, step: "D", note_index: 0}),
+              note(1.0, :eighth, -4, %{
+                midi: 64,
+                step: "E",
+                beam: :begin,
+                tie_to_next: true,
+                note_index: 1
+              }),
+              note(1.5, :eighth, -4, %{midi: 64, step: "E", beam: :end, note_index: 1}),
+              note(2.0, :quarter, -1, %{midi: 69, step: "A", note_index: 2})
+            ]
+          ],
+          names: true
+        )
+        |> Map.merge(%{tempo_bpm: 120, playhead_ms: 500, active_index: 1})
+
+      ops = render(d)
+      [h0, h1, h2, _h3] = heads(ops)
+
+      bars = Enum.filter(ops, &(&1.op == :rect and &1.color == Style.fm_dim() and &1[:fill]))
+      rings = Enum.filter(ops, &(&1.op == :circle and &1.color == Style.fm_dim()))
+      head_rings = Enum.filter(rings, &(&1.r == 11))
+      name_rings = Enum.filter(rings, &(&1.r == 12))
+
+      assert [bar] = bars
+      assert bar.x == Float.round(h1.x - 1, 1)
+      assert Enum.map(head_rings, &{&1.x, &1.y}) == [{h1.x, h1.y}, {h2.x, h2.y}]
+      assert Enum.map(name_rings, & &1.x) == [h1.x, h2.x]
+
+      # active_index is independent of playhead_ms.
+      ops_decoupled =
+        d
+        |> Map.merge(%{playhead_ms: 1200, active_index: 0})
+        |> render()
+
+      assert [%{x: x0, y: y0}] =
+               Enum.filter(
+                 ops_decoupled,
+                 &(&1.op == :circle and &1.color == Style.fm_dim() and &1.r == 11)
+               )
+
+      assert {x0, y0} == {h0.x, h0.y}
+    end
+
+    test "no ring when active_index is nil or not displayed while keeping playhead bar" do
+      d =
+        data([[note(0.0, :quarter, -5, %{midi: 62, step: "D", note_index: 0})]], names: true)
+        |> Map.put(:tempo_bpm, 120)
+
+      for active <- [nil, 9] do
+        ops = d |> Map.merge(%{playhead_ms: 100, active_index: active}) |> render()
+
+        assert [_bar] = Enum.filter(ops, &(&1.op == :rect and &1.color == Style.fm_dim()))
+        assert [] == Enum.filter(ops, &(&1.op == :circle and &1.color == Style.fm_dim()))
+      end
+    end
+
+    test "tracks across wrapped systems and clamps past the end" do
+      d = data(List.duplicate(quarters(-2), 6)) |> Map.put(:tempo_bpm, 120)
+      systems = Staff.systems(d, @w)
+      assert [sys1, sys2 | _] = systems
+
+      # Measure in second system starts at beat `hd(sys2.measures) * 4` -> * 500ms.
+      m_index = hd(sys2.measures)
+      ops2 = d |> Map.put(:playhead_ms, m_index * 4 * 500 + 250) |> render()
+      [bar2] = Enum.filter(ops2, &(&1.op == :rect and &1.color == Style.fm_dim()))
+      assert bar2.y == sys2.top - 12
+      assert bar2.y > sys1.top + 48
+
+      last = List.last(systems)
+      ops_end = d |> Map.put(:playhead_ms, 60_000) |> render()
+      [bar_end] = Enum.filter(ops_end, &(&1.op == :rect and &1.color == Style.fm_dim()))
+      assert bar_end.y == last.top - 12
+      assert_in_delta bar_end.x, last.right - 1, 0.05
+    end
+  end
 end

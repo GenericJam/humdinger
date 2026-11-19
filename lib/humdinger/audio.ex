@@ -13,6 +13,9 @@ defmodule Humdinger.Audio do
       {:hum_audio, ref, {:error, reason}}         # listening ended: :permission, :device_lost, …
       {:hum_audio, ref, {:analysis, analysis}}    # analyze_file/3 finished
       {:hum_audio, ref, {:analysis_error, reason}}
+      {:hum_audio, ref, {:piano_position, ms}}    # sampled piano played ms, monotonic, ≤ 30 Hz
+      {:hum_audio, ref, :piano_finished}          # sampled piano finished playing
+      {:hum_audio, ref, {:piano_error, reason}}   # sampled piano failed or lost output
 
   A message whose `ref` isn't the caller's current one is stale: ignore it.
 
@@ -99,6 +102,23 @@ defmodule Humdinger.Audio do
   @callback background_stop() :: :ok
   @doc "Whether the background-listening service runs."
   @callback background_running?() :: boolean()
+
+  @doc """
+  Synthesizes and plays `notes` using packaged piano samples, sending position
+  and completion notifications to `owner`. Preempts any active native preview;
+  refuses with `{:error, :stream_stuck}` if a previous output stream could not
+  yet be stopped.
+  """
+  @callback play_piano(owner :: pid(), notes :: [Humdinger.Player.note()]) ::
+              {:ok, reference()} | {:error, term()}
+
+  @doc """
+  Stops native piano playback for `ref` if active. Idempotent; once it returns,
+  no further messages for `ref` are sent. Returns `{:error, :stream_stuck}` if
+  the output stream could not be stopped; `play_piano/2` refuses with
+  `{:error, :stream_stuck}` until a retry stops it.
+  """
+  @callback cancel_piano(reference()) :: :ok | {:error, :stream_stuck}
 
   @doc "Spectrum bins per column."
   def spectrum_bins, do: 128

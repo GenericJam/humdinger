@@ -23,7 +23,9 @@ defmodule Humdinger.Views.PianoRoll do
     x = x0 + start·scale + 1, width = dur·scale − 3. Unsure notes fade to
     opacity 0.4 and a "N unsure · faded" chip (warn on #14121A) sits
     bottom-right. The selected note gets a 2 dp white ring and two 6 dp
-    white handles (row + 4 high, r3) centred on its ends.
+    white handles (row + 4 high, r3) centred on its ends; during preview
+    playback `active` highlights the playing block and `playhead_ms` draws
+    the playhead bar.
 
   `layout/3` exposes this geometry and `hit/5` resolves a touch (canvas-local,
   from `on_drag`) to a note end, a note body, or an empty spot. Edge zones
@@ -52,11 +54,14 @@ defmodule Humdinger.Views.PianoRoll do
         }
 
   @typedoc """
-  - `notes` — see `t:note/0`; `selected` indexes into it.
+  - `notes` — see `t:note/0`; `selected` and `active` index into it.
   - `trace` — `{t_ms, pitch | nil}` samples of what was sung (fractional MIDI).
   - `scale` — the phrase's scale; `nil` means chromatic.
   - `tempo_bpm`, `beats_per_bar` (default 4) — for the beat grid.
+  - `active` — optional index of the currently playing note block to highlight.
   - `duration_ms` — optional; default the last note's end.
+  - `playhead_ms` — optional playback position; when present, draws the
+    playhead bar.
   """
   @type data :: %{
           required(:notes) => [note()],
@@ -65,7 +70,9 @@ defmodule Humdinger.Views.PianoRoll do
           optional(:tempo_bpm) => number() | nil,
           optional(:beats_per_bar) => pos_integer(),
           optional(:selected) => non_neg_integer() | nil,
-          optional(:duration_ms) => number()
+          optional(:active) => non_neg_integer() | nil,
+          optional(:duration_ms) => number(),
+          optional(:playhead_ms) => number() | nil
         }
 
   @typedoc "A row: its note and its top edge."
@@ -294,13 +301,17 @@ defmodule Humdinger.Views.PianoRoll do
   @spec ops(data(), number(), number()) :: [map()]
   def ops(data, w, h) do
     layout = layout(data, w, h)
+    playhead_ms = Map.get(data, :playhead_ms)
+    active = valid_index(Map.get(data, :active), layout.blocks)
 
     [RollRows.box(w, h, @radius)] ++
       rows(layout) ++
       grid(layout) ++
       trace(layout, Map.get(data, :trace) || []) ++
       Enum.map(layout.blocks, &block/1) ++
+      active_blocks(layout, active) ++
       selection(layout) ++
+      playhead(layout, playhead_ms) ++
       chip(layout)
   end
 
@@ -373,6 +384,31 @@ defmodule Humdinger.Views.PianoRoll do
       handle.(b.x),
       handle.(b.x + b.w)
     ]
+  end
+
+  defp active_blocks(_layout, nil), do: []
+
+  defp active_blocks(%{blocks: blocks}, i) when is_integer(i) do
+    b = Enum.at(blocks, i)
+
+    [
+      rect(
+        Draw.r1(b.x + 1),
+        Draw.r1(b.y + 1),
+        Draw.r1(max(b.w - 2, 1)),
+        Draw.r1(max(b.h - 2, 1)),
+        color: Style.fm(),
+        width: 2,
+        radius: max(block_radius(b) - 1, 1)
+      )
+    ]
+  end
+
+  defp playhead(_layout, nil), do: []
+
+  defp playhead(%{x0: x0, w: w, h: h} = layout, ms) when is_number(ms) do
+    x = layout |> x_of(ms) |> min(w - @right_pad) |> max(x0)
+    [rect(Draw.r1(x - 1), 0, 2, h, color: Style.fm(), fill: true)]
   end
 
   defp chip(%{blocks: blocks, w: w, h: h}) do

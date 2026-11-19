@@ -44,9 +44,10 @@ picks up `deps/mob/usage-rules.md`.
 (humming, singing, whistling), turns the pitch into MIDI notes in real time
 and sends them to a synth: FMutate (the sibling FM-1 emulator app, over
 Erlang distribution), Humdinger's own virtual MIDI port (any app can pick
-it), USB-MIDI or Bluetooth-MIDI. Humdinger makes no sound itself. It also
-records phrases (piano roll, sheet music, `.mid`, MusicXML) and turns an
-audio file into notes. The mascot is **Mimi**, a round hummingbird whose
+it), USB-MIDI or Bluetooth-MIDI. Singing makes no sound on the phone; the
+only local audio is Review's sampled-piano preview of a recorded phrase. It
+also records phrases (piano roll, sheet music, `.mid`, MusicXML) and turns
+an audio file into notes. The mascot is **Mimi**, a round hummingbird whose
 feathers take the colour of the note being sung.
 
 **Android first.** The sibling FMutate is Android-first and the pairing
@@ -1081,13 +1082,26 @@ print, the "Play out to <destination>" label, error wording) and
 tree (not native alerts), so the tests see them.
 
 **Player** (`Humdinger.Player`, one per screen, linked to it): `play(player,
-notes, tag)` sends `Phrase.quantized_notes/1` out through the output
-(`config :humdinger, :output`) at their times, batches same-time events
-note offs first, re-strikes an overlapping pitch, tells the owner
+notes, tag, opts \\ [])` sends `Phrase.quantized_notes/1` out through the
+output (`config :humdinger, :output`) at their times, batches same-time
+events note offs first, re-strikes an overlapping pitch, tells the owner
 `{:player, :finished, tag}`; `stop/1` and the screen going away send the
 note offs. Each tick reads the clock and sends everything due, so a late
-timer delays but never drops or drifts (`clock:` / `output:` options for
-tests).
+timer delays but never drops or drifts (`clock:` / `output:` / `audio:`
+options for tests). `mode: :piano` plays the notes on the phone instead
+(`Audio.play_piano/2`, packaged samples in `priv/piano`, no MIDI sent)
+while still holding the Output session, so live MIDI stays out and a newer
+session preempts it; the owner gets `{:player, :position, tag, ms}` (the
+speaker's actual position, ≤ 30 Hz), then `:finished` or
+`{:player, :error, tag, reason}`. Before acquiring, the player resolves and
+monitors the exact Output pid (`{:error, :output_down}` if there is none);
+Output dying, preemption, Stop, replay and the owner dying all cancel the
+native preview before the session is released. `cancel_piano/1` returns
+`{:error, :stream_stuck}` when AAudio won't stop the stream: the player
+reports it (Stop and Play return the error, the screen shows a notice) and
+the next play refuses rather than share the orphaned stream. Review's
+highlight follows the played timeline (`note_index`), not the notation's
+own rounding.
 
 - **Phrases** (board `saved`): params none (Live pushes it with `%{}`).
   States: loading (`start_async`), the list (`<LazyList>`), empty (Mimi +

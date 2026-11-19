@@ -43,7 +43,10 @@ defmodule Humdinger.Views.Staff do
 
   With `note_names: true` every note gets a dot (r 9, its pitch colour at
   58 % lightness) 34 below the staff with its letter in ink, as on the
-  board — the learning aid.
+  board — the learning aid. During preview playback, `playhead_ms` (with
+  `tempo_bpm`) draws the playhead bar across the systems, and `active_index`
+  highlights noteheads (and name dots) whose `note_index` matches the note
+  currently sounding.
 
   Missing layout or no measures draws the card with an empty staff.
   """
@@ -86,7 +89,13 @@ defmodule Humdinger.Views.Staff do
           measures: [measure()]
         }
 
-  @type data :: %{optional(:layout) => layout() | nil, optional(:note_names) => boolean()}
+  @type data :: %{
+          optional(:layout) => layout() | nil,
+          optional(:note_names) => boolean(),
+          optional(:playhead_ms) => number() | nil,
+          optional(:tempo_bpm) => number() | nil,
+          optional(:active_index) => non_neg_integer() | nil
+        }
 
   @typedoc """
   A wrapped line of music: staff top y, staff x extent (`left`..`right`)
@@ -128,9 +137,12 @@ defmodule Humdinger.Views.Staff do
   @doc "Draw ops for the paper card and its systems on a `w` × `h` canvas."
   @spec ops(data(), number(), number()) :: [map()]
   def ops(data, w, h) do
+    s = normalize(data)
+    built = build_with(s, w)
+
     [
       rect(0, 0, w, h, color: Style.paper(), fill: true, radius: @radius)
-      | Enum.flat_map(build(data, w).systems, & &1.ops)
+      | Enum.flat_map(built.systems, & &1.ops) ++ playhead_ops(data, s, built.systems)
     ]
   end
 
@@ -140,7 +152,10 @@ defmodule Humdinger.Views.Staff do
 
   @doc "Where the systems fall at width `w` (see `t:system/0`)."
   @spec systems(data(), number()) :: [system()]
-  def systems(data, w), do: Enum.map(build(data, w).systems, &Map.delete(&1, :ops))
+  def systems(data, w) do
+    build(data, w).systems
+    |> Enum.map(&Map.take(&1, [:top, :left, :right, :measures]))
+  end
 
   @doc """
   The y of staff position `pos` on a staff whose top line is at `top`:
@@ -151,8 +166,9 @@ defmodule Humdinger.Views.Staff do
 
   # ── Build ───────────────────────────────────────────────────────────────
 
-  defp build(data, w) do
-    s = normalize(data)
+  defp build(data, w), do: build_with(normalize(data), w)
+
+  defp build_with(s, w) do
     right = w - @left
 
     rows =
@@ -450,14 +466,16 @@ defmodule Humdinger.Views.Staff do
       Enum.map(rows, fn row ->
         content = row_ops(row, s)
         {_, low} = extents(content)
-        names = if s.names?, do: name_ops(row, max(4 * @g + @names_below, low + 14)), else: []
+        names_y = max(4 * @g + @names_below, low + 14)
+        names = if s.names?, do: name_ops(row, names_y), else: []
         all = content ++ names
         {high, low} = extents(all)
-        {row, all, max(@min_above, 8 - high), max(@min_below, low + 19)}
+        {row, all, names_y, max(@min_above, 8 - high), max(@min_below, low + 19)}
       end)
 
     {systems, bottom} =
-      Enum.map_reduce(drawn, {@pad_top, 0}, fn {row, ops, above, below}, {y, prev_below} ->
+      Enum.map_reduce(drawn, {@pad_top, 0}, fn {row, ops, names_y, above, below},
+                                               {y, prev_below} ->
         top = ceil(y + prev_below + above)
 
         system = %{
@@ -465,6 +483,8 @@ defmodule Humdinger.Views.Staff do
           left: @left,
           right: row.right,
           measures: Enum.map(row.measures, & &1.index),
+          row: row,
+          names_y: if(s.names?, do: names_y, else: nil),
           ops: Enum.map(ops, &shift(&1, top))
         }
 
@@ -878,4 +898,128 @@ defmodule Humdinger.Views.Staff do
   end
 
   defp letter(%{midi: midi}), do: Music.pitch_class_name(midi)
+
+  # ── Playhead & active notes ────────────────────────────────────────────
+
+  defp playhead_ops(data, s, systems) do
+    highlights = active_note_ops(systems, Map.get(data, :active_index))
+    ms = Map.get(data, :playhead_ms)
+
+    if is_number(ms) and s.measures != [] do
+      bpm =
+        case Map.get(data, :tempo_bpm) do
+          t when is_number(t) and t > 0 -> t
+          _ -> 120
+        end
+
+      beat = max(ms, 0) * bpm / 60_000
+      bar_beats = bar_beats(s.time)
+
+      case playhead_rect(systems, beat, bar_beats) do
+        nil -> highlights
+        bar -> highlights ++ [bar]
+      end
+    else
+      highlights
+    end
+  end
+
+  defp bar_beats({n, d}) when is_number(n) and is_number(d) and n > 0 and d > 0, do: n * 4 / d
+  defp bar_beats(_), do: 4.0
+
+  defp active_note_ops(systems, active_index) when is_integer(active_index) do
+    for sys <- systems,
+        m <- sys.row.measures,
+        p <- m.items,
+        note?(p.item) and p.item[:note_index] == active_index,
+        op <- active_item_ops(sys, p) do
+      op
+    end
+  end
+
+  defp active_note_ops(_systems, _active_index), do: []
+
+  defp active_item_ops(sys, p) do
+    head_ring =
+      circle(Draw.r1(p.x), Draw.r1(sys.top + staff_y(0, pos(p))), 11,
+        color: Style.fm_dim(),
+        width: 2.2
+      )
+
+    if sys.names_y != nil and is_integer(p.item[:midi]) do
+      [
+        head_ring,
+        circle(Draw.r1(p.x), Draw.r1(sys.top + sys.names_y), 12,
+          color: Style.fm_dim(),
+          width: 2.0
+        )
+      ]
+    else
+      [head_ring]
+    end
+  end
+
+  defp playhead_rect(systems, beat, bar_beats) do
+    case playhead_position(systems, beat, bar_beats) do
+      nil ->
+        nil
+
+      {sys, x} ->
+        rect(Draw.r1(x - 1), Draw.r1(sys.top - 12), 2, Draw.r1(4 * @g + 24),
+          color: Style.fm_dim(),
+          fill: true
+        )
+    end
+  end
+
+  defp playhead_position(systems, beat, bar_beats) do
+    Enum.reduce_while(systems, nil, fn sys, tail ->
+      case Enum.find(sys.row.measures, &(beat < (&1.index + 1) * bar_beats)) do
+        nil -> {:cont, system_end(sys, tail)}
+        measure -> {:halt, {sys, measure_x(measure, beat - measure.index * bar_beats, bar_beats)}}
+      end
+    end)
+  end
+
+  defp system_end(%{row: %{measures: []}}, tail), do: tail
+  defp system_end(sys, _tail), do: {sys, List.last(sys.row.measures).end}
+
+  defp measure_x(m, local_beat, _bar_beats) when local_beat <= 0 do
+    case m.items do
+      [%{item: %{beat: b}, x: x} | _] when is_number(b) and b <= 0 -> x
+      _ -> m.start + @lead
+    end
+  end
+
+  defp measure_x(m, local_beat, bar_beats) do
+    anchors = measure_anchors(m, bar_beats)
+
+    case Enum.chunk_every(anchors, 2, 1, :discard) do
+      [] ->
+        m.end
+
+      pairs ->
+        [{b1, x1}, {b2, x2}] =
+          Enum.find(pairs, List.last(pairs), fn [{_b1, _}, {b2, _}] -> local_beat <= b2 end)
+
+        span = b2 - b1
+        if span <= 1.0e-6, do: x1, else: x1 + (local_beat - b1) / span * (x2 - x1)
+    end
+  end
+
+  defp measure_anchors(%{items: [%{item: %{kind: :rest, type: :whole}}]} = m, bar_beats),
+    do: [{0.0, m.start + @lead}, {bar_beats, m.end}]
+
+  defp measure_anchors(m, bar_beats) do
+    points = Enum.map(m.items, fn p -> {p.item[:beat] || 0.0, p.x} end)
+
+    points =
+      case points do
+        [{b, _} | _] when b > 0 -> [{0.0, m.start + @lead} | points]
+        [] -> [{0.0, m.start + @lead}]
+        _ -> points
+      end
+
+    points ++ [{bar_beats, m.end}]
+  end
 end

@@ -59,9 +59,9 @@ defmodule Humdinger.Test.FakeOutput do
 
   # A Player's session: its events are reported like the live ones. No
   # arbitration here; tests of that use the real Humdinger.Output.
-  def acquire(_owner), do: {:ok, make_ref()}
-  def session_events(_ref, events), do: Listener.tell({:output, events})
-  def release(_ref), do: :ok
+  def acquire(_owner, _server), do: {:ok, make_ref()}
+  def session_events(_ref, events, _server), do: Listener.tell({:output, events})
+  def release(_ref, _server), do: :ok
 
   def destinations, do: get(& &1.destinations)
 
