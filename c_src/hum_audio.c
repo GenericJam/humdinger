@@ -85,6 +85,7 @@
 
 #include "pitch_yin.c"
 #include "spectrum.c"
+#include "piano.c"
 
 #define LOG_TAG "hum_audio"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -123,15 +124,20 @@ typedef void (*aa_error_cb)(AAudioStream *, void *, aaudio_result_t);
 enum {
     AA_OK = 0,
     AA_UNSPECIFIED = 0,
+    AA_DIRECTION_OUTPUT = 0,
     AA_DIRECTION_INPUT = 1,
     AA_FORMAT_PCM_FLOAT = 2,
     AA_SHARING_SHARED = 1,
+    AA_PERF_NONE = 10,
     AA_PERF_LOW_LATENCY = 12,
+    AA_USAGE_MEDIA = 1,
+    AA_CONTENT_TYPE_MUSIC = 2,
     AA_PRESET_GENERIC = 1,
     AA_PRESET_VOICE_RECOGNITION = 6,
     AA_PRESET_UNPROCESSED = 9,
     AA_PRESET_VOICE_PERFORMANCE = 10,
     AA_CALLBACK_CONTINUE = 0,
+    AA_CALLBACK_STOP = 1,
     AA_STATE_OPEN = 2,
     AA_STATE_STARTING = 3,
     AA_STATE_STARTED = 4,
@@ -152,6 +158,8 @@ static struct {
     void (*setSharingMode)(AAudioStreamBuilder *, int32_t);
     void (*setPerformanceMode)(AAudioStreamBuilder *, int32_t);
     void (*setInputPreset)(AAudioStreamBuilder *, int32_t);
+    void (*setUsage)(AAudioStreamBuilder *, int32_t);
+    void (*setContentType)(AAudioStreamBuilder *, int32_t);
     void (*setDataCallback)(AAudioStreamBuilder *, aa_data_cb, void *);
     void (*setErrorCallback)(AAudioStreamBuilder *, aa_error_cb, void *);
     aaudio_result_t (*openStream)(AAudioStreamBuilder *, AAudioStream **);
@@ -161,6 +169,7 @@ static struct {
     aaudio_result_t (*requestStop)(AAudioStream *);
     int32_t (*getDeviceId)(AAudioStream *);
     int32_t (*getSampleRate)(AAudioStream *);
+    int32_t (*getChannelCount)(AAudioStream *);
     int32_t (*getFramesPerBurst)(AAudioStream *);
     int32_t (*getBufferSizeInFrames)(AAudioStream *);
     int32_t (*getXRunCount)(AAudioStream *);
@@ -252,6 +261,8 @@ static bool bind_libraries(void) {
     BIND(aa, a, setSharingMode, "AAudioStreamBuilder_setSharingMode");
     BIND(aa, a, setPerformanceMode, "AAudioStreamBuilder_setPerformanceMode");
     BIND(aa, a, setInputPreset, "AAudioStreamBuilder_setInputPreset");
+    *(void **)&aa.setUsage = dlsym(a, "AAudioStreamBuilder_setUsage");
+    *(void **)&aa.setContentType = dlsym(a, "AAudioStreamBuilder_setContentType");
     BIND(aa, a, setDataCallback, "AAudioStreamBuilder_setDataCallback");
     BIND(aa, a, setErrorCallback, "AAudioStreamBuilder_setErrorCallback");
     BIND(aa, a, openStream, "AAudioStreamBuilder_openStream");
@@ -261,6 +272,7 @@ static bool bind_libraries(void) {
     BIND(aa, a, requestStop, "AAudioStream_requestStop");
     BIND(aa, a, getDeviceId, "AAudioStream_getDeviceId");
     BIND(aa, a, getSampleRate, "AAudioStream_getSampleRate");
+    BIND(aa, a, getChannelCount, "AAudioStream_getChannelCount");
     BIND(aa, a, getFramesPerBurst, "AAudioStream_getFramesPerBurst");
     BIND(aa, a, getBufferSizeInFrames, "AAudioStream_getBufferSizeInFrames");
     BIND(aa, a, getXRunCount, "AAudioStream_getXRunCount");
@@ -1896,6 +1908,877 @@ static ERL_NIF_TERM nif_set_input_preset(ErlNifEnv *env, int argc, const ERL_NIF
     return atom(env, "ok");
 }
 
+/* ── Piano output ──────────────────────────────────────────────────────── */
+
+#define PIANO_RING_SIZE (1 << 14)          /* mono output samples, power of two */
+#define PIANO_UNDERRUN_RING_SIZE (1 << 10) /* stream-frame underrun ranges, power of two */
+#define PIANO_MIN_ROOT 22
+#define PIANO_MAX_ROOT 106
+#define PIANO_ROOT_STEP 3
+#define PIANO_ROOT_COUNT 29
+#define PIANO_SAMPLE_RATE 22050
+#define PIANO_MAX_WAV_BYTES (2 * 1024 * 1024)
+#define PIANO_POS_INTERVAL_NS 34000000LL       /* <= 30 Hz */
+#define PIANO_MAX_TS_EXTRAPOLATE_NS 50000000LL /* cap wall-clock projection past ts_ns */
+#define PIANO_NO_TS_GRACE_NS 300000000LL       /* grace before getFramesRead fallback */
+
+typedef struct {
+    uint64_t generation;
+} piano_res;
+
+typedef struct {
+    double start_ms;
+    double dur_ms;
+    int32_t midi;
+    float gain;
+} piano_raw_note;
+
+typedef struct {
+    int64_t start;
+    int64_t len;
+} piano_underrun_range;
+
+static ErlNifResourceType *piano_watch_type;
+
+static struct {
+    pthread_mutex_t lock;
+    pthread_mutex_t send_lock;
+
+    _Atomic uint64_t generation;
+    AAudioStream *out;
+    int out_rate;
+    int out_channels;
+    int out_burst;
+    int out_buffer_frames;
+
+    float ring[PIANO_RING_SIZE];
+    _Atomic int64_t ring_write;
+    _Atomic int64_t ring_read;
+    _Atomic int64_t cb_total_frames;        /* total frames output callback handed to AAudio */
+    /* Underrun stream-frame ranges: SPSC ring written by piano_out_cb and
+     * consumed by piano_main as stream_pos reaches them. If the ring fills up,
+     * extra underrun frames spill into underrun_overflow (subtracted at once). */
+    piano_underrun_range underrun_ring[PIANO_UNDERRUN_RING_SIZE];
+    _Atomic int64_t underrun_write;
+    _Atomic int64_t underrun_read;
+    _Atomic int64_t underrun_overflow;
+    _Atomic int64_t last_real_stream_frame; /* stream frame index where total_frames ends */
+    _Atomic bool playing;                   /* output callback consumes from ring */
+    _Atomic bool out_failed;                /* output error callback fired */
+    _Atomic bool synth_done;                /* render thread wrote all frames */
+    _Atomic bool all_real_queued;           /* output callback queued total_frames to AAudio */
+    int64_t total_frames;
+    int64_t phrase_end_frames;
+    double phrase_end_ms;
+    int64_t last_sent_pos_ms;
+
+    pthread_t thread;
+    _Atomic bool run;
+
+    /* Protected by P.lock. */
+    piano_bank bank;
+    bool bank_loaded;
+    piano_synth synth;
+
+    /* Protected by P.send_lock. */
+    bool active;
+    ErlNifPid owner;
+    ErlNifEnv *ref_env;
+    ERL_NIF_TERM ref;
+    piano_res *monitor;
+} P;
+
+/* Persistent detached worker for asynchronous piano cleanup (owner down,
+ * AAudio error callback, render thread completion). Lock order: P.lock ->
+ * PC.lock; never hold PC.lock while taking P.lock. */
+static struct {
+    pthread_mutex_t lock;
+    pthread_cond_t cond;
+    bool started;
+    bool has_request;
+    uint64_t pending_generation;
+} PC;
+
+static uint16_t read_le16(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
+
+static uint32_t read_le32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+static void free_piano_samples(piano_sample *samples, int count) {
+    if (!samples) return;
+    for (int i = 0; i < count; i++) free((void *)samples[i].pcm);
+    free(samples);
+}
+
+static bool load_wav_mono_s16(const char *path, int16_t **pcm_out, int64_t *frames_out) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return false;
+    }
+    long len = ftell(f);
+    if (len < 44 || len > PIANO_MAX_WAV_BYTES || fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return false;
+    }
+
+    size_t sz = (size_t)len;
+    uint8_t *buf = malloc(sz);
+    if (!buf || fread(buf, 1, sz, f) != sz) {
+        free(buf);
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+
+    if (memcmp(buf, "RIFF", 4) != 0 || memcmp(buf + 8, "WAVE", 4) != 0) {
+        free(buf);
+        return false;
+    }
+
+    bool have_fmt = false, have_data = false;
+    size_t pos = 12;
+    const uint8_t *data_ptr = NULL;
+    uint32_t data_sz = 0;
+
+    while (pos + 8 <= sz) {
+        const uint8_t *hdr = buf + pos;
+        uint32_t chunk_sz = read_le32(hdr + 4);
+        size_t payload = pos + 8;
+        if ((uint64_t)chunk_sz > (uint64_t)(sz - payload)) break;
+
+        if (memcmp(hdr, "fmt ", 4) == 0) {
+            if (chunk_sz < 16) break;
+            uint16_t audio_fmt = read_le16(buf + payload);
+            uint16_t channels = read_le16(buf + payload + 2);
+            uint32_t rate = read_le32(buf + payload + 4);
+            uint16_t bits = read_le16(buf + payload + 14);
+            if (audio_fmt != 1 || channels != 1 || rate != PIANO_SAMPLE_RATE || bits != 16) break;
+            have_fmt = true;
+        } else if (memcmp(hdr, "data", 4) == 0) {
+            if (chunk_sz < 4 || (chunk_sz & 1u) != 0) break;
+            data_ptr = buf + payload;
+            data_sz = chunk_sz;
+            have_data = true;
+        }
+
+        size_t padded = (size_t)chunk_sz + (chunk_sz & 1u);
+        if (padded > sz - payload) break;
+        pos = payload + padded;
+    }
+
+    if (!have_fmt || !have_data) {
+        free(buf);
+        return false;
+    }
+
+    int64_t frames = (int64_t)(data_sz / 2);
+    int16_t *pcm = malloc((size_t)data_sz);
+    if (!pcm) {
+        free(buf);
+        return false;
+    }
+    for (int64_t i = 0; i < frames; i++) {
+        pcm[i] = (int16_t)read_le16(data_ptr + (size_t)i * 2);
+    }
+    free(buf);
+    *pcm_out = pcm;
+    *frames_out = frames;
+    return true;
+}
+
+static bool load_piano_bank_locked(const char *dir) {
+    if (P.bank_loaded) return true;
+    piano_sample *samples = calloc(PIANO_ROOT_COUNT, sizeof(piano_sample));
+    if (!samples) return false;
+
+    int count = 0;
+    for (int midi = PIANO_MIN_ROOT; midi <= PIANO_MAX_ROOT && count < PIANO_ROOT_COUNT;
+         midi += PIANO_ROOT_STEP) {
+        char path[1024];
+        int n = snprintf(path, sizeof(path), "%s/mf_%03d.wav", dir, midi);
+        if (n < 0 || (size_t)n >= sizeof(path)) {
+            free_piano_samples(samples, count);
+            return false;
+        }
+        int16_t *pcm = NULL;
+        int64_t frames = 0;
+        if (!load_wav_mono_s16(path, &pcm, &frames)) {
+            LOGE("piano sample missing or invalid: %s", path);
+            free_piano_samples(samples, count);
+            return false;
+        }
+        samples[count++] = (piano_sample){.pcm = pcm, .frames = frames, .root_midi = midi};
+    }
+
+    if (count != PIANO_ROOT_COUNT) {
+        free_piano_samples(samples, count);
+        return false;
+    }
+    P.bank = (piano_bank){.rate = PIANO_SAMPLE_RATE, .count = count, .samples = samples};
+    P.bank_loaded = true;
+    return true;
+}
+
+static void send_piano_position(uint64_t generation, int64_t ms) {
+    ErlNifEnv *env = enif_alloc_env();
+    ERL_NIF_TERM payload = enif_make_tuple2(env, atom(env, "piano_position"), enif_make_int64(env, ms));
+    pthread_mutex_lock(&P.send_lock);
+    if (P.active && generation == atomic_load(&P.generation)) {
+        ERL_NIF_TERM msg = enif_make_tuple3(env, atom(env, "hum_audio"), enif_make_copy(env, P.ref), payload);
+        enif_send(NULL, &P.owner, env, msg);
+    }
+    pthread_mutex_unlock(&P.send_lock);
+    enif_free_env(env);
+}
+
+static void send_piano_terminal(uint64_t generation, const char *kind, const char *reason) {
+    ErlNifEnv *env = enif_alloc_env();
+    ERL_NIF_TERM payload =
+        reason ? enif_make_tuple2(env, atom(env, kind), atom(env, reason)) : atom(env, kind);
+    pthread_mutex_lock(&P.send_lock);
+    if (P.active && generation == atomic_load(&P.generation)) {
+        P.active = false;
+        ERL_NIF_TERM msg = enif_make_tuple3(env, atom(env, "hum_audio"), enif_make_copy(env, P.ref), payload);
+        enif_send(NULL, &P.owner, env, msg);
+    }
+    pthread_mutex_unlock(&P.send_lock);
+    enif_free_env(env);
+}
+
+/* Stops the render thread, silences messages for the current ref, and stops
+ * and closes P.out. If P.out refuses to stop within the 1 s timeout, keeps
+ * P.out (the orphan), P.ref_env/P.ref, and P.synth so a retry cancel or
+ * subsequent play can try stop_and_close(&P.out) again, and returns false. */
+static bool stop_piano_locked(void) {
+    atomic_fetch_add(&P.generation, 1);
+    atomic_store(&P.playing, false);
+    if (atomic_exchange(&P.run, false)) pthread_join(P.thread, NULL);
+    pthread_mutex_lock(&P.send_lock);
+    piano_res *monitor = P.monitor;
+    P.monitor = NULL;
+    P.active = false;
+    pthread_mutex_unlock(&P.send_lock);
+    if (monitor) enif_release_resource(monitor);
+    if (!stop_and_close(&P.out)) {
+        LOGE("piano output stream failed to stop: left open");
+        return false;
+    }
+    pthread_mutex_lock(&P.send_lock);
+    if (P.ref_env) {
+        enif_free_env(P.ref_env);
+        P.ref_env = NULL;
+    }
+    pthread_mutex_unlock(&P.send_lock);
+    piano_synth_free(&P.synth);
+    return true;
+}
+
+static void *piano_cleanup_main(void *arg) {
+    (void)arg;
+    for (;;) {
+        pthread_mutex_lock(&PC.lock);
+        while (!PC.has_request) pthread_cond_wait(&PC.cond, &PC.lock);
+        uint64_t generation = PC.pending_generation;
+        PC.has_request = false;
+        pthread_mutex_unlock(&PC.lock);
+
+        pthread_mutex_lock(&P.lock);
+        if (generation == atomic_load(&P.generation)) {
+            if (!stop_piano_locked()) LOGE("piano cleanup: output stream stuck");
+        }
+        pthread_mutex_unlock(&P.lock);
+    }
+    return NULL;
+}
+
+static bool ensure_piano_cleanup_worker_locked(void) {
+    pthread_mutex_lock(&PC.lock);
+    if (PC.started) {
+        pthread_mutex_unlock(&PC.lock);
+        return true;
+    }
+    pthread_t t;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    int err = pthread_create(&t, &attr, piano_cleanup_main, NULL);
+    pthread_attr_destroy(&attr);
+    if (err == 0) PC.started = true;
+    pthread_mutex_unlock(&PC.lock);
+    if (err != 0) LOGE("piano: failed to spawn cleanup worker");
+    return err == 0;
+}
+
+static void schedule_piano_cleanup(uint64_t generation) {
+    pthread_mutex_lock(&PC.lock);
+    if (generation > PC.pending_generation) PC.pending_generation = generation;
+    PC.has_request = true;
+    pthread_cond_signal(&PC.cond);
+    pthread_mutex_unlock(&PC.lock);
+}
+
+static void piano_owner_down(ErlNifEnv *env, void *obj, ErlNifPid *pid, ErlNifMonitor *mon) {
+    (void)env;
+    (void)pid;
+    (void)mon;
+    piano_res *res = obj;
+    schedule_piano_cleanup(res->generation);
+}
+
+/* Real-time AAudio output callback: zero locks, zero allocations.
+ * Continues zero-filling after all real frames are queued so the AAudio
+ * stream stays STARTED and AAudioStream_getTimestamp keeps advancing through
+ * the final hardware drain. */
+static int32_t piano_out_cb(AAudioStream *s, void *user, void *data, int32_t frames) {
+    (void)s;
+    float *out = (float *)data;
+    int ch = P.out_channels > 0 ? P.out_channels : 1;
+    memset(out, 0, sizeof(float) * (size_t)frames * (size_t)ch);
+
+    if ((uintptr_t)user != (uintptr_t)atomic_load_explicit(&P.generation, memory_order_acquire) ||
+        !atomic_load_explicit(&P.playing, memory_order_acquire) ||
+        atomic_load_explicit(&P.out_failed, memory_order_relaxed))
+        return AA_CALLBACK_STOP;
+
+    int64_t cb_before = atomic_load_explicit(&P.cb_total_frames, memory_order_relaxed);
+    if (!atomic_load_explicit(&P.all_real_queued, memory_order_relaxed)) {
+        int64_t r = atomic_load_explicit(&P.ring_read, memory_order_relaxed);
+        int64_t w = atomic_load_explicit(&P.ring_write, memory_order_acquire);
+        int64_t avail = w - r;
+        if (avail < 0) avail = 0;
+        int32_t take = avail < (int64_t)frames ? (int32_t)avail : frames;
+
+        for (int32_t i = 0; i < take; i++) {
+            float v = P.ring[(r + i) & (PIANO_RING_SIZE - 1)];
+            if (ch == 1) {
+                out[i] = v;
+            } else {
+                for (int c = 0; c < ch; c++) out[i * ch + c] = v;
+            }
+        }
+
+        int64_t next_r = r + take;
+        atomic_store_explicit(&P.ring_read, next_r, memory_order_release);
+
+        /* synth_done is published after the final ring_write: re-read the write
+         * position once it is seen, or frames written in between would be lost. */
+        bool done = atomic_load_explicit(&P.synth_done, memory_order_acquire);
+        if (done && next_r >= atomic_load_explicit(&P.ring_write, memory_order_acquire)) {
+            atomic_store_explicit(&P.last_real_stream_frame, cb_before + take, memory_order_release);
+            atomic_store_explicit(&P.all_real_queued, true, memory_order_release);
+        } else if (take < frames) {
+            int64_t u_len = (int64_t)(frames - take);
+            int64_t u_r = atomic_load_explicit(&P.underrun_read, memory_order_acquire);
+            int64_t u_w = atomic_load_explicit(&P.underrun_write, memory_order_relaxed);
+            if (u_w - u_r < PIANO_UNDERRUN_RING_SIZE) {
+                P.underrun_ring[u_w & (PIANO_UNDERRUN_RING_SIZE - 1)] = (piano_underrun_range){
+                    .start = cb_before + take,
+                    .len = u_len,
+                };
+                atomic_store_explicit(&P.underrun_write, u_w + 1, memory_order_release);
+            } else {
+                /* Ring full: approximate by subtracting immediately rather than blocking. */
+                atomic_fetch_add_explicit(&P.underrun_overflow, u_len, memory_order_release);
+            }
+        }
+    }
+
+    atomic_store_explicit(&P.cb_total_frames, cb_before + frames, memory_order_release);
+    return AA_CALLBACK_CONTINUE;
+}
+
+static void piano_error_cb(AAudioStream *s, void *user, aaudio_result_t err) {
+    (void)s;
+    LOGE("piano output stream error %d", err);
+    uint64_t generation = atomic_load(&P.generation);
+    if ((uintptr_t)user != (uintptr_t)generation) return;
+    atomic_store(&P.out_failed, true);
+    const char *reason = err == AA_ERROR_DISCONNECTED ? "device_lost" : "output_error";
+    send_piano_terminal(generation, "piano_error", reason);
+    schedule_piano_cleanup(generation);
+}
+
+static aaudio_result_t open_piano_output(uint64_t generation, AAudioStream **out_stream) {
+    AAudioStreamBuilder *b = NULL;
+    aaudio_result_t r = aa.createStreamBuilder(&b);
+    if (r != AA_OK) return r;
+    aa.setDirection(b, AA_DIRECTION_OUTPUT);
+    aa.setChannelCount(b, 1);
+    aa.setFormat(b, AA_FORMAT_PCM_FLOAT);
+    aa.setSharingMode(b, AA_SHARING_SHARED);
+    aa.setPerformanceMode(b, AA_PERF_NONE);
+    if (aa.setUsage) aa.setUsage(b, AA_USAGE_MEDIA);
+    if (aa.setContentType) aa.setContentType(b, AA_CONTENT_TYPE_MUSIC);
+    aa.setDataCallback(b, piano_out_cb, (void *)(uintptr_t)generation);
+    aa.setErrorCallback(b, piano_error_cb, (void *)(uintptr_t)generation);
+    AAudioStream *s = NULL;
+    r = aa.openStream(b, &s);
+    aa.builderDelete(b);
+    if (r == AA_OK) *out_stream = s;
+    return r;
+}
+
+static int64_t piano_played_ms(int64_t played_frames) {
+    if (played_frames <= 0 || P.out_rate <= 0) return 0;
+    int64_t cap = (int64_t)llround(P.phrase_end_ms);
+    if (cap < 0) cap = 0;
+    if (played_frames >= P.phrase_end_frames) return cap;
+    int64_t ms = (int64_t)llround((double)played_frames * 1000.0 / (double)P.out_rate);
+    if (ms < 0) ms = 0;
+    if (ms > cap) ms = cap;
+    return ms;
+}
+
+static void *piano_main(void *arg) {
+    uint64_t generation = (uint64_t)(uintptr_t)arg;
+    const int32_t block_cap = 512;
+    float block[512];
+    int64_t start_ns = now_ns();
+    int64_t last_pos_ns = 0;
+    int64_t last_presented_synth = 0;
+    int64_t last_stream_pos = 0;
+    int64_t settled_underrun = 0;
+    bool ts_seen = false;
+    int64_t prev_ts_pos = -1;
+    int64_t prev_ts_ns = 0;
+    int64_t last_ts_change_ns = 0;
+    int64_t measured_hal_lag_frames = 0;
+    int64_t ep_drained_at_ns = 0;
+    int64_t ep_drained_extra = 0;
+
+    while (atomic_load(&P.run)) {
+        if (atomic_load(&P.out_failed)) break;
+
+        if (!atomic_load_explicit(&P.synth_done, memory_order_relaxed)) {
+            int64_t r = atomic_load_explicit(&P.ring_read, memory_order_acquire);
+            int64_t w = atomic_load_explicit(&P.ring_write, memory_order_relaxed);
+            while ((w - r) + block_cap <= PIANO_RING_SIZE) {
+                int32_t got = piano_synth_render_block(&P.synth, &P.bank, block, block_cap);
+                if (got <= 0) {
+                    atomic_store_explicit(&P.synth_done, true, memory_order_release);
+                    break;
+                }
+                for (int32_t i = 0; i < got; i++) P.ring[(w + i) & (PIANO_RING_SIZE - 1)] = block[i];
+                w += got;
+                atomic_store_explicit(&P.ring_write, w, memory_order_release);
+                if (P.synth.cursor_frame >= P.total_frames) {
+                    atomic_store_explicit(&P.synth_done, true, memory_order_release);
+                    break;
+                }
+            }
+        }
+
+        int64_t now = now_ns();
+        int64_t cb_total = atomic_load_explicit(&P.cb_total_frames, memory_order_acquire);
+        int64_t queued_real = atomic_load_explicit(&P.ring_read, memory_order_acquire);
+
+        int64_t ts_pos = -1, ts_ns = 0;
+        aaudio_result_t ts_res = aa.getTimestamp(P.out, CLOCK_MONOTONIC, &ts_pos, &ts_ns);
+        int64_t ep_read = aa.getFramesRead(P.out);
+
+        bool ts_fresh = false;
+        int64_t stream_pos = last_stream_pos;
+        if (ts_res == AA_OK && ts_pos >= 0 && ts_ns > 0) {
+            if (ts_pos != prev_ts_pos || ts_ns != prev_ts_ns) {
+                prev_ts_pos = ts_pos;
+                prev_ts_ns = ts_ns;
+                last_ts_change_ns = now;
+            }
+            ts_fresh = (now - last_ts_change_ns) < PIANO_NO_TS_GRACE_NS;
+            int64_t dt_ns = now - ts_ns;
+            if (dt_ns > PIANO_MAX_TS_EXTRAPOLATE_NS) dt_ns = PIANO_MAX_TS_EXTRAPOLATE_NS;
+            if (dt_ns < -PIANO_MAX_TS_EXTRAPOLATE_NS) dt_ns = -PIANO_MAX_TS_EXTRAPOLATE_NS;
+            int64_t cand = ts_pos + (int64_t)llround((double)dt_ns * (double)P.out_rate / 1e9);
+            if (cand < 0) cand = 0;
+            if (cand > cb_total) cand = cb_total;
+            if (cand > stream_pos) stream_pos = cand;
+            last_stream_pos = stream_pos;
+            ts_seen = true;
+            if (ep_read > ts_pos) {
+                int64_t lag = ep_read - ts_pos;
+                if (lag > measured_hal_lag_frames && lag < (int64_t)P.out_rate * 2)
+                    measured_hal_lag_frames = lag;
+            }
+        } else if (!ts_seen && (now - start_ns) >= PIANO_NO_TS_GRACE_NS && ep_read > 0) {
+            /* Device/route never yielded getTimestamp: stay conservative behind
+             * endpoint framesRead without fabricating wall-clock time. */
+            int64_t margin = P.out_burst > 0 ? (int64_t)P.out_burst * 2 : (int64_t)P.out_rate / 25;
+            int64_t cand = ep_read > margin ? ep_read - margin : 0;
+            if (cand > cb_total) cand = cb_total;
+            if (cand > stream_pos) stream_pos = cand;
+            last_stream_pos = stream_pos;
+        }
+
+        /* Subtract only the underrun frames that have actually reached the
+         * presented stream_pos so a buffered underrun never stalls the playhead
+         * early. */
+        int64_t u_r = atomic_load_explicit(&P.underrun_read, memory_order_relaxed);
+        int64_t u_w = atomic_load_explicit(&P.underrun_write, memory_order_acquire);
+        int64_t partial_underrun = 0;
+        while (u_r < u_w) {
+            piano_underrun_range ur = P.underrun_ring[u_r & (PIANO_UNDERRUN_RING_SIZE - 1)];
+            if (ur.start + ur.len <= stream_pos) {
+                settled_underrun += ur.len;
+                u_r++;
+                atomic_store_explicit(&P.underrun_read, u_r, memory_order_release);
+            } else {
+                if (ur.start < stream_pos) partial_underrun = stream_pos - ur.start;
+                break;
+            }
+        }
+        int64_t overflow_underrun = atomic_load_explicit(&P.underrun_overflow, memory_order_acquire);
+        int64_t synth_cand = stream_pos - settled_underrun - partial_underrun - overflow_underrun;
+        if (synth_cand < 0) synth_cand = 0;
+        if (synth_cand > queued_real) synth_cand = queued_real;
+        if (synth_cand > last_presented_synth) last_presented_synth = synth_cand;
+
+        if (last_pos_ns == 0 || now - last_pos_ns >= PIANO_POS_INTERVAL_NS) {
+            int64_t pos_ms = piano_played_ms(last_presented_synth);
+            if (pos_ms < P.last_sent_pos_ms) pos_ms = P.last_sent_pos_ms;
+            if (pos_ms > P.last_sent_pos_ms || last_pos_ns == 0) {
+                P.last_sent_pos_ms = pos_ms;
+                last_pos_ns = now;
+                send_piano_position(generation, pos_ms);
+            }
+        }
+
+        if (atomic_load_explicit(&P.all_real_queued, memory_order_acquire)) {
+            int64_t last_real = atomic_load_explicit(&P.last_real_stream_frame, memory_order_acquire);
+            bool finished = ts_fresh && stream_pos >= last_real;
+
+            if (ts_fresh) ep_drained_at_ns = 0;
+
+            if (!finished && ep_read >= last_real && !ts_fresh) {
+                /* Wait for hardware endpoint + measured HAL/buffer tail to finish
+                 * presenting when getTimestamp is unavailable or stops advancing. */
+                if (ep_drained_at_ns == 0) {
+                    ep_drained_at_ns = now;
+                    ep_drained_extra = ep_read - last_real;
+                }
+                int64_t tail_frames = measured_hal_lag_frames > 0
+                                          ? measured_hal_lag_frames
+                                          : (P.out_buffer_frames > 0 ? P.out_buffer_frames : P.out_burst * 2);
+                int64_t rem_tail = tail_frames > ep_drained_extra ? tail_frames - ep_drained_extra : 0;
+                int64_t tail_ns = P.out_rate > 0 ? (int64_t)llround((double)rem_tail * 1e9 / (double)P.out_rate)
+                                                 : 100000000LL;
+                if (now - ep_drained_at_ns >= tail_ns) finished = true;
+            }
+
+            if (finished && atomic_load(&P.run) && !atomic_load(&P.out_failed)) {
+                int64_t end_ms = piano_played_ms(P.total_frames);
+                if (end_ms > P.last_sent_pos_ms && now_ns() - last_pos_ns >= PIANO_POS_INTERVAL_NS) {
+                    P.last_sent_pos_ms = end_ms;
+                    send_piano_position(generation, end_ms);
+                }
+                send_piano_terminal(generation, "piano_finished", NULL);
+                schedule_piano_cleanup(generation);
+                break;
+            }
+        }
+
+        usleep(2000);
+    }
+
+    return NULL;
+}
+
+static bool get_erlang_number(ErlNifEnv *env, ERL_NIF_TERM term, double *out) {
+    double d = 0.0;
+    ErlNifSInt64 i = 0;
+    if (enif_get_double(env, term, &d)) {
+        if (!isfinite(d)) return false;
+        *out = d;
+        return true;
+    }
+    if (enif_get_int64(env, term, &i)) {
+        *out = (double)i;
+        return true;
+    }
+    return false;
+}
+
+static bool parse_piano_notes(ErlNifEnv *env, ERL_NIF_TERM list, piano_raw_note **out, int32_t *count_out,
+                              double *max_end_ms, const char **err_reason, bool *badarg) {
+    unsigned len = 0;
+    if (!enif_get_list_length(env, list, &len)) {
+        *badarg = true;
+        return false;
+    }
+    if (len == 0) {
+        *err_reason = "empty";
+        return false;
+    }
+    if (len > PIANO_MAX_NOTES) {
+        *err_reason = "too_many_notes";
+        return false;
+    }
+
+    piano_raw_note *raw = calloc(len, sizeof(piano_raw_note));
+    if (!raw) {
+        *err_reason = "alloc";
+        return false;
+    }
+
+    ERL_NIF_TERM k_start = atom(env, "start_ms");
+    ERL_NIF_TERM k_dur = atom(env, "dur_ms");
+    ERL_NIF_TERM k_midi = atom(env, "midi");
+    ERL_NIF_TERM k_vel = atom(env, "velocity");
+    ERL_NIF_TERM a_nil = atom(env, "nil");
+
+    ERL_NIF_TERM head, tail = list;
+    double end_max = 0.0;
+
+    for (unsigned i = 0; i < len; i++) {
+        if (!enif_get_list_cell(env, tail, &head, &tail) || !enif_is_map(env, head)) {
+            free(raw);
+            *err_reason = "invalid_notes";
+            return false;
+        }
+        ERL_NIF_TERM v_start, v_dur, v_midi, v_vel;
+        double start_ms = 0.0, dur_ms = 0.0;
+        int midi = 0, vel = PIANO_DEFAULT_VELOCITY;
+
+        if (!enif_get_map_value(env, head, k_start, &v_start) ||
+            !enif_get_map_value(env, head, k_dur, &v_dur) ||
+            !enif_get_map_value(env, head, k_midi, &v_midi) ||
+            !get_erlang_number(env, v_start, &start_ms) ||
+            !get_erlang_number(env, v_dur, &dur_ms) ||
+            !enif_get_int(env, v_midi, &midi) ||
+            start_ms < 0.0 || dur_ms <= 0.0 || midi < 0 || midi > 127) {
+            free(raw);
+            *err_reason = "invalid_notes";
+            return false;
+        }
+        if (enif_get_map_value(env, head, k_vel, &v_vel) && !enif_is_identical(v_vel, a_nil)) {
+            if (!enif_get_int(env, v_vel, &vel) || vel < 1 || vel > 127) {
+                free(raw);
+                *err_reason = "invalid_notes";
+                return false;
+            }
+        }
+        double end_ms = start_ms + dur_ms;
+        if (!isfinite(end_ms) || end_ms > (double)PIANO_MAX_DURATION_MS) {
+            free(raw);
+            *err_reason = "too_long";
+            return false;
+        }
+        if (end_ms > end_max) end_max = end_ms;
+
+        raw[i] = (piano_raw_note){
+            .start_ms = start_ms,
+            .dur_ms = dur_ms,
+            .midi = (int32_t)midi,
+            .gain = (float)vel / 127.0f,
+        };
+    }
+
+    *out = raw;
+    *count_out = (int32_t)len;
+    *max_end_ms = end_max;
+    return true;
+}
+
+/* play_piano(Owner, Ref, Notes, SamplesDir) -> ok | {error, Reason}. Dirty IO. */
+static ERL_NIF_TERM nif_play_piano(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
+    (void)argc;
+    ErlNifPid owner;
+    ErlNifBinary dir_bin;
+    if (!enif_get_local_pid(env, argv[0], &owner) || !enif_is_ref(env, argv[1]) ||
+        !enif_is_list(env, argv[2]) || !enif_inspect_binary(env, argv[3], &dir_bin) ||
+        dir_bin.size == 0 || dir_bin.size >= 900 || memchr(dir_bin.data, 0, dir_bin.size))
+        return enif_make_badarg(env);
+
+    piano_raw_note *raw = NULL;
+    int32_t note_count = 0;
+    double max_end_ms = 0.0;
+    const char *err_reason = NULL;
+    bool badarg = false;
+    if (!parse_piano_notes(env, argv[2], &raw, &note_count, &max_end_ms, &err_reason, &badarg)) {
+        if (badarg) return enif_make_badarg(env);
+        return error_tuple(env, err_reason ? err_reason : "invalid_notes");
+    }
+
+    if (!libs_ok) {
+        free(raw);
+        return error_tuple(env, "unsupported");
+    }
+
+    char dir[901];
+    memcpy(dir, dir_bin.data, dir_bin.size);
+    dir[dir_bin.size] = '\0';
+
+    pthread_mutex_lock(&P.lock);
+    if (!stop_piano_locked()) {
+        pthread_mutex_unlock(&P.lock);
+        free(raw);
+        return error_tuple(env, "stream_stuck");
+    }
+
+    if (!load_piano_bank_locked(dir)) {
+        pthread_mutex_unlock(&P.lock);
+        free(raw);
+        return error_tuple(env, "samples_unavailable");
+    }
+
+    if (!ensure_piano_cleanup_worker_locked()) {
+        pthread_mutex_unlock(&P.lock);
+        free(raw);
+        return error_tuple(env, "thread");
+    }
+
+    piano_res *res = enif_alloc_resource(piano_watch_type, sizeof(piano_res));
+    if (!res) {
+        pthread_mutex_unlock(&P.lock);
+        free(raw);
+        return error_tuple(env, "alloc");
+    }
+
+    uint64_t generation = atomic_fetch_add(&P.generation, 1) + 1;
+    res->generation = generation;
+
+    AAudioStream *out_stream = NULL;
+    if (open_piano_output(generation, &out_stream) != AA_OK || !out_stream) {
+        enif_release_resource(res);
+        pthread_mutex_unlock(&P.lock);
+        free(raw);
+        return error_tuple(env, "output_unavailable");
+    }
+
+    int out_rate = aa.getSampleRate(out_stream);
+    int out_channels = aa.getChannelCount(out_stream);
+    int out_burst = aa.getFramesPerBurst(out_stream);
+    if (out_rate <= 0 || out_channels < 1) {
+        stop_and_close(&out_stream);
+        enif_release_resource(res);
+        pthread_mutex_unlock(&P.lock);
+        free(raw);
+        return error_tuple(env, "output_unavailable");
+    }
+
+    piano_note *notes = calloc((size_t)note_count, sizeof(piano_note));
+    if (!notes) {
+        stop_and_close(&out_stream);
+        enif_release_resource(res);
+        pthread_mutex_unlock(&P.lock);
+        free(raw);
+        return error_tuple(env, "alloc");
+    }
+
+    int64_t max_frames = piano_ms_to_frames((double)PIANO_MAX_DURATION_MS, out_rate);
+    for (int32_t i = 0; i < note_count; i++) {
+        int64_t sf = piano_ms_to_frames(raw[i].start_ms, out_rate);
+        int64_t rf = piano_ms_to_frames(raw[i].start_ms + raw[i].dur_ms, out_rate);
+        if (rf <= sf) rf = sf + 1;
+        if (rf > max_frames) rf = max_frames;
+        notes[i] = (piano_note){
+            .start_frame = sf,
+            .release_frame = rf,
+            .midi = raw[i].midi,
+            .gain = raw[i].gain,
+        };
+    }
+    free(raw);
+
+    if (piano_synth_init(&P.synth, &P.bank, notes, note_count, out_rate) != 0) {
+        free(notes);
+        stop_and_close(&out_stream);
+        enif_release_resource(res);
+        pthread_mutex_unlock(&P.lock);
+        return error_tuple(env, "invalid_notes");
+    }
+    free(notes);
+
+    P.out = out_stream;
+    P.out_rate = out_rate;
+    P.out_channels = out_channels;
+    P.out_burst = out_burst;
+    P.out_buffer_frames = aa.getBufferSizeInFrames(out_stream);
+    atomic_store(&P.ring_write, 0);
+    atomic_store(&P.ring_read, 0);
+    atomic_store(&P.cb_total_frames, 0);
+    atomic_store(&P.underrun_write, 0);
+    atomic_store(&P.underrun_read, 0);
+    atomic_store(&P.underrun_overflow, 0);
+    atomic_store(&P.last_real_stream_frame, 0);
+    atomic_store(&P.out_failed, false);
+    atomic_store(&P.synth_done, false);
+    atomic_store(&P.all_real_queued, false);
+    P.total_frames = P.synth.total_frames;
+    P.phrase_end_frames = P.synth.phrase_end_frame;
+    P.phrase_end_ms = max_end_ms;
+    P.last_sent_pos_ms = -1;
+
+    /* Pre-fill up to half the ring before starting AAudio so the first
+     * callback never underruns. */
+    int64_t target_prefill = PIANO_RING_SIZE / 2;
+    if (P.total_frames < target_prefill) target_prefill = P.total_frames;
+    float prefill[512];
+    int64_t w = 0;
+    while (w < target_prefill) {
+        int32_t chunk = target_prefill - w < 512 ? (int32_t)(target_prefill - w) : 512;
+        int32_t got = piano_synth_render_block(&P.synth, &P.bank, prefill, chunk);
+        if (got <= 0) {
+            atomic_store(&P.synth_done, true);
+            break;
+        }
+        for (int32_t i = 0; i < got; i++) P.ring[(w + i) & (PIANO_RING_SIZE - 1)] = prefill[i];
+        w += got;
+    }
+    if (P.synth.cursor_frame >= P.total_frames) atomic_store(&P.synth_done, true);
+    atomic_store(&P.ring_write, w);
+
+    if (enif_monitor_process(env, res, &owner, NULL) != 0) {
+        enif_release_resource(res);
+        stop_and_close(&P.out);
+        piano_synth_free(&P.synth);
+        pthread_mutex_unlock(&P.lock);
+        return error_tuple(env, "owner_dead");
+    }
+
+    pthread_mutex_lock(&P.send_lock);
+    P.owner = owner;
+    P.ref_env = enif_alloc_env();
+    P.ref = enif_make_copy(P.ref_env, argv[1]);
+    P.monitor = res;
+    P.active = true;
+    pthread_mutex_unlock(&P.send_lock);
+
+    const char *failure = NULL;
+    atomic_store(&P.playing, true);
+    atomic_store(&P.run, true);
+    if (pthread_create(&P.thread, NULL, piano_main, (void *)(uintptr_t)generation) != 0) {
+        atomic_store(&P.run, false);
+        failure = "thread";
+    } else if (aa.requestStart(P.out) != AA_OK) {
+        LOGE("piano output start failed");
+        failure = "output_unavailable";
+    }
+    if (failure) (void)stop_piano_locked();
+    pthread_mutex_unlock(&P.lock);
+    return failure ? error_tuple(env, failure) : atom(env, "ok");
+}
+
+/* cancel_piano(Ref) -> ok | {error, stream_stuck}. Idempotent; stops the
+ * render thread, prevents any further messages for Ref, and stops and closes
+ * the AAudio output stream. Returns {error, stream_stuck} if the stream could
+ * not be stopped within the timeout (keeping the orphan for retry). Unknown
+ * Ref returns ok. Dirty IO. */
+static ERL_NIF_TERM nif_cancel_piano(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
+    (void)argc;
+    if (!enif_is_ref(env, argv[0])) return enif_make_badarg(env);
+    bool ok = true;
+    pthread_mutex_lock(&P.lock);
+    pthread_mutex_lock(&P.send_lock);
+    bool mine = P.ref_env != NULL && enif_compare(P.ref, argv[0]) == 0;
+    pthread_mutex_unlock(&P.send_lock);
+    if (mine) ok = stop_piano_locked();
+    pthread_mutex_unlock(&P.lock);
+    return ok ? atom(env, "ok") : error_tuple(env, "stream_stuck");
+}
+
 static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     (void)priv;
     (void)info;
@@ -1903,6 +2786,10 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     pthread_mutex_init(&E.send_lock, NULL);
     pthread_mutex_init(&BG.lock, NULL);
     pthread_mutex_init(&FJ.lock, NULL);
+    pthread_mutex_init(&P.lock, NULL);
+    pthread_mutex_init(&P.send_lock, NULL);
+    pthread_mutex_init(&PC.lock, NULL);
+    pthread_cond_init(&PC.cond, NULL);
     atomic_store(&E.first_ns, -1);
     atomic_store(&E.preset, AA_PRESET_VOICE_PERFORMANCE);
     ErlNifResourceTypeInit init = {.dtor = NULL, .stop = NULL, .down = listener_down, .members = 3};
@@ -1914,6 +2801,9 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     ErlNifResourceTypeInit fj_init = {.dtor = NULL, .stop = NULL, .down = analysis_owner_down, .members = 3};
     analysis_watch_type = enif_init_resource_type(env, "hum_audio_analysis", &fj_init, ERL_NIF_RT_CREATE, NULL);
     if (!analysis_watch_type) return 1;
+    ErlNifResourceTypeInit p_init = {.dtor = NULL, .stop = NULL, .down = piano_owner_down, .members = 3};
+    piano_watch_type = enif_init_resource_type(env, "hum_audio_piano", &p_init, ERL_NIF_RT_CREATE, NULL);
+    if (!piano_watch_type) return 1;
     libs_ok = bind_libraries();
     if (!libs_ok) LOGE("could not bind %s", libs_error);
     return 0;
@@ -1934,6 +2824,8 @@ static ErlNifFunc nif_funcs[] = {
     {"background_running", 0, nif_background_running, 0},
     {"info", 0, nif_info, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"set_input_preset", 1, nif_set_input_preset, 0},
+    {"play_piano", 4, nif_play_piano, ERL_NIF_DIRTY_JOB_IO_BOUND},
+    {"cancel_piano", 1, nif_cancel_piano, ERL_NIF_DIRTY_JOB_IO_BOUND},
 };
 
 ERL_NIF_INIT(Elixir.Humdinger.Audio.Nif, nif_funcs, on_load, NULL, NULL, NULL)

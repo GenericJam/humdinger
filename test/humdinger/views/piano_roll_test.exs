@@ -228,4 +228,33 @@ defmodule Humdinger.Views.PianoRollTest do
     refute Enum.any?(ops, &(&1.op == :rect and &1[:radius] in [3, 6]))
     assert {:empty, %{midi: _}} = PianoRoll.hit(%{notes: []}, @w, @h, 200, 100)
   end
+
+  describe "playhead and active-note highlight" do
+    test "renders playhead line at actual ms and outlines the block at active" do
+      l = layout()
+      b4 = Enum.at(l.blocks, 4)
+      ops = PianoRoll.ops(Map.merge(@review, %{playhead_ms: 2700, active: 4}), @w, @h)
+
+      bars = Enum.filter(ops, &(&1.op == :rect and &1.color == Style.fm() and &1[:fill]))
+      rings = Enum.filter(ops, &(&1.op == :rect and &1.color == Style.fm() and &1[:width] == 2))
+
+      assert [bar] = bars
+      assert bar.w == 2 and bar.h == @h
+      assert bar.x == Float.round(PianoRoll.x_of(l, 2700) - 1, 1)
+
+      assert [ring] = rings
+      assert ring.x == Float.round(b4.x + 1, 1)
+      assert ring.y == Float.round(b4.y + 1, 1)
+    end
+
+    test "draws no active outline when active is nil and clamps playhead beyond duration" do
+      gap_ops = PianoRoll.ops(Map.merge(@review, %{playhead_ms: 2700, active: nil}), @w, @h)
+      assert [_bar] = Enum.filter(gap_ops, &(&1.color == Style.fm() and &1[:fill]))
+      assert [] == Enum.filter(gap_ops, &(&1.color == Style.fm() and &1[:width] == 2))
+
+      past_ops = PianoRoll.ops(Map.put(@review, :playhead_ms, 10_000), @w, @h)
+      [clamped] = Enum.filter(past_ops, &(&1.color == Style.fm() and &1[:fill]))
+      assert clamped.x == @w - 8 - 1
+    end
+  end
 end

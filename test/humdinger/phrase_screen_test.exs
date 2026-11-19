@@ -4,9 +4,42 @@ defmodule Humdinger.PhraseScreenTest do
 
   import Humdinger.Test.Screens
 
-  alias Humdinger.{LiveScreen, Phrase, Phrases, PhraseScreen, Repo, Scale}
+  alias Humdinger.{LiveScreen, Notation, Phrase, Phrases, PhraseScreen, Repo, Scale, Style}
   alias Humdinger.Test.{FakeOutput, Listener}
-  alias Humdinger.Views.PianoRoll
+  alias Humdinger.Views.{PianoRoll, Staff}
+
+  defmodule FakePianoAudio do
+    @key {__MODULE__, :cfg}
+
+    def configure(test_pid, reply \\ :ok, cancel \\ :ok),
+      do: :persistent_term.put(@key, %{test: test_pid, reply: reply, cancel: cancel})
+
+    def clear, do: :persistent_term.erase(@key)
+
+    def play_piano(owner, notes) do
+      case :persistent_term.get(@key) do
+        %{test: test, reply: :ok} ->
+          ref = make_ref()
+          send(test, {:piano_start, owner, notes, ref})
+          {:ok, ref}
+
+        %{test: test, reply: {:error, reason} = err} ->
+          send(test, {:piano_start_error, owner, notes, reason})
+          err
+      end
+    end
+
+    def cancel_piano(ref) do
+      case :persistent_term.get(@key, nil) do
+        %{test: test, cancel: cancel} ->
+          send(test, {:piano_cancel, ref})
+          cancel
+
+        nil ->
+          :ok
+      end
+    end
+  end
 
   @eighth 60_000 / 96 / 2
 
@@ -16,12 +49,21 @@ defmodule Humdinger.PhraseScreenTest do
     Repo.delete_all(Phrases.Row)
     Listener.listen()
     FakeOutput.reset()
+    prev_audio = Application.get_env(:humdinger, :audio)
+    FakePianoAudio.configure(self())
+    Application.put_env(:humdinger, :audio, FakePianoAudio)
     Application.put_env(:humdinger, :output, FakeOutput)
     Application.put_env(:humdinger, :file_share, Humdinger.Test.FileShare)
     dir = Path.join(System.tmp_dir!(), "humdinger-review-#{System.unique_integer([:positive])}")
     Application.put_env(:humdinger, :export_dir, dir)
 
     on_exit(fn ->
+      if prev_audio,
+        do: Application.put_env(:humdinger, :audio, prev_audio),
+        else: Application.delete_env(:humdinger, :audio)
+
+      FakePianoAudio.clear()
+
       Enum.each(
         [:output, :file_share, :export_dir],
         &Application.delete_env(:humdinger, &1)
@@ -402,6 +444,294 @@ defmodule Humdinger.PhraseScreenTest do
 
       refute_received :phrases_changed
       assert Phrases.list() == []
+    end
+
+    test "cancels active piano preview when leaving via system Back" do
+      nav = opened(%{phrase: phrase()})
+      send(nav, {:tap, :play_piano})
+      assert_receive {:piano_start, _player, _notes, pref}
+
+      system_back(nav)
+      assert_receive {:piano_cancel, ^pref}
+    end
+  end
+
+  describe "local piano preview" do
+    test "plays locally without MIDI output, renders playhead and active note on roll and staff, and ignores stale tags" do
+      view = review() |> render_info({:tap, :play_piano})
+      player = assigns(view).player
+      tag = assigns(view).piano_tag
+      assert is_reference(tag)
+      refute assigns(view).playing
+      assert_every_tap_held(view)
+
+      assert_receive {:piano_start, ^player, notes, pref}
+      assert notes == Phrase.quantized_notes(assigns(view).phrase)
+      refute_received {:output, _}
+
+      send(player, {:hum_audio, pref, {:piano_position, 1000}})
+      assert_receive {:player, :position, ^tag, 1000} = pos_msg
+      view = render_info(view, pos_msg)
+
+      assert assigns(view).playhead_ms == 1000
+      roll_ops = find(view, :canvas, id: "roll").props.draw
+      assert Enum.any?(roll_ops, &(&1.color == Style.fm() and &1[:fill]))
+      assert Enum.any?(roll_ops, &(&1.color == Style.fm() and &1[:width] == 2))
+
+      staff_view = render_info(view, {:tap, {:tab, :staff}})
+      assert_every_tap_held(staff_view)
+      staff_ops = find(staff_view, :canvas, id: "staff").props.draw
+      assert Enum.any?(staff_ops, &(&1.color == Style.fm_dim() and &1[:fill]))
+      assert Enum.any?(staff_ops, &(&1.color == Style.fm_dim() and &1[:width] == 2.2))
+
+      # Stale tags do not move playhead or clear active playback.
+      stale = make_ref()
+
+      view =
+        view
+        |> render_info({:player, :position, stale, 4500})
+        |> render_info({:player, :finished, stale})
+        |> render_info({:player, :error, stale, :stale_error})
+
+      assert assigns(view).piano_tag == tag
+      assert assigns(view).playhead_ms == 1000
+      refute find(view, :text, id: "notice")
+
+      send(player, {:hum_audio, pref, :piano_finished})
+      assert_receive {:player, :finished, ^tag} = fin_msg
+      view = render_info(view, fin_msg)
+
+      assert assigns(view).piano_tag == nil
+      assert assigns(view).playhead_ms == nil
+      refute Enum.any?(find(view, :canvas, id: "roll").props.draw, &(&1.color == Style.fm()))
+    end
+
+    test "Stop piano cancels native playback and clears highlights, ignoring late progress" do
+      view = review() |> render_info({:tap, :play_piano})
+      tag = assigns(view).piano_tag
+      player = assigns(view).player
+      assert_receive {:piano_start, ^player, _, pref}
+
+      view =
+        view
+        |> render_info({:player, :position, tag, 900})
+        |> render_info({:tap, :play_piano})
+
+      assert_receive {:piano_cancel, ^pref}
+      assert assigns(view).piano_tag == nil
+      assert assigns(view).playhead_ms == nil
+
+      view =
+        view
+        |> render_info({:player, :position, tag, 1200})
+        |> render_info({:player, :error, tag, :late})
+
+      assert assigns(view).playhead_ms == nil
+      refute find(view, :text, id: "notice")
+    end
+
+    test "edits and external Play out stop piano preview and clear playhead" do
+      view = review() |> render_info({:tap, :play_piano})
+      assert_receive {:piano_start, player, _, pref1}
+
+      view =
+        view
+        |> render_info({:player, :position, assigns(view).piano_tag, 800})
+        |> render_info({:tap, {:quantize, :q16}})
+
+      assert_receive {:piano_cancel, ^pref1}
+      assert assigns(view).piano_tag == nil
+      assert assigns(view).playhead_ms == nil
+      assert assigns(view).phrase.quantize == :q16
+
+      view = render_info(view, {:tap, :play_piano})
+      assert_receive {:piano_start, ^player, _, pref2}
+      {b, _} = block(view, 4)
+
+      view =
+        view
+        |> render_info({:player, :position, assigns(view).piano_tag, 800})
+        |> drag(:began, b.x + b.w / 2, b.y + b.h / 2)
+
+      assert_receive {:piano_cancel, ^pref2}
+      assert assigns(view).piano_tag == nil
+      assert assigns(view).playhead_ms == nil
+
+      view =
+        view
+        |> drag(:ended, b.x + b.w / 2, b.y + b.h / 2)
+        |> render_info({:tap, :play_piano})
+
+      assert_receive {:piano_start, ^player, _, pref3}
+
+      view =
+        view
+        |> render_info({:player, :position, assigns(view).piano_tag, 500})
+        |> render_info({:tap, :play})
+
+      assert_receive {:piano_cancel, ^pref3}
+      assert assigns(view).piano_tag == nil
+      assert assigns(view).playhead_ms == nil
+      assert assigns(view).playing
+      assert_receive {:output, [{:note_on, _, _} | _]}
+    end
+
+    test "Hum again cancels active piano preview" do
+      view = review(%{return_to: self()}) |> render_info({:tap, :play_piano})
+      assert_receive {:piano_start, _player, _, pref}
+
+      render_info(view, {:tap, :hum_again})
+      assert_receive {:piano_cancel, ^pref}
+      assert_receive :hum_again
+    end
+
+    test "synchronous and async piano errors show a notice and clear highlights" do
+      FakePianoAudio.configure(self(), {:error, :unavailable})
+      view = review() |> render_info({:tap, :play_piano})
+      assert_receive {:piano_start_error, _, _, :unavailable}
+      assert assigns(view).piano_tag == nil
+      assert assigns(view).playhead_ms == nil
+      assert find(view, :text, id: "notice")
+
+      FakePianoAudio.configure(self(), :ok)
+      view = render_info(view, {:tap, :play_piano})
+      refute find(view, :text, id: "notice")
+      tag = assigns(view).piano_tag
+      player = assigns(view).player
+      assert_receive {:piano_start, ^player, _, pref}
+
+      view = render_info(view, {:player, :position, tag, 400})
+      assert assigns(view).playhead_ms == 400
+
+      send(player, {:hum_audio, pref, {:piano_error, :device_lost}})
+      assert_receive {:player, :error, ^tag, :device_lost} = err_msg
+      view = render_info(view, err_msg)
+
+      assert assigns(view).piano_tag == nil
+      assert assigns(view).playhead_ms == nil
+      assert find(view, :text, id: "notice")
+      refute Enum.any?(find(view, :canvas, id: "roll").props.draw, &(&1.color == Style.fm()))
+    end
+
+    test "Simpler rhythm highlights the note actually playing on the staff" do
+      p = %Phrase{
+        notes: [
+          %{start_ms: 0, dur_ms: 500, midi: 60, velocity: 90, unsure: false},
+          %{start_ms: 500, dur_ms: 1500, midi: 67, velocity: 90, unsure: false}
+        ],
+        trace: [],
+        duration_ms: 2000,
+        tempo_bpm: 60,
+        scale: Scale.new("C", :major),
+        quantize: :q16
+      }
+
+      view =
+        review(%{phrase: p})
+        |> render_info({:tap, {:tab, :staff}})
+        |> render_info({:tap, {:rhythm, :simpler}})
+        |> render_info({:tap, :play_piano})
+
+      player = assigns(view).player
+      tag = assigns(view).piano_tag
+      assert_receive {:piano_start, ^player, notes, _pref}
+      assert notes == Phrase.quantized_notes(p)
+
+      base_data = %{layout: Notation.layout(p, clef: :auto, rhythm: :simpler), note_names: true}
+      base_ops = Staff.ops(base_data, 350, Staff.height(base_data, 350))
+      [head0, head1] = Enum.filter(base_ops, &(&1.op == :ellipse))
+
+      view = render_info(view, {:player, :position, tag, 700})
+      staff_ops = find(view, :canvas, id: "staff").props.draw
+
+      rings =
+        Enum.filter(
+          staff_ops,
+          &(&1.op == :circle and &1.color == Style.fm_dim() and &1[:width] == 2.2 and &1.r == 11)
+        )
+
+      assert [ring] = rings
+      assert ring.x == head1.x
+      refute ring.x == head0.x
+    end
+
+    test "quantize :off highlights the played note on both staff and roll" do
+      p = %Phrase{
+        notes: [
+          %{start_ms: 0, dur_ms: 130, midi: 60, velocity: 90, unsure: false},
+          %{start_ms: 130, dur_ms: 400, midi: 67, velocity: 90, unsure: false}
+        ],
+        trace: [],
+        duration_ms: 1000,
+        tempo_bpm: 120,
+        scale: Scale.new("C", :major),
+        quantize: :off
+      }
+
+      view = review(%{phrase: p}) |> render_info({:tap, :play_piano})
+      player = assigns(view).player
+      tag = assigns(view).piano_tag
+      assert_receive {:piano_start, ^player, notes, _pref}
+      assert notes == Phrase.quantized_notes(p)
+
+      view = render_info(view, {:player, :position, tag, 128})
+      {b0, _} = block(view, 0)
+      {b1, _} = block(view, 1)
+      roll_ops = find(view, :canvas, id: "roll").props.draw
+
+      roll_rings =
+        Enum.filter(roll_ops, &(&1.op == :rect and &1.color == Style.fm() and &1[:width] == 2))
+
+      assert [roll_ring] = roll_rings
+      assert roll_ring.x == Float.round(b0.x + 1, 1)
+      refute roll_ring.x == Float.round(b1.x + 1, 1)
+
+      base_data = %{layout: Notation.layout(p, clef: :auto, rhythm: :as_sung), note_names: true}
+      base_ops = Staff.ops(base_data, 350, Staff.height(base_data, 350))
+      [head0, head1 | _] = Enum.filter(base_ops, &(&1.op == :ellipse))
+
+      staff_view = render_info(view, {:tap, {:tab, :staff}})
+      staff_ops = find(staff_view, :canvas, id: "staff").props.draw
+
+      staff_rings =
+        Enum.filter(
+          staff_ops,
+          &(&1.op == :circle and &1.color == Style.fm_dim() and &1[:width] == 2.2 and &1.r == 11)
+        )
+
+      assert [staff_ring] = staff_rings
+      assert staff_ring.x == head0.x
+      refute staff_ring.x == head1.x
+    end
+
+    test "Stop piano that can't stop the stream shows a notice" do
+      view = review() |> render_info({:tap, :play_piano})
+      player = assigns(view).player
+      assert_receive {:piano_start, ^player, _notes, pref}
+
+      FakePianoAudio.configure(self(), :ok, {:error, :stream_stuck})
+      view = render_info(view, {:tap, :play_piano})
+
+      assert_receive {:piano_cancel, ^pref}
+      assert assigns(view).piano_tag == nil
+      assert assigns(view).playhead_ms == nil
+      assert find(view, :text, id: "notice")
+    end
+
+    test "Play out over a stuck piano preview doesn't crash and explains" do
+      view = review() |> render_info({:tap, :play_piano})
+      player = assigns(view).player
+      assert_receive {:piano_start, ^player, _notes, pref}
+
+      FakePianoAudio.configure(self(), :ok, {:error, :stream_stuck})
+      view = render_info(view, {:tap, :play})
+
+      assert_receive {:piano_cancel, ^pref}
+      assert_renderable(view)
+      refute assigns(view).playing
+      assert assigns(view).piano_tag == nil
+      assert find(view, :text, id: "notice")
+      refute_received {:output, [{:note_on, _, _} | _]}
     end
   end
 

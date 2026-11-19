@@ -80,6 +80,9 @@ defmodule Humdinger.PhraseScreen do
         note_names: true,
         player: player,
         playing: false,
+        piano_tag: nil,
+        piano_timeline: [],
+        playhead_ms: nil,
         play_label: PhraseActions.play_label(PhraseActions.destinations()),
         sheet: nil,
         notice: nil,
@@ -154,7 +157,14 @@ defmodule Humdinger.PhraseScreen do
   defp tab_body(%{tab: :roll} = assigns) do
     p = assigns.phrase
     drag = {self(), :roll}
-    roll = PianoRoll.ops(roll_data(p, assigns.selected), @roll_w, @roll_h)
+    active = active_index(assigns.piano_timeline, assigns.playhead_ms)
+
+    roll =
+      PianoRoll.ops(
+        roll_data(p, assigns.selected, assigns.playhead_ms, active),
+        @roll_w,
+        @roll_h
+      )
 
     quantize = segments([q4: "1/4", q8: "1/8", q16: "1/16", off: "Off"], p.quantize, :quantize)
 
@@ -182,7 +192,10 @@ defmodule Humdinger.PhraseScreen do
       {notice(assigns.notice)}
       <Spacer />
       <Column gap={8}>
-        {play_out(assigns.playing, assigns.play_label)}
+        <Row gap={8} fill_width={true}>
+          {play_out(assigns.playing, assigns.play_label, weight: 2)}
+          {play_piano(assigns.piano_tag != nil, kind: :action, height: 56, radius: 16, weight: 1)}
+        </Row>
         {action_row(actions)}
       </Column>
     </Column>
@@ -255,17 +268,38 @@ defmodule Humdinger.PhraseScreen do
         </Column>
       </Scroll>
       <Column gap={8}>
-        {button("Share as PDF", {self(), {:share, :pdf}}, kind: :primary, id: "share_pdf")}
+        <Row gap={8} fill_width={true}>
+          {button("Share as PDF", {self(), {:share, :pdf}}, kind: :primary, id: "share_pdf", weight: 2)}
+          {play_piano(assigns.piano_tag != nil, kind: :action, height: 56, radius: 16, weight: 1)}
+        </Row>
         {action_row(actions)}
       </Column>
     </Column>
     """
   end
 
-  defp play_out(playing, label) do
-    if playing,
-      do: button("Stop", {self(), :play}, kind: :primary, id: "play_out", icon: :stop),
-      else: button(label, {self(), :play}, kind: :primary, id: "play_out", icon: :play)
+  defp play_out(playing, label, opts) do
+    if playing do
+      button("Stop", {self(), :play}, [
+        {:kind, :primary},
+        {:id, "play_out"},
+        {:icon, :stop} | opts
+      ])
+    else
+      button(label, {self(), :play}, [
+        {:kind, :primary},
+        {:id, "play_out"},
+        {:icon, :play} | opts
+      ])
+    end
+  end
+
+  defp play_piano(playing?, opts) do
+    if playing? do
+      button("Stop piano", {self(), :play_piano}, [{:id, "play_piano"}, {:icon, :stop} | opts])
+    else
+      button("Piano", {self(), :play_piano}, [{:id, "play_piano"}, {:icon, :play} | opts])
+    end
   end
 
   defp roll_canvas(ops, drag) do
@@ -340,10 +374,15 @@ defmodule Humdinger.PhraseScreen do
   @doc """
   What the piano roll shows: the notes on the phrase's grid (as sung when
   Off), each with its index into `phrase.notes`, and the roll's data with
-  `selected` (a phrase index) mapped onto them.
+  `selected` and `active` (phrase indexes) mapped onto them.
   """
-  @spec roll_data(Phrase.t(), non_neg_integer() | nil) :: map()
-  def roll_data(%Phrase{} = p, selected) do
+  @spec roll_data(
+          Phrase.t(),
+          non_neg_integer() | nil,
+          number() | nil,
+          non_neg_integer() | nil
+        ) :: map()
+  def roll_data(%Phrase{} = p, selected, playhead_ms \\ nil, active_index \\ nil) do
     {notes, indexes} = view_notes(p)
     note_end = notes |> Enum.map(&(&1.start_ms + &1.dur_ms)) |> Enum.max(fn -> 0 end)
 
@@ -354,7 +393,9 @@ defmodule Humdinger.PhraseScreen do
       scale: p.scale,
       tempo_bpm: p.tempo_bpm,
       selected: Enum.find_index(indexes, &(&1 == selected)),
-      duration_ms: max(p.duration_ms, note_end)
+      active: Enum.find_index(indexes, &(&1 == active_index)),
+      duration_ms: max(p.duration_ms, note_end),
+      playhead_ms: playhead_ms
     }
   end
 
@@ -380,8 +421,42 @@ defmodule Humdinger.PhraseScreen do
   defp staff_data(assigns) do
     %{
       layout: Notation.layout(assigns.phrase, clef: assigns.clef, rhythm: assigns.rhythm),
-      note_names: assigns.note_names
+      note_names: assigns.note_names,
+      tempo_bpm: assigns.phrase.tempo_bpm,
+      playhead_ms: assigns.playhead_ms,
+      active_index: active_index(assigns.piano_timeline, assigns.playhead_ms)
     }
+  end
+
+  defp active_index(timeline, ms) when is_list(timeline) and is_number(ms) do
+    case Enum.find(timeline, fn {start_ms, end_ms, _i} -> start_ms <= ms and ms < end_ms end) do
+      {_, _, i} -> i
+      nil -> nil
+    end
+  end
+
+  defp active_index(_timeline, _ms), do: nil
+
+  defp piano_preview(%Phrase{quantize: :off} = p) do
+    tagged =
+      p.notes
+      |> Enum.with_index(fn n, i -> Map.put(n, :index, i) end)
+      |> Phrase.quantize_notes(p.tempo_bpm, :off)
+
+    notes = Enum.map(tagged, &Map.delete(&1, :index))
+    timeline = Enum.map(tagged, fn n -> {n.start_ms, n.start_ms + n.dur_ms, n.index} end)
+    {notes, timeline}
+  end
+
+  defp piano_preview(%Phrase{} = p) do
+    notes = Phrase.quantized_notes(p)
+
+    timeline =
+      notes
+      |> Enum.zip(Phrase.grid_notes(p.notes, p.tempo_bpm, p.quantize))
+      |> Enum.map(fn {n, g} -> {n.start_ms, n.start_ms + n.dur_ms, g.index} end)
+
+    {notes, timeline}
   end
 
   defp clean?(%{phrase: %Phrase{id: id} = p, saved: saved}), do: id != nil and p == saved
@@ -416,7 +491,7 @@ defmodule Humdinger.PhraseScreen do
   # Recording again is the user's choice to drop this take: not autosaved.
   def handle_info({:tap, :hum_again}, socket) do
     if pid = socket.assigns.return_to, do: send(pid, :hum_again)
-    stop(socket)
+    socket = stop_playback(socket)
     PhraseDraft.delete(socket.assigns.draft_key)
 
     {:noreply,
@@ -441,24 +516,87 @@ defmodule Humdinger.PhraseScreen do
   def handle_info({:change, :note_names, on}, socket),
     do: {:noreply, Mob.Socket.assign(socket, :note_names, on == true)}
 
-  def handle_info({:tap, :play}, %{assigns: %{playing: true}} = socket) do
-    stop(socket)
-    {:noreply, Mob.Socket.assign(socket, :playing, false)}
-  end
+  def handle_info({:tap, :play}, %{assigns: %{playing: true}} = socket),
+    do: {:noreply, stop_playback(socket)}
 
   def handle_info({:tap, :play}, socket) do
-    :ok =
-      Player.play(socket.assigns.player, Phrase.quantized_notes(socket.assigns.phrase), :phrase)
+    notes = Phrase.quantized_notes(socket.assigns.phrase)
 
-    {:noreply,
-     Mob.Socket.assign(socket,
-       playing: true,
-       play_label: PhraseActions.play_label(PhraseActions.destinations())
-     )}
+    case Player.play(socket.assigns.player, notes, :phrase) do
+      :ok ->
+        {:noreply,
+         Mob.Socket.assign(socket,
+           playing: true,
+           piano_tag: nil,
+           piano_timeline: [],
+           playhead_ms: nil,
+           play_label: PhraseActions.play_label(PhraseActions.destinations())
+         )}
+
+      {:error, reason} ->
+        {:noreply,
+         Mob.Socket.assign(socket,
+           playing: false,
+           piano_tag: nil,
+           piano_timeline: [],
+           playhead_ms: nil,
+           notice: play_error_text(reason)
+         )}
+    end
+  end
+
+  def handle_info({:tap, :play_piano}, %{assigns: %{piano_tag: tag}} = socket) when tag != nil,
+    do: {:noreply, stop_playback(socket)}
+
+  def handle_info({:tap, :play_piano}, socket) do
+    tag = make_ref()
+    {notes, timeline} = piano_preview(socket.assigns.phrase)
+
+    case Player.play(socket.assigns.player, notes, tag, mode: :piano) do
+      :ok ->
+        {:noreply,
+         Mob.Socket.assign(socket,
+           playing: false,
+           piano_tag: tag,
+           piano_timeline: timeline,
+           playhead_ms: nil,
+           notice: nil
+         )}
+
+      {:error, reason} ->
+        {:noreply,
+         Mob.Socket.assign(socket,
+           playing: false,
+           piano_tag: nil,
+           piano_timeline: [],
+           playhead_ms: nil,
+           notice: piano_error_text(reason)
+         )}
+    end
   end
 
   def handle_info({:player, :finished, :phrase}, socket),
     do: {:noreply, Mob.Socket.assign(socket, :playing, false)}
+
+  def handle_info({:player, :position, tag, ms}, %{assigns: %{piano_tag: tag}} = socket)
+      when is_reference(tag) and is_number(ms),
+      do: {:noreply, Mob.Socket.assign(socket, :playhead_ms, ms)}
+
+  def handle_info({:player, :finished, tag}, %{assigns: %{piano_tag: tag}} = socket)
+      when is_reference(tag) do
+    {:noreply, Mob.Socket.assign(socket, piano_tag: nil, piano_timeline: [], playhead_ms: nil)}
+  end
+
+  def handle_info({:player, :error, tag, reason}, %{assigns: %{piano_tag: tag}} = socket)
+      when is_reference(tag) do
+    {:noreply,
+     Mob.Socket.assign(socket,
+       piano_tag: nil,
+       piano_timeline: [],
+       playhead_ms: nil,
+       notice: piano_error_text(reason)
+     )}
+  end
 
   def handle_info({:tap, :save}, socket) do
     case Phrases.save(socket.assigns.phrase) do
@@ -548,8 +686,13 @@ defmodule Humdinger.PhraseScreen do
 
   # ── Editing ─────────────────────────────────────────────────────────────
 
-  defp edit(socket, fun),
-    do: socket |> put_phrase(fun.(socket.assigns.phrase)) |> Mob.Socket.assign(:notice, nil)
+  defp edit(socket, fun) do
+    # Clear the old notice first: stopping may leave a newer one.
+    socket
+    |> Mob.Socket.assign(:notice, nil)
+    |> stop_playback()
+    |> put_phrase(fun.(socket.assigns.phrase))
+  end
 
   # Every change to the phrase goes through here: the draft follows it once
   # it settles (a drag sends ~60 a second).
@@ -561,6 +704,7 @@ defmodule Humdinger.PhraseScreen do
 
   # A drag's first point: what it grabbed, on the roll as it was drawn then.
   defp grab(socket, %{x: x, y: y}) do
+    socket = stop_playback(socket)
     phrase = socket.assigns.phrase
     data = roll_data(phrase, socket.assigns.selected)
     layout = PianoRoll.layout(data, @roll_w, @roll_h)
@@ -617,19 +761,62 @@ defmodule Humdinger.PhraseScreen do
   defp dirty?(assigns), do: not clean?(assigns)
 
   defp leave(socket) do
-    stop(socket)
+    socket = stop_playback(socket)
     PhraseDraft.delete(socket.assigns.draft_key)
     socket |> Mob.Socket.assign(sheet: nil, left: true) |> Mob.Socket.pop_screen()
   end
 
-  defp stop(socket), do: Player.stop(socket.assigns.player)
+  defp stop_playback(%{assigns: %{playing: false, piano_tag: nil}} = socket), do: socket
+
+  defp stop_playback(socket) do
+    res = stop(socket)
+
+    socket =
+      Mob.Socket.assign(socket,
+        playing: false,
+        piano_tag: nil,
+        piano_timeline: [],
+        playhead_ms: nil
+      )
+
+    case res do
+      {:error, reason} -> Mob.Socket.assign(socket, :notice, piano_error_text(reason))
+      _ -> socket
+    end
+  end
+
+  defp stop(socket), do: safe_stop(socket.assigns.player)
+
+  defp safe_stop(player) when is_pid(player) do
+    Player.stop(player)
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp safe_stop(_), do: :ok
+
+  defp play_error_text(:stream_stuck), do: "The piano preview couldn't be stopped."
+  defp play_error_text(_reason), do: "Couldn't play it."
+
+  defp piano_error_text(reason) when reason in [:unavailable, :unsupported],
+    do: "Piano sound isn't available on this device."
+
+  defp piano_error_text(:too_long), do: "This phrase is too long for piano preview."
+  defp piano_error_text(:stream_stuck), do: "The piano preview couldn't be stopped."
+  defp piano_error_text(_reason), do: "Couldn't play the piano preview."
 
   # Popped by system Back, or the app stopping, with unsaved work: keep the
   # draft first (nothing here may depend on the database still running),
   # then try to save; a failed save leaves the draft for `PhraseDraft.recover/0`.
   @impl true
   def terminate(_reason, %{assigns: %{left: false, phrase: %Phrase{}} = assigns}) do
+    safe_stop(Map.get(assigns, :player))
     if dirty?(assigns), do: keep(assigns)
+    :ok
+  end
+
+  def terminate(_reason, %{assigns: assigns}) do
+    safe_stop(Map.get(assigns, :player))
     :ok
   end
 

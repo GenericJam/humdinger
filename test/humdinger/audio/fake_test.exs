@@ -180,4 +180,87 @@ defmodule Humdinger.Audio.FakeTest do
       assert {:error, :owner_dead} = Fake.analyze_file(owner, "/tmp/a.wav", [])
     end
   end
+
+  describe "piano playback" do
+    defp note(start_ms, dur_ms, midi), do: %{start_ms: start_ms, dur_ms: dur_ms, midi: midi}
+
+    test "positions and completion reach owner tagged with ref and clear playback" do
+      notes = [note(0, 400, 60), note(400, 400, 64)]
+      assert {:ok, ref} = Fake.play_piano(self(), notes)
+      assert Fake.piano_playing?(ref)
+      assert Fake.current_piano() == ref
+      assert Fake.current_piano_notes() == notes
+
+      :ok = Fake.piano_position(ref, 120)
+      assert_receive {:hum_audio, ^ref, {:piano_position, 120}}
+
+      :ok = Fake.piano_finished(ref)
+      assert_receive {:hum_audio, ^ref, :piano_finished}
+      refute Fake.piano_playing?(ref)
+      assert Fake.current_piano() == nil
+    end
+
+    test "new preview supersedes the previous one without disturbing listening" do
+      {:ok, listen} = Fake.listen(self(), [])
+      {:ok, old} = Fake.play_piano(self(), [note(0, 300, 60)])
+      {:ok, new} = Fake.play_piano(self(), [note(0, 300, 67)])
+
+      assert old != new
+      refute Fake.piano_playing?(old)
+      assert Fake.piano_playing?(new)
+      assert Fake.listening?(listen)
+
+      :ok = Fake.cancel_piano(old)
+      assert Fake.piano_playing?(new)
+    end
+
+    test "cancel_piano stops playback and is idempotent" do
+      {:ok, ref} = Fake.play_piano(self(), [note(0, 300, 60)])
+      assert :ok = Fake.cancel_piano(ref)
+      refute Fake.piano_playing?(ref)
+      assert :ok = Fake.cancel_piano(ref)
+      assert :ok = Fake.cancel_piano(make_ref())
+    end
+
+    test "piano_error reaches owner and stops playback" do
+      {:ok, ref} = Fake.play_piano(self(), [note(0, 300, 60)])
+      :ok = Fake.piano_error(ref, :device_lost)
+      assert_receive {:hum_audio, ^ref, {:piano_error, :device_lost}}
+      refute Fake.piano_playing?(ref)
+    end
+
+    test "stops when owner exits and rejects dead owner" do
+      owner = spawn(fn -> receive do: (:go -> :ok) end)
+      {:ok, ref} = Fake.play_piano(owner, [note(0, 300, 60)])
+      assert Fake.piano_playing?(ref)
+
+      mon = Process.monitor(owner)
+      send(owner, :go)
+      assert_receive {:DOWN, ^mon, :process, ^owner, _}
+
+      assert Enum.any?(1..200, fn _ ->
+               not Fake.piano_playing?(ref) or Process.sleep(1) == :never
+             end)
+
+      assert {:error, :owner_dead} = Fake.play_piano(owner, [note(0, 300, 60)])
+    end
+
+    test "enforces input bounds and preserves existing playback on invalid input" do
+      {:ok, active} = Fake.play_piano(self(), [note(0, 200, 60)])
+
+      assert {:error, :empty} = Fake.play_piano(self(), [])
+      assert {:error, :too_long} = Fake.play_piano(self(), [note(599_500, 600, 60)])
+      assert {:error, :invalid_notes} = Fake.play_piano(self(), [note(-1, 200, 60)])
+      assert {:error, :invalid_notes} = Fake.play_piano(self(), [note(0, 0, 60)])
+      assert {:error, :invalid_notes} = Fake.play_piano(self(), [note(0, 200, 128)])
+
+      assert {:error, :invalid_notes} =
+               Fake.play_piano(self(), [%{start_ms: 0, dur_ms: 200, midi: 60, velocity: 0}])
+
+      too_many = for i <- 0..4096, do: note(i, 10, 60)
+      assert {:error, :too_many_notes} = Fake.play_piano(self(), too_many)
+
+      assert Fake.piano_playing?(active)
+    end
+  end
 end

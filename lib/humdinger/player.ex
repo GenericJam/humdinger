@@ -1,40 +1,40 @@
 defmodule Humdinger.Player do
   @moduledoc """
   Plays notes out through the output (`Humdinger.Output`, or `config
-  :humdinger, :output`) at their times: the Phrases list's play buttons,
-  Review's "Play out" and "Play back", Import's "Play out", and Output's
-  test note. Humdinger makes no sound itself; the synth at the other end
-  does.
+  :humdinger, :output`) or locally via `Humdinger.Audio` (`play_piano/2`).
 
   A screen starts its own player with `start_link/1`. It is linked to the
-  screen: when the screen goes (popped, crashed) the player stops and sends
-  note-offs for whatever is still sounding.
+  screen: when the screen goes (popped, crashed) the player stops, cancels any
+  local piano preview, and sends note-offs for whatever MIDI is still sounding.
 
-  `play(player, notes, tag)` replaces anything playing. `notes` are
-  `%{start_ms, dur_ms, midi, velocity}` (`Humdinger.Phrase.quantized_notes/1`),
-  played from time 0. Events due at the same time go out in one batch, note
-  offs first, so a repeated pitch re-strikes. When the last note ends the
-  owner gets `{:player, :finished, tag}`, sent only once the note-offs are
-  out and the session is released (below); `stop/1` ends early (note-offs,
-  no message).
+  `play(player, notes, tag, opts \\ [])` replaces anything playing. With the
+  default `mode: :midi`, `notes` (`%{start_ms, dur_ms, midi, velocity}` from
+  `Humdinger.Phrase.quantized_notes/1`) play out over MIDI from time 0 and send
+  `{:player, :finished, tag}` when done. With `mode: :piano`, `notes` play via
+  `Audio.play_piano/2` without emitting MIDI notes, forwarding
+  `{:player, :position, tag, ms}`, `{:player, :finished, tag}`, and
+  `{:player, :error, tag, reason}` to the owner. `stop/1` ends either mode
+  early (canceling piano or sending MIDI note-offs, no finished message;
+  `stop/1` and `play/4` may return `{:error, :stream_stuck}` if canceling an
+  active piano stream fails, and `play/4` returns `{:error, :output_down}`
+  when the output cannot be resolved or acquired).
 
-  One source at a time: the player plays in an Output session
-  (`Humdinger.Output.acquire/2`), which takes the output from the singer
-  for as long as it plays (see `Humdinger.Output`). Output monitors the
-  player, so a player killed outright still has its notes released. When
-  another session preempts this one (`{:output, :session_ended, ref}`), or
-  Output goes (its own `terminate/2` silences everything), the player stops
-  and the owner gets `{:player, :finished, tag}`.
+  One source at a time: the player acquires an Output session
+  (`Humdinger.Output.acquire/2`) for either mode so live MIDI is muted and global
+  preemption applies. When another session preempts this one
+  (`{:output, :session_ended, ref}`), or Output goes, local piano is canceled,
+  the player stops, and the owner gets `{:player, :finished, tag}` (or
+  `{:player, :error, tag, reason}` if canceling piano failed).
 
-  Timing: on every tick the player reads its clock, sends everything due
-  and sets a timer for the next event. A late timer only delays the batch;
-  nothing is skipped or drifts, because times are measured from the start
-  on the clock. Options for tests: `clock:` (a zero-arity function → ms),
-  `output:` (a module with `acquire/1`, `session_events/2`, `release/1`, or
-  `{module, server}` for the versions taking a server).
+  Timing for `:midi`: on every tick the player reads its clock, sends everything
+  due and sets a timer for the next event. Options for tests: `clock:` (a
+  zero-arity function -> ms), `output:` (module or `{module, server}`), and
+  `audio:` (module implementing `play_piano/2` and `cancel_piano/1`).
   """
 
   use GenServer
+
+  alias Humdinger.Audio
 
   @typedoc "A note to play; extra keys are ignored."
   @type note :: %{
@@ -54,11 +54,12 @@ defmodule Humdinger.Player do
   end
 
   @doc "Plays `notes` from the start, replacing anything playing."
-  @spec play(GenServer.server(), [note()], term()) :: :ok
-  def play(player, notes, tag), do: GenServer.call(player, {:play, notes, tag})
+  @spec play(GenServer.server(), [note()], term(), keyword()) :: :ok | {:error, term()}
+  def play(player, notes, tag, opts \\ []),
+    do: GenServer.call(player, {:play, notes, tag, opts})
 
-  @doc "Stops, sending note-offs for the sounding notes."
-  @spec stop(GenServer.server()) :: :ok
+  @doc "Stops, canceling piano or sending note-offs for the sounding notes."
+  @spec stop(GenServer.server()) :: :ok | {:error, term()}
   def stop(player), do: GenServer.call(player, :stop)
 
   @doc "The tag of what's playing, or nil."
@@ -94,10 +95,13 @@ defmodule Humdinger.Player do
          Keyword.get_lazy(opts, :output, fn ->
            Application.get_env(:humdinger, :output, Humdinger.Output)
          end),
-       # The Output session while playing: %{ref, mon}.
+       audio: Keyword.get_lazy(opts, :audio, &Audio.impl/0),
+       # The Output session while playing: %{ref, mon, pid}.
        session: nil,
        clock: Keyword.get(opts, :clock, fn -> System.monotonic_time(:millisecond) end),
        tag: nil,
+       mode: nil,
+       piano_ref: nil,
        t0: nil,
        pending: [],
        sounding: MapSet.new(),
@@ -106,26 +110,71 @@ defmodule Humdinger.Player do
   end
 
   @impl true
-  def handle_call({:play, notes, tag}, _from, state) do
-    state = state |> silence() |> acquire()
+  def handle_call({:play, notes, tag, opts}, _from, state) do
+    mode = Keyword.get(opts, :mode, :midi)
+    old_tag = state.tag
 
-    state = %{
-      state
-      | tag: tag,
-        t0: state.clock.(),
-        pending: timeline(notes),
-        token: make_ref()
-    }
+    case silence(state) do
+      {:error, reason, st} ->
+        if old_tag != nil, do: send(st.owner, {:player, :error, old_tag, reason})
+        {:reply, {:error, reason}, release(st)}
 
-    {:reply, :ok, advance(state)}
+      {:ok, st} ->
+        start(mode, notes, tag, st)
+    end
   end
 
-  def handle_call(:stop, _from, state), do: {:reply, :ok, finish(state)}
+  def handle_call(:stop, _from, state) do
+    case silence(state) do
+      {:ok, st} -> {:reply, :ok, release(st)}
+      {:error, reason, st} -> {:reply, {:error, reason}, release(st)}
+    end
+  end
+
   def handle_call(:playing, _from, state), do: {:reply, state.tag, state}
 
+  defp start(mode, notes, tag, st) do
+    with {:ok, st} <- acquire(st),
+         {:ok, st} <- start_mode(mode, notes, tag, st) do
+      {:reply, :ok, st}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, release(st)}
+      {:error, reason, st} -> {:reply, {:error, reason}, release(st)}
+    end
+  end
+
   @impl true
-  def handle_info({:tick, token}, %{token: token} = state), do: {:noreply, advance(state)}
+  def handle_info({:tick, token}, %{token: token, mode: :midi} = state),
+    do: {:noreply, advance(state)}
+
   def handle_info({:tick, _stale}, state), do: {:noreply, state}
+
+  def handle_info(
+        {:hum_audio, ref, {:piano_position, ms}},
+        %{mode: :piano, piano_ref: ref} = state
+      ) do
+    if state.tag != nil, do: send(state.owner, {:player, :position, state.tag, ms})
+    {:noreply, state}
+  end
+
+  def handle_info({:hum_audio, ref, :piano_finished}, %{mode: :piano, piano_ref: ref} = state) do
+    tag = state.tag
+    state = state |> clear_playback() |> release()
+    if tag != nil, do: send(state.owner, {:player, :finished, tag})
+    {:noreply, state}
+  end
+
+  def handle_info(
+        {:hum_audio, ref, {:piano_error, reason}},
+        %{mode: :piano, piano_ref: ref} = state
+      ) do
+    tag = state.tag
+    state = state |> clear_playback() |> release()
+    if tag != nil, do: send(state.owner, {:player, :error, tag, reason})
+    {:noreply, state}
+  end
+
+  def handle_info({:hum_audio, _stale_ref, _msg}, state), do: {:noreply, state}
 
   # Another session took over: its notes were released by Output.
   def handle_info({:output, :session_ended, ref}, %{session: %{ref: ref}} = state),
@@ -145,6 +194,33 @@ defmodule Humdinger.Player do
 
   @impl true
   def terminate(_reason, state), do: finish(state)
+
+  defp start_mode(:midi, notes, tag, state) do
+    state = %{
+      state
+      | tag: tag,
+        mode: :midi,
+        piano_ref: nil,
+        t0: state.clock.(),
+        pending: timeline(notes),
+        token: make_ref()
+    }
+
+    {:ok, advance(state)}
+  end
+
+  defp start_mode(:piano, notes, tag, state) do
+    case state.audio.play_piano(self(), notes) do
+      {:ok, ref} ->
+        {:ok, %{state | tag: tag, mode: :piano, piano_ref: ref, t0: nil, pending: [], token: nil}}
+
+      {:error, reason} ->
+        {:error, reason, clear_playback(state)}
+    end
+  end
+
+  defp start_mode(mode, _notes, _tag, state),
+    do: {:error, {:invalid_mode, mode}, clear_playback(state)}
 
   # Sends everything due, then waits for the next event or finishes.
   defp advance(%{tag: nil} = state), do: state
@@ -170,20 +246,60 @@ defmodule Humdinger.Player do
 
   # Silence, then release the session (Output has the note-offs before it
   # answers: same sender, same order).
-  defp finish(state), do: state |> silence() |> release()
-
-  # The session is gone without us: forget everything, tell the owner.
-  defp lost(state) do
-    if state.session.mon, do: Process.demonitor(state.session.mon, [:flush])
-    if state.tag != nil, do: send(state.owner, {:player, :finished, state.tag})
-    %{state | session: nil, tag: nil, pending: [], sounding: MapSet.new(), token: nil}
+  defp finish(state) do
+    case silence(state) do
+      {:ok, state} -> release(state)
+      {:error, _reason, state} -> release(state)
+    end
   end
 
-  # Note-offs for what's sounding; forget the rest.
+  # The session is gone without us: cancel piano, forget everything, tell the owner.
+  defp lost(state) do
+    if state.session.mon, do: Process.demonitor(state.session.mon, [:flush])
+
+    cancel_res =
+      if state.piano_ref != nil,
+        do: state.audio.cancel_piano(state.piano_ref),
+        else: :ok
+
+    if state.tag != nil do
+      case cancel_res do
+        :ok -> send(state.owner, {:player, :finished, state.tag})
+        {:error, reason} -> send(state.owner, {:player, :error, state.tag, reason})
+      end
+    end
+
+    %{clear_playback(state) | session: nil}
+  end
+
+  # Cancel active piano or emit MIDI note-offs for what's sounding; forget the rest.
   defp silence(state) do
+    cancel_res =
+      if state.piano_ref != nil,
+        do: state.audio.cancel_piano(state.piano_ref),
+        else: :ok
+
     offs = for m <- Enum.sort(state.sounding), do: {:note_off, m}
     if offs != [], do: out(state, offs)
-    %{state | tag: nil, pending: [], sounding: MapSet.new(), token: nil}
+    state = clear_playback(state)
+
+    case cancel_res do
+      :ok -> {:ok, state}
+      {:error, reason} -> {:error, reason, state}
+    end
+  end
+
+  defp clear_playback(state) do
+    %{
+      state
+      | tag: nil,
+        mode: nil,
+        piano_ref: nil,
+        t0: nil,
+        pending: [],
+        sounding: MapSet.new(),
+        token: nil
+    }
   end
 
   # A note on for a pitch already sounding (overlapping notes as sung) ends
@@ -204,32 +320,43 @@ defmodule Humdinger.Player do
 
   defp out(%{session: nil}, _events), do: :ok
 
-  defp out(%{output: {module, server}, session: s}, events),
-    do: module.session_events(s.ref, events, server)
+  defp out(%{session: %{ref: ref, pid: pid}} = state, events) do
+    module = output_module(state)
+    module.session_events(ref, events, pid)
+  end
 
-  defp out(%{output: module, session: s}, events), do: module.session_events(s.ref, events)
-
-  defp acquire(%{session: %{}} = state), do: state
+  defp acquire(%{session: %{}} = state), do: {:ok, state}
 
   defp acquire(state) do
-    {:ok, ref} = call_output(state, :acquire, [self()])
+    {module, server} = output_target(state)
 
-    mon =
-      case GenServer.whereis(server(state)) do
-        nil -> nil
-        pid -> Process.monitor(pid)
-      end
+    case GenServer.whereis(server) do
+      nil ->
+        {:error, :output_down}
 
-    %{state | session: %{ref: ref, mon: mon}}
+      pid ->
+        mon = Process.monitor(pid)
+
+        try do
+          {:ok, ref} = module.acquire(self(), pid)
+          {:ok, %{state | session: %{ref: ref, mon: mon, pid: pid}}}
+        catch
+          :exit, _ ->
+            Process.demonitor(mon, [:flush])
+            {:error, :output_down}
+        end
+    end
   end
 
   defp release(%{session: nil} = state), do: state
 
-  defp release(%{session: session} = state) do
-    if session.mon, do: Process.demonitor(session.mon, [:flush])
+  defp release(%{session: %{ref: ref, mon: mon, pid: pid}} = state) do
+    if mon, do: Process.demonitor(mon, [:flush])
+    module = output_module(state)
+
     # Output may be gone (restarting, or stopping with us): nothing to release.
     try do
-      call_output(state, :release, [session.ref])
+      module.release(ref, pid)
     catch
       :exit, _ -> :gone
     end
@@ -237,11 +364,9 @@ defmodule Humdinger.Player do
     %{state | session: nil}
   end
 
-  defp call_output(%{output: {module, server}}, fun, args),
-    do: apply(module, fun, args ++ [server])
+  defp output_target(%{output: {module, server}}), do: {module, server}
+  defp output_target(%{output: module}), do: {module, module}
 
-  defp call_output(%{output: module}, fun, args), do: apply(module, fun, args)
-
-  defp server(%{output: {_module, server}}), do: server
-  defp server(%{output: module}), do: module
+  defp output_module(%{output: {module, _server}}), do: module
+  defp output_module(%{output: module}), do: module
 end
