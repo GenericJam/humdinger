@@ -17,6 +17,13 @@ config :humdinger, device_calls: config_env() != :test
 config :humdinger,
   audio: if(config_env() == :test, do: Humdinger.Audio.Fake, else: Humdinger.Audio.Native)
 
+# Humdinger's Android virtual MIDI device (read by mix mob_midi.gen.virtual_device).
+config :mob_midi, :virtual_device,
+  name: "Humdinger",
+  inputs: 0,
+  outputs: 1,
+  manufacturer: "Humdinger"
+
 # Sharing and printing exports: the humdinger_file_share plugin on the phone.
 # Unset in host tests, where Export.share/print answer {:error, :unsupported}.
 if config_env() != :test do

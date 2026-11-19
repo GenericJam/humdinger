@@ -35,11 +35,8 @@ defmodule Humdinger.MixProject do
       # Resizes the icon master for `mix mob.icon` (scripts/render_icon.exs).
       {:image, "~> 0.54", only: :dev, runtime: false},
       {:ecto_sqlite3, "~> 0.18"},
-      # USB-MIDI and Bluetooth-MIDI output.
-      {:mob_midi, "~> 0.2.0"},
-      # The virtual MIDI port, device watcher and Bluetooth-MIDI connect
-      # (Android native, in this repo).
-      {:humdinger_midi_port, path: "plugins/humdinger_midi_port"},
+      # Virtual MIDI port, USB-MIDI, and Bluetooth-MIDI (enumeration, hot-plug, BLE central).
+      {:mob_midi, "~> 0.3.0"},
       # Sharing and printing exported files (Android native, in this repo).
       {:humdinger_file_share, path: "plugins/humdinger_file_share"},
       # Scanning FMutate's pairing QR code (mob_scanner needs mob_camera).

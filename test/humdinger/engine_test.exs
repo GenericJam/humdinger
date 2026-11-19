@@ -262,9 +262,9 @@ defmodule Humdinger.EngineTest do
     defmodule PortProbe do
       @moduledoc false
       alias Humdinger.Test.Listener
-      def available?, do: true
-      def connections, do: 1
-      def send(bytes), do: Listener.tell({:port, bytes})
+      def open(_name), do: :ok
+      def send(_id, bytes), do: Listener.tell({:port, bytes})
+      def discard(_id), do: {:ok, 1}
     end
 
     setup do
@@ -278,6 +278,14 @@ defmodule Humdinger.EngineTest do
          fmutate: Humdinger.NoFMutate,
          clock: fn -> Agent.get(clock, & &1) end}
       )
+
+      send(
+        Humdinger.Output,
+        {:midi, :opened, %{device: 1, direction: :virtual, name: "Humdinger"}}
+      )
+
+      send(Humdinger.Output, {:midi, :virtual_status, %{device: 1, senders: 0, listeners: 1}})
+      Humdinger.Output.sync()
 
       start_supervised!({Engine, output: Humdinger.Output, stall_ms: 600_000})
       port_now()

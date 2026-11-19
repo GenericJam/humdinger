@@ -40,11 +40,12 @@ defmodule Humdinger.Output do
     all 16 channels before any new note: the port when Output starts and
     when the first app opens it again, a USB or Bluetooth output once
     mob_midi reports it open. FMutate does this itself on (re)connect.
-  * The port refuses bytes while its writer is stuck behind a client that
-    stopped reading (`{:error, :queue_full}`): Output stops sending to it
-    (other destinations carry on and are tracked as usual), and when the
-    writer has drained (a `:port` event with `drained`) sends the note-offs
-    it still knows of, CC 123 and resets before anything new.
+  * The port and external outputs refuse bytes while their queue is full behind
+    a stalled listener (`{:error, :queue_full}`): Output discards the stale
+    queue (`MobMidi.discard/1`), stops sending to that output (other
+    destinations carry on and stay tracked), and when `{:midi, :drained, ...}`
+    arrives sends the note-offs it still knows of, CC 123 and resets before
+    anything new.
   * FMutate dropping MIDI (`{:fmutate, :midi, :resyncing}`) takes it out
     until it has resynced (`:ready`); its notes are FMutate's to release.
 
@@ -121,23 +122,30 @@ defmodule Humdinger.Output do
     :last_sent,
     :sent_at,
     :sent_timer,
-    :connecting,
     :paired,
     channel: 1,
     enabled: @default_enabled,
     fmutate_status: :unpaired,
     # FMutate dropped MIDI and is resynchronising (see the moduledoc).
     fmutate_resync: false,
-    port_available: false,
-    port_connections: 0,
-    # The port refused bytes; waiting for its writer to drain.
-    port_resync: false,
+    # The virtual "Humdinger" port: its mob_midi id once open, the apps
+    # listening, and `resync` while its refused queue drains (`gen`: highest
+    # queue generation seen, from discard/2 or a handled :drained).
+    vport: %{id: nil, available: false, listeners: 0, resync: false, gen: 0},
     # pid => monitor: processes told about sessions (follow_session/1).
     followers: %{},
     # id => Device.t(): the USB and Bluetooth devices Humdinger can send to.
     devices: %{},
-    # id => :opening | :open | {:failed, reason}: outputs asked of mob_midi.
+    # id => :opening | :open | {:draining, gen} | {:failed, reason}: outputs asked of mob_midi.
     opened: %{},
+    # id => highest queue generation seen per USB/BT device.
+    device_gens: %{},
+    # address => device_id from {:midi, :connected, ...}, so forget can close(id).
+    bt_ids: %{},
+    # Bluetooth connects asked of mob_midi and not answered yet, oldest first;
+    # the last one is the device the user is waiting for. mob_midi's
+    # connect errors carry no address, so each one retires one request.
+    connects: [],
     sounding: Map.new(@ids, &{&1, MapSet.new()}),
     scanning: false,
     found: [],
@@ -258,9 +266,10 @@ defmodule Humdinger.Output do
   def bluetooth(server \\ __MODULE__), do: GenServer.call(server, :bluetooth)
 
   @doc """
-  Scans 10 s for Bluetooth-MIDI devices ("Scan Bluetooth"). Errors are the
-  `Humdinger.Output.Device.scan/1` ones; on `:no_permission`, request the
-  `:midi_bluetooth` capability with `Mob.Permissions.request/2` and retry.
+  Scans 10 s for Bluetooth-MIDI devices ("Scan Bluetooth"). Scan errors arrive
+  in `{:output, :bluetooth, view}` (or immediately on unsupported platforms);
+  on `:permission_denied`, request the `:midi_bluetooth` capability with
+  `Mob.Permissions.request/2` and retry.
   """
   @spec scan_bluetooth(GenServer.server()) :: :ok | {:error, atom()}
   def scan_bluetooth(server \\ __MODULE__), do: GenServer.call(server, :scan_bluetooth)
@@ -302,26 +311,12 @@ defmodule Humdinger.Output do
   @impl GenServer
   def handle_continue(:connect, state) do
     state = link_fmutate(state)
-    _ = state.device.subscribe()
-
-    devices =
-      case state.device.list() do
-        {:ok, list} -> list
-        {:error, _} -> []
-      end
+    _ = state.port.open(Port.name())
+    _ = state.device.list()
 
     state =
-      %{
-        state
-        | port_available: state.port.available?(),
-          port_connections: state.port.connections(),
-          paired: state.device.recall()
-      }
-      |> add_devices(devices)
-      |> sync_devices()
+      %{state | paired: state.device.recall()}
       |> reconnect_bluetooth()
-      # A previous Output may have left notes on the port's clients.
-      |> reset_port()
 
     {:noreply, %{state | shown: destination_list(state), shown_bluetooth: bluetooth_view(state)}}
   end
@@ -420,35 +415,37 @@ defmodule Humdinger.Output do
         {:reply, :ok, changed(%{state | scanning: true, found: [], scan_error: nil})}
 
       {:error, reason} = error ->
-        {:reply, error, changed(%{state | scan_error: reason})}
+        {:reply, error, changed(%{state | scanning: false, scan_error: reason})}
     end
   end
 
   def handle_call(:stop_bluetooth_scan, _from, state) do
     _ = state.device.stop_scan()
-    {:reply, :ok, state}
+    {:reply, :ok, changed(%{state | scanning: false})}
   end
 
   # One Bluetooth device at a time: connecting another drops the paired one.
+  # An address already being connected isn't asked again (mob_midi would
+  # answer twice): it just becomes the one waited for.
   def handle_call({:connect_bluetooth, address}, _from, state) do
-    state =
-      case state.paired do
-        %{address: ^address} -> state
-        %{address: old} -> drop_bluetooth(state, old)
-        nil -> state
-      end
-
-    case state.device.connect(address) do
-      :ok -> {:reply, :ok, changed(%{state | connecting: address, scan_error: nil})}
-      {:error, reason} = error -> {:reply, error, changed(%{state | scan_error: reason})}
+    if address in state.connects do
+      connects = List.delete(state.connects, address) ++ [address]
+      {:reply, :ok, changed(%{state | connects: connects, scan_error: nil})}
+    else
+      start_connect(state, address)
     end
   end
 
   def handle_call(:forget_bluetooth, _from, state) do
-    state = if state.paired, do: drop_bluetooth(state, state.paired.address), else: state
-    if state.connecting, do: state.device.disconnect(state.connecting)
+    state =
+      for address <- Enum.uniq([state.paired && state.paired.address | state.connects]),
+          is_binary(address),
+          reduce: state do
+        acc -> drop_bluetooth(acc, address)
+      end
+
     state.device.remember(nil)
-    {:reply, :ok, changed(%{state | paired: nil, connecting: nil})}
+    {:reply, :ok, changed(%{state | paired: nil, connects: []})}
   end
 
   @impl GenServer
@@ -479,32 +476,101 @@ defmodule Humdinger.Output do
   def handle_info({:fmutate, :status, status}, state),
     do: {:noreply, %{state | fmutate_status: status} |> prune_sounding() |> changed()}
 
-  def handle_info({:humdinger_midi, tag, json}, state) do
-    case JSON.decode(json) do
-      {:ok, payload} -> {:noreply, state |> native_event(tag, payload) |> changed()}
-      {:error, _} -> {:noreply, state}
-    end
+  def handle_info({:midi, :devices, payload}, state) do
+    {:noreply, state |> reconcile_devices(Device.parse(payload)) |> changed()}
+  end
+
+  def handle_info({:midi, event, _}, state) when event in [:device_added, :device_removed] do
+    _ = state.device.list()
+    {:noreply, state}
+  end
+
+  def handle_info({:midi, :opened, %{device: id, direction: :virtual}}, state) do
+    state = %{state | vport: %{state.vport | id: id, available: true, resync: false, gen: 0}}
+    {:noreply, changed(state)}
+  end
+
+  def handle_info(
+        {:midi, :virtual_status, %{device: id, listeners: n}},
+        %{vport: %{id: id}} = state
+      )
+      when is_integer(id) and is_integer(n) and n >= 0 do
+    {:noreply, state |> handle_virtual_status(n) |> changed()}
   end
 
   # The output is open: reset the device before the first note, since it may
   # still hold notes from before it was closed or Humdinger restarted.
-  def handle_info({:midi, :opened, %{device: id}}, state) do
-    if Map.has_key?(state.opened, id) do
-      reset_device(state, id)
-      {:noreply, changed(%{state | opened: Map.put(state.opened, id, :open)})}
+  def handle_info({:midi, :opened, %{device: id, direction: :output} = info}, state) do
+    if Map.has_key?(state.opened, id) and Map.get(info, :port, 0) == 0 do
+      state = %{state | opened: Map.put(state.opened, id, :open)}
+      {_, state} = reset_device(state, id)
+      {:noreply, changed(state)}
     else
       {:noreply, state}
     end
   end
 
-  def handle_info({:midi, :error, %{device: id, op: :open_output, reason: reason}}, state) do
-    if Map.has_key?(state.opened, id) and reason != :closed do
-      Logger.warning("[output] MIDI device #{id} didn't open: #{inspect(reason)}")
-      opened = Map.put(state.opened, id, {:failed, reason})
-      {:noreply, %{state | opened: opened} |> prune_sounding() |> changed()}
+  def handle_info({:midi, :drained, %{device: id, generation: gen} = info}, state)
+      when is_integer(id) and is_integer(gen) do
+    if Map.get(info, :port, 0) == 0 do
+      {:noreply, state |> handle_drained(id, gen) |> changed()}
     else
       {:noreply, state}
     end
+  end
+
+  def handle_info({:midi, :bluetooth_scan, :started}, state),
+    do: {:noreply, changed(%{state | scanning: true, scan_error: nil})}
+
+  def handle_info({:midi, :bluetooth_scan, :stopped}, state),
+    do: {:noreply, changed(%{state | scanning: false})}
+
+  def handle_info({:midi, :bluetooth_device, %{address: address} = found}, state) do
+    {:noreply, state |> add_bluetooth_found(address, found) |> changed()}
+  end
+
+  # Only the device asked for last counts; an earlier one that connects anyway
+  # was replaced (or forgotten): it is closed, and its request is answered.
+  def handle_info({:midi, :connected, %{device: id, address: address}}, state) do
+    if address == waiting_for(state) do
+      {:noreply, state |> bluetooth_connected(id, address) |> changed()}
+    else
+      _ = state.device.close(id)
+      {:noreply, changed(%{state | connects: retire_one(state.connects, address)})}
+    end
+  end
+
+  def handle_info({:midi, :error, %{op: :open_virtual, reason: reason}}, state) do
+    Logger.warning("[output] virtual MIDI port unavailable: #{inspect(reason)}")
+
+    state =
+      %{state | vport: %{state.vport | available: false, id: nil, listeners: 0, resync: false}}
+      |> prune_sounding()
+
+    {:noreply, changed(state)}
+  end
+
+  def handle_info({:midi, :error, %{device: id, op: :open_output, reason: reason}}, state) do
+    {:noreply, state |> handle_open_output_error(id, reason) |> changed()}
+  end
+
+  def handle_info({:midi, :error, %{op: :scan_bluetooth, reason: reason}}, state) do
+    {:noreply, changed(%{state | scanning: false, scan_error: reason})}
+  end
+
+  # The error belongs to some outstanding connect; it is reported only once
+  # none is left, so an old failure can't cancel the device chosen since.
+  def handle_info({:midi, :error, %{op: :connect_bluetooth, reason: reason}}, state) do
+    case state.connects do
+      [] -> {:noreply, state}
+      [_last] -> {:noreply, changed(%{state | connects: [], scan_error: reason})}
+      [_oldest | rest] -> {:noreply, changed(%{state | connects: rest})}
+    end
+  end
+
+  def handle_info({:midi, :error, %{op: :list_devices, reason: reason}}, state) do
+    Logger.warning("[output] MIDI device list failed: #{inspect(reason)}")
+    {:noreply, state}
   end
 
   def handle_info({:midi, _, _}, state), do: {:noreply, state}
@@ -575,9 +641,7 @@ defmodule Humdinger.Output do
     state |> write_all(id, offs ++ resets) |> elem(1)
   end
 
-  defp reset_device(state, id) do
-    for bytes <- Midi.panic(), do: guarded(:device, fn -> state.device.send(id, bytes) end)
-  end
+  defp reset_device(state, id), do: write_device_all(state, id, Midi.panic())
 
   # ── Sending ──────────────────────────────────────────────────────────────
 
@@ -621,16 +685,6 @@ defmodule Humdinger.Output do
 
   defp track(set, _bytes, _channel, _source), do: set
 
-  defp write(state, :fmutate, bytes),
-    do: guarded(:fmutate, fn -> state.fmutate.send_midi(bytes) end)
-
-  defp write(state, :port, bytes), do: guarded(:port, fn -> state.port.send(bytes) end)
-
-  defp write(state, id, bytes) do
-    for device_id <- open_devices(state, id),
-        do: guarded(id, fn -> state.device.send(device_id, bytes) end)
-  end
-
   # One destination failing (a NIF exception, an adapter process gone) must
   # not stop the others: the failure is logged and the write skipped.
   defp guarded(id, fun) do
@@ -641,16 +695,88 @@ defmodule Humdinger.Output do
       {:error, :failed}
   end
 
-  # Writes in order: `{:ok, state}`, or `{:refused, state}` when the port
-  # answers `{:error, :queue_full}` (it has dropped its queue and refuses
-  # bytes until it has drained), which stops the rest.
+  # Writes in order: `{:ok, state}`, or `{:refused, state}` when every target
+  # output answered `{:error, :queue_full}` (discarded, waiting for :drained),
+  # which stops the rest of the batch.
+  defp write_all(state, :fmutate, messages) do
+    for bytes <- messages, do: guarded(:fmutate, fn -> state.fmutate.send_midi(bytes) end)
+    {:ok, state}
+  end
+
+  defp write_all(%{vport: %{id: nil}} = state, :port, _messages), do: {:ok, state}
+
+  defp write_all(state, :port, messages) do
+    Enum.reduce_while(messages, {:ok, state}, fn bytes, {:ok, state} ->
+      write_port(state, bytes)
+    end)
+  end
+
   defp write_all(state, id, messages) do
     Enum.reduce_while(messages, {:ok, state}, fn bytes, {:ok, state} ->
-      case write(state, id, bytes) do
-        {:error, :queue_full} -> {:halt, {:refused, %{state | port_resync: true}}}
-        _ -> {:cont, {:ok, state}}
-      end
+      write_destination_devices(state, id, bytes)
     end)
+  end
+
+  defp write_port(state, bytes) do
+    case guarded(:port, fn -> state.port.send(state.vport.id, bytes) end) do
+      {:error, :queue_full} -> {:halt, {:refused, mark_port_refused(state)}}
+      _ -> {:cont, {:ok, state}}
+    end
+  end
+
+  defp write_destination_devices(state, id, bytes) do
+    {delivered?, state} =
+      Enum.reduce(open_devices(state, id), {false, state}, fn device_id, acc ->
+        write_one_device(acc, id, device_id, bytes)
+      end)
+
+    if delivered?, do: {:cont, {:ok, state}}, else: {:halt, {:refused, state}}
+  end
+
+  defp write_one_device({ok?, state}, id, device_id, bytes) do
+    case guarded(id, fn -> state.device.send(device_id, bytes) end) do
+      {:error, :queue_full} -> {ok?, mark_device_refused(state, device_id)}
+      _ -> {true, state}
+    end
+  end
+
+  defp write_device_all(state, device_id, messages) do
+    Enum.reduce_while(messages, {:ok, state}, fn bytes, {:ok, state} ->
+      write_device(state, device_id, bytes)
+    end)
+  end
+
+  defp write_device(state, device_id, bytes) do
+    case guarded(:device, fn -> state.device.send(device_id, bytes) end) do
+      {:error, :queue_full} -> {:halt, {:refused, mark_device_refused(state, device_id)}}
+      _ -> {:cont, {:ok, state}}
+    end
+  end
+
+  defp mark_port_refused(state) do
+    gen =
+      case guarded(:port, fn -> state.port.discard(state.vport.id) end) do
+        {:ok, gen} when is_integer(gen) -> max(state.vport.gen, gen)
+        _ -> state.vport.gen
+      end
+
+    %{state | vport: %{state.vport | resync: true, gen: gen}}
+  end
+
+  defp mark_device_refused(state, device_id) do
+    prev = Map.get(state.device_gens, device_id, 0)
+
+    gen =
+      case guarded(:device, fn -> state.device.discard(device_id) end) do
+        {:ok, gen} when is_integer(gen) -> max(prev, gen)
+        _ -> prev
+      end
+
+    %{
+      state
+      | opened: Map.put(state.opened, device_id, {:draining, gen}),
+        device_gens: Map.put(state.device_gens, device_id, gen)
+    }
   end
 
   # All 16 channels of the port reset when an app may hold notes Output
@@ -730,10 +856,15 @@ defmodule Humdinger.Output do
       |> Enum.sort()
 
   defp toggle(state, id, false) do
-    state
-    |> silence_destination(id)
-    |> Map.update!(:enabled, &Map.put(&1, id, false))
-    |> sync_devices()
+    was_open = state.opened
+
+    state =
+      state
+      |> silence_destination(id)
+      |> Map.update!(:enabled, &Map.put(&1, id, false))
+      |> sync_devices()
+
+    if id == :bt, do: drop_bluetooth_devices(state, was_open), else: state
   end
 
   defp toggle(state, id, true) do
@@ -741,39 +872,43 @@ defmodule Humdinger.Output do
     if id == :bt, do: reconnect_bluetooth(state), else: state
   end
 
-  # A destination that can't be reached has nothing sounding any more. The
-  # port waiting to drain keeps its notes: they are released once it has.
+  # A destination that can't be reached has nothing sounding any more. An
+  # output waiting to drain keeps its notes: they are released once it has.
   defp prune_sounding(state) do
     sounding =
       Map.new(state.sounding, fn {id, set} ->
-        {id, if(sendable?(state, id) or resyncing_port?(state, id), do: set, else: MapSet.new())}
+        {id, if(sendable?(state, id) or resyncing?(state, id), do: set, else: MapSet.new())}
       end)
 
     %{state | sounding: sounding}
   end
 
-  defp resyncing_port?(state, :port), do: state.port_resync and listened?(state)
-  defp resyncing_port?(_state, _id), do: false
+  defp resyncing?(state, :port), do: state.vport.resync and listened?(state)
+
+  defp resyncing?(state, id) when id in [:usb, :bt],
+    do: Enum.any?(devices_for(state, id), &match?({:draining, _}, state.opened[&1.id]))
+
+  defp resyncing?(_state, _id), do: false
 
   # ── Availability and the board's rows ─────────────────────────────────────
 
   defp available?(state, :fmutate), do: match?({:connected, _}, state.fmutate_status)
-  defp available?(state, :port), do: state.port_available
+  defp available?(state, :port), do: state.vport.available
   defp available?(state, id), do: usable_devices(state, id) != []
 
   # Whether sending reaches anyone. The port exists (its row is available)
   # whether or not an app listens, but with no app connected every send would
-  # be a JNI round trip that drops the bytes; while it drains nothing goes to
-  # it. FMutate resynchronising takes no MIDI. A device takes MIDI once its
-  # output is open.
-  defp sendable?(state, :port), do: listened?(state) and not state.port_resync
+  # answer :no_listener; while it drains nothing goes to it. FMutate
+  # resynchronising takes no MIDI. A device takes MIDI once its output is open.
+  defp sendable?(state, :port), do: listened?(state) and not state.vport.resync
 
   defp sendable?(state, :fmutate),
     do: available?(state, :fmutate) and not state.fmutate_resync
 
   defp sendable?(state, id), do: open_devices(state, id) != []
 
-  defp listened?(state), do: state.port_available and state.port_connections > 0
+  defp listened?(%{vport: vport}),
+    do: vport.available and not is_nil(vport.id) and vport.listeners > 0
 
   defp devices_for(state, id) do
     for {_, device} <- state.devices, destination(device) == id, do: device
@@ -824,10 +959,10 @@ defmodule Humdinger.Output do
     end
   end
 
-  defp detail(%{port_available: false}, :port), do: "virtual MIDI · not on this phone"
-  defp detail(%{port_connections: 0}, :port), do: "virtual MIDI · any app can pick it"
-  defp detail(%{port_connections: 1}, :port), do: "virtual MIDI · 1 app listening"
-  defp detail(%{port_connections: n}, :port), do: "virtual MIDI · #{n} apps listening"
+  defp detail(%{vport: %{available: false}}, :port), do: "virtual MIDI · not on this phone"
+  defp detail(%{vport: %{listeners: 0}}, :port), do: "virtual MIDI · any app can pick it"
+  defp detail(%{vport: %{listeners: 1}}, :port), do: "virtual MIDI · 1 app listening"
+  defp detail(%{vport: %{listeners: n}}, :port), do: "virtual MIDI · #{n} apps listening"
 
   defp detail(state, :usb) do
     case devices_for(state, :usb) do
@@ -843,7 +978,7 @@ defmodule Humdinger.Output do
     end
   end
 
-  defp bluetooth_detail(%{connecting: address}) when is_binary(address), do: "connecting…"
+  defp bluetooth_detail(%{connects: [_ | _]}), do: "connecting…"
   defp bluetooth_detail(%{paired: %{name: name}}), do: "#{name} · not connected"
   defp bluetooth_detail(_state), do: "none paired"
 
@@ -863,7 +998,7 @@ defmodule Humdinger.Output do
       scanning: state.scanning,
       found: state.found,
       error: state.scan_error,
-      connecting: state.connecting,
+      connecting: waiting_for(state),
       paired: state.paired
     }
   end
@@ -879,9 +1014,9 @@ defmodule Humdinger.Output do
 
   defp broadcast(state, message), do: Enum.each(Map.keys(state.subscribers), &send(&1, message))
 
-  # ── Devices and the native plugin's events ───────────────────────────────
+  # ── Devices and mob_midi events ──────────────────────────────────────────
 
-  defp add_devices(state, devices) do
+  defp reconcile_devices(state, devices) do
     relevant =
       for device <- devices,
           device.type in [:usb, :bluetooth],
@@ -890,7 +1025,19 @@ defmodule Humdinger.Output do
           into: %{},
           do: {device.id, device}
 
-    %{state | devices: Map.merge(state.devices, relevant)}
+    removed = Map.keys(state.devices) -- Map.keys(relevant)
+    for id <- removed, Map.has_key?(state.opened, id), do: state.device.close(id)
+    bt_ids = Map.reject(state.bt_ids, fn {_addr, id} -> id in removed end)
+
+    %{
+      state
+      | devices: relevant,
+        opened: Map.drop(state.opened, removed),
+        device_gens: Map.drop(state.device_gens, removed),
+        bt_ids: bt_ids
+    }
+    |> sync_devices()
+    |> prune_sounding()
   end
 
   # Opens outputs for the devices of enabled destinations; closes the rest.
@@ -903,8 +1050,9 @@ defmodule Humdinger.Output do
       end)
 
     {keep, drop} = Map.split(opened, wanted)
-    for id <- Map.keys(drop), do: state.device.close(id)
-    %{state | opened: keep}
+    dropped = Map.keys(drop)
+    for id <- dropped, do: state.device.close(id)
+    %{state | opened: keep, device_gens: Map.drop(state.device_gens, dropped)}
   end
 
   defp open(state, id) do
@@ -914,28 +1062,10 @@ defmodule Humdinger.Output do
     end
   end
 
-  # The writer drained after refusing bytes (whether this Output saw the
-  # refusal or a previous one did): what the clients may still hold is
-  # released before anything new goes out.
-  defp native_event(state, :port, %{"drained" => true} = payload) do
-    state = %{state | port_resync: false, port_connections: payload["connections"] || 0}
-
-    if listened?(state) do
-      offs =
-        for {_source, channel, note} <- state.sounding[:port],
-            do: Midi.encode({:note_off, note}, channel)
-
-      {_, state} = write_all(state, :port, offs ++ Midi.panic())
-      put_in(state.sounding[:port], MapSet.new())
-    else
-      prune_sounding(state)
-    end
-  end
-
-  defp native_event(state, :port, %{"connections" => n}) when is_integer(n) do
+  defp handle_virtual_status(state, n) do
     before = listened?(state)
-    # With no client left the writer has nothing to drain into.
-    state = %{state | port_connections: n, port_resync: state.port_resync and n > 0}
+    # With no listener left the port has nothing to drain into.
+    state = %{state | vport: %{state.vport | listeners: n, resync: state.vport.resync and n > 0}}
 
     # The first app to open the port (again) starts from silence.
     if not before and listened?(state),
@@ -943,81 +1073,205 @@ defmodule Humdinger.Output do
       else: prune_sounding(state)
   end
 
-  defp native_event(state, :device_added, payload) when is_map(payload),
-    do: state |> add_devices([Device.from_json(payload)]) |> sync_devices()
+  defp handle_drained(%{vport: %{id: id} = vport} = state, id, gen) do
+    stale? = if vport.resync, do: gen < vport.gen, else: gen <= vport.gen
 
-  defp native_event(state, :device_removed, %{"id" => id}) do
-    if Map.has_key?(state.opened, id), do: state.device.close(id)
+    if stale? do
+      state
+    else
+      drain_port(%{state | vport: %{vport | resync: false, gen: max(vport.gen, gen)}})
+    end
+  end
 
-    %{state | devices: Map.delete(state.devices, id), opened: Map.delete(state.opened, id)}
+  defp handle_drained(state, id, gen) do
+    case state.opened[id] do
+      {:draining, expected} when gen >= expected ->
+        drain_device(state, id, gen)
+
+      :open ->
+        if gen > Map.get(state.device_gens, id, 0),
+          do: drain_device(state, id, gen),
+          else: state
+
+      _ ->
+        state
+    end
+  end
+
+  defp drain_port(state) do
+    if listened?(state) do
+      offs =
+        for {_source, channel, note} <- state.sounding[:port],
+            do: Midi.encode({:note_off, note}, channel)
+
+      case write_all(state, :port, offs ++ Midi.panic()) do
+        {:ok, state} -> put_in(state.sounding[:port], MapSet.new())
+        {:refused, state} -> state
+      end
+    else
+      prune_sounding(state)
+    end
+  end
+
+  defp drain_device(state, device_id, gen) do
+    prev = Map.get(state.device_gens, device_id, 0)
+
+    state = %{
+      state
+      | opened: Map.put(state.opened, device_id, :open),
+        device_gens: Map.put(state.device_gens, device_id, max(prev, gen))
+    }
+
+    case state.devices[device_id] do
+      nil -> state
+      device -> flush_drained_device(state, device_id, destination(device))
+    end
+  end
+
+  defp flush_drained_device(state, device_id, dest) do
+    offs =
+      for {_source, channel, note} <- state.sounding[dest],
+          do: Midi.encode({:note_off, note}, channel)
+
+    case write_device_all(state, device_id, offs ++ Midi.panic()) do
+      {:ok, state} -> clear_if_sole_device(state, device_id, dest)
+      {:refused, state} -> state
+    end
+  end
+
+  defp clear_if_sole_device(state, device_id, dest) do
+    if open_devices(state, dest) == [device_id],
+      do: put_in(state.sounding[dest], MapSet.new()),
+      else: state
+  end
+
+  defp handle_open_output_error(state, _id, :closed), do: state
+
+  defp handle_open_output_error(state, id, :own_device) do
+    %{
+      state
+      | devices: Map.delete(state.devices, id),
+        opened: Map.delete(state.opened, id),
+        device_gens: Map.delete(state.device_gens, id)
+    }
     |> prune_sounding()
   end
 
-  defp native_event(state, :ble_found, %{"address" => address} = found) do
+  defp handle_open_output_error(state, id, reason) do
+    if Map.has_key?(state.opened, id) do
+      Logger.warning("[output] MIDI device #{id} didn't open: #{inspect(reason)}")
+      opened = Map.put(state.opened, id, {:failed, reason})
+      prune_sounding(%{state | opened: opened})
+    else
+      state
+    end
+  end
+
+  defp add_bluetooth_found(state, address, found) do
     if Enum.any?(state.found, &(&1.address == address)) do
       state
     else
-      entry = %{address: address, name: found["name"] || "", rssi: found["rssi"] || 0}
+      entry = %{
+        address: address,
+        name: Map.get(found, :name) || "",
+        rssi: Map.get(found, :rssi) || 0
+      }
+
       %{state | found: state.found ++ [entry]}
     end
   end
 
-  defp native_event(state, :ble_scan_done, payload),
-    do: %{state | scanning: false, scan_error: error_atom(payload["error"]) || state.scan_error}
-
   # Android names a Bluetooth MIDI device after the name its stack cached,
   # which can be missing; the name the scan saw is the better one.
-  defp native_event(
-         %{connecting: address} = state,
-         :ble_connected,
-         %{"address" => address} = payload
-       ) do
-    scanned = Enum.find_value(state.found, &(&1.address == address and &1.name != "" and &1.name))
-    paired = %{address: address, name: scanned || payload["name"] || address}
+  defp bluetooth_connected(state, id, address) do
+    paired = %{address: address, name: bluetooth_name(state, id, address)}
     state.device.remember(paired)
-    %{state | paired: paired, connecting: nil}
+    if not Map.has_key?(state.devices, id), do: state.device.list()
+    %{state | paired: paired, connects: [], bt_ids: Map.put(state.bt_ids, address, id)}
   end
 
-  # A connection nobody is waiting for any more (forgotten, or replaced).
-  defp native_event(state, :ble_connected, %{"address" => address}) do
-    state.device.disconnect(address)
-    state
+  defp bluetooth_name(state, id, address) do
+    scanned =
+      Enum.find_value(state.found, &(&1.address == address and &1.name != "" and &1.name))
+
+    existing = if match?(%{address: ^address}, state.paired), do: state.paired.name
+    scanned || existing || device_name(state.devices[id]) || address
   end
 
-  defp native_event(
-         %{connecting: address} = state,
-         :ble_failed,
-         %{"address" => address} = payload
-       ) do
-    %{state | connecting: nil, scan_error: error_atom(payload["reason"]) || :connect_failed}
-  end
+  defp device_name(%{name: name}) when is_binary(name) and name != "", do: name
+  defp device_name(_), do: nil
 
-  defp native_event(state, _tag, _payload), do: state
-  # Releases the Bluetooth notes, closes mob_midi's output on the device at
-  # `address` and disconnects it: Android drops a Bluetooth MIDI device only
-  # when its last client (ours and mob_midi's) has closed it.
+  # Releases the Bluetooth notes and closes the device at `address` (which also
+  # disconnects it in mob_midi).
   defp drop_bluetooth(state, address) do
     state = silence_destination(state, :bt)
-    ids = for {id, %{type: :bluetooth, address: ^address}} <- state.devices, do: id
-    for id <- ids, Map.has_key?(state.opened, id), do: state.device.close(id)
-    state.device.disconnect(address)
-    %{state | devices: Map.drop(state.devices, ids), opened: Map.drop(state.opened, ids)}
+    device_ids = for {id, %{type: :bluetooth, address: ^address}} <- state.devices, do: id
+    ids = Enum.uniq(device_ids ++ List.wrap(state.bt_ids[address]))
+    for id <- ids, do: state.device.close(id)
+
+    %{
+      state
+      | devices: Map.drop(state.devices, ids),
+        opened: Map.drop(state.opened, ids),
+        device_gens: Map.drop(state.device_gens, ids),
+        bt_ids: Map.delete(state.bt_ids, address)
+    }
   end
 
-  @errors Map.new(
-            ~w(scan_failed no_permission open_failed bluetooth_off location_off no_bluetooth)a,
-            &{Atom.to_string(&1), &1}
-          )
-  defp error_atom(reason), do: Map.get(@errors, reason)
-
   # Reconnects the remembered Bluetooth device when Bluetooth is on.
-  defp reconnect_bluetooth(%{paired: %{address: address}, connecting: nil} = state) do
+  defp reconnect_bluetooth(%{paired: %{address: address}, connects: []} = state) do
     if state.enabled.bt and devices_for(state, :bt) == [] and state.device.connect(address) == :ok,
-      do: %{state | connecting: address},
+      do: %{state | connects: [address]},
       else: state
   end
 
   defp reconnect_bluetooth(state), do: state
+
+  defp waiting_for(%{connects: []}), do: nil
+  defp waiting_for(%{connects: connects}), do: List.last(connects)
+
+  defp start_connect(state, address) do
+    state =
+      case state.paired do
+        %{address: ^address} -> state
+        %{address: old} -> drop_bluetooth(state, old)
+        nil -> state
+      end
+
+    case state.device.connect(address) do
+      :ok ->
+        {:reply, :ok, changed(%{state | connects: state.connects ++ [address], scan_error: nil})}
+
+      {:error, reason} = error ->
+        {:reply, error, changed(%{state | scan_error: reason})}
+    end
+  end
+
+  # Every connect is answered once: by :connected or by an (addressless)
+  # error. An answer retires its own request if still listed, else the oldest.
+  defp retire_one(connects, address) do
+    cond do
+      address in connects -> List.delete(connects, address)
+      connects == [] -> []
+      true -> tl(connects)
+    end
+  end
+
+  # Bluetooth MIDI turned off: closing a Bluetooth device disconnects it in
+  # mob_midi, so forget it here too (sync_devices/1 already closed the open
+  # ones); turning it back on reconnects the remembered device instead of
+  # reopening a stale id.
+  defp drop_bluetooth_devices(state, was_open) do
+    ids = for {id, %{type: :bluetooth}} <- state.devices, do: id
+    for id <- ids, not Map.has_key?(was_open, id), do: state.device.close(id)
+
+    %{
+      state
+      | devices: Map.drop(state.devices, ids),
+        device_gens: Map.drop(state.device_gens, ids),
+        bt_ids: %{}
+    }
+  end
 
   # ── FMutate and Settings ───────────────────────────────────────────────────
 

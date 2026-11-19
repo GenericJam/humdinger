@@ -8,7 +8,7 @@ Humdinger is a [Mob](https://hexdocs.pm/mob) mobile application (Elixir on the B
 
 ## Current features & platform support
 
-**Android-first** (`com.genericjam.humdinger`, `minSdk 28`, `compileSdk 35`, `targetSdk 35`, ABIs `arm64-v8a`, `armeabi-v7a`, `x86_64`, NDK `27.2.12479018`). Template files exist under [`ios/`](ios/), and pure Elixir/view code stays platform-neutral where cheap, but iOS is a later port: `mob.exs` registers `:hum_audio` for `archs: [:android]` only, the in-repo plugins are Android-only Kotlin + Zig NIFs, and `config/config.exs` configures `Humdinger.Export.Android`.
+**Android-first** (`com.genericjam.humdinger`, `minSdk 28`, `compileSdk 35`, `targetSdk 35`, ABIs `arm64-v8a`, `armeabi-v7a`, `x86_64`, NDK `27.2.12479018`). Template files exist under [`ios/`](ios/), and pure Elixir/view code stays platform-neutral where cheap, but iOS is a later port: `mob.exs` registers `:hum_audio` for `archs: [:android]` only, the in-repo file-share plugin is an Android-only Kotlin + Zig NIF, and `config/config.exs` configures `Humdinger.Export.Android`.
 
 - **Real-time voice-to-MIDI** (`c_src/hum_audio.c`, `c_src/pitch_yin.c`, `c_src/spectrum.c`, `Humdinger.Engine`, `Humdinger.Tracker`):
   - Live AAudio pitch detection (YIN, 60–1600 Hz, ~5.3 ms hop) and 128-bin log-spaced spectrum analysis.
@@ -17,8 +17,8 @@ Humdinger is a [Mob](https://hexdocs.pm/mob) mobile application (Elixir on the B
   - Android foreground microphone service (`Humdinger.Background` / `HumListenService.kt`) with ongoing notification controls (Pause, Resume, Record, Stop rec, Stop) so listening continues when another app is in front.
 - **MIDI output destinations** (`Humdinger.Output`, exclusive session arbitration to prevent stuck notes):
   - **FMutate** (`Humdinger.FMutate`, `Humdinger.PairScreen`): pairing over QR/link or Crockford code (SRP-6a, mDNS discovery, TLS 1.3 certificate pinning, `mob_secure_store` backed by Android Keystore) and MIDI over Erlang distribution. Same-phone background wake of FMutate via signature-permission service is not yet wired on FMutate's side.
-  - **Humdinger virtual MIDI port** (`plugins/humdinger_midi_port/`): `MidiDeviceService` output port (`"Humdinger"`) that other Android apps can open.
-  - **USB-MIDI & Bluetooth-MIDI**: device open/send via `mob_midi`, paired with the in-repo plugin's device watcher and BLE-MIDI central scanner/connector.
+  - **Humdinger virtual MIDI port** (`mob_midi` `~> 0.3.0`, `io.mob.midi.MobMidiDeviceService`): `"Humdinger"` output port declared via `mix mob_midi.gen.virtual_device` (`res/xml/mob_midi_device.xml`) that other Android apps can open.
+  - **USB-MIDI & Bluetooth-MIDI**: device enumeration, hot-plug, BLE-MIDI central scan/connect, and queued output via `mob_midi`.
 - **Phrases, review, audio import & export**:
   - Record live phrases or import audio files up to 10 minutes (`Humdinger.ImportScreen`, `AMediaExtractor` + `AMediaCodec` decoding, `Humdinger.Transcribe`, `Humdinger.Tempo`).
   - Browse and manage saved phrases (`Humdinger.PhrasesScreen`), inspect/edit on Piano roll or Staff tabs (`Humdinger.PhraseScreen`), and play phrases out to configured MIDI destinations (`Humdinger.Player`).
@@ -130,5 +130,5 @@ agent-lease release <your-agent-name>
 - [`design/fmutate/protocol.md`](design/fmutate/protocol.md) & [`design/fmutate/HANDOFF.md`](design/fmutate/HANDOFF.md) — FMutate pairing, TLS distribution, and MIDI protocol specification
 - [`design/choir-coach-handoff.md`](design/choir-coach-handoff.md) — audio engine and pitch detector design notes ported from Choir Coach
 - [`c_src/`](c_src/) & [`c_src/test/`](c_src/test/) — native AAudio/YIN/spectrum/file-analysis C sources and host test harnesses
-- [`plugins/humdinger_midi_port/`](plugins/humdinger_midi_port/) & [`plugins/humdinger_file_share/`](plugins/humdinger_file_share/) — in-repo Android native plugins
+- [`plugins/humdinger_file_share/`](plugins/humdinger_file_share/) — in-repo Android native plugin for exporting/printing files
 - [`priv/repo/migrations/`](priv/repo/migrations/) — SQLite schema migrations (`20260507000001_create_mob_screen_states.exs`, `20261112000001_create_phrases.exs`, `20261114000001_add_phrases_format.exs`)

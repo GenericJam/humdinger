@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- The Humdinger port (HumdingerMidiService). An output port sends to the
-     apps that open it: other apps pick "Humdinger" as a MIDI source and play
-     what the singer sings. "name" becomes MidiDeviceInfo.PROPERTY_NAME. -->
-<devices>
-    <device manufacturer="Humdinger" product="Humdinger port" name="Humdinger">
-        <output-port name="Humdinger" />
-    </device>
-</devices>

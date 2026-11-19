@@ -37,8 +37,8 @@ inline fn failed(env: ?*erts.ErlNifEnv) erts.ERL_NIF_TERM {
 }
 
 // A pending Java exception must never outlive the JNI call on a BEAM
-// thread. As in humdinger_midi_port_nif.zig: ExceptionOccurred is opaque in
-// mob_zig, so give it its JNI signature here.
+// thread. ExceptionOccurred is opaque in mob_zig, so give it its JNI
+// signature here.
 fn clearPendingException(jenv: *jni.JNIEnv) bool {
     const exception_occurred: *align(1) const fn (*jni.JNIEnv) callconv(.c) jni.JObject =
         @ptrCast(jenv.*.ExceptionOccurred.?);
