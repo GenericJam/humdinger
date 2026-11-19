@@ -163,7 +163,7 @@ saved_sensitivity = rpc.(Humdinger.Engine, :settings, []).sensitivity_db
 c = rpc.(EngineCheck.Collector, :start, [])
 Process.sleep(200)
 IO.puts("listen: #{inspect(rpc.(Humdinger.Engine, :listen, []))}")
-IO.puts("background service running: #{rpc.(Humdinger.Background, :running?, [])}")
+IO.puts("background service status: #{inspect(rpc.(MobBackground, :status, []))}")
 Process.sleep(1_000)
 
 # Sensitivity as the Settings sheet asks for it: the line above the room
@@ -245,27 +245,25 @@ IO.puts(
 IO.puts("  notification while A4 played: #{inspect(mid)}")
 IO.puts("  notification now: #{inspect(notification.())}")
 
-# ── 4. The notification's buttons (the intents a tap sends, as the app's uid) ──
+# ── 4. The notification's buttons (delivered to the engine as MobBackground does) ──
 button = fn action ->
-  adb.(~w(shell run-as #{app} am startservice --user 0 -n #{app}/.HumListenService
-       -a #{app}.listen.BUTTON --es button #{action}))
-
+  rpc.(Kernel, :send, [Humdinger.Engine, {:mob_background, {:action, action}}])
   Process.sleep(600)
 end
 
 IO.puts("\n4. Buttons:")
-button.("pause")
+button.(:pause)
 IO.puts("  pause → #{inspect(rpc.(Humdinger.Engine, :status, []))}, #{inspect(notification.())}")
-button.("resume")
+button.(:resume)
 IO.puts("  resume → #{inspect(rpc.(Humdinger.Engine, :status, []))}")
-button.("record")
+button.(:record)
 
 IO.puts(
   "  record → recording? #{rpc.(Humdinger.Engine, :recording?, [])}, #{inspect(notification.())}"
 )
 
 play.([{69, 0.6, 300}, {72, 0.6, 600}])
-button.("record_stop")
+button.(:record_stop)
 Process.sleep(500)
 st = report.(c)
 
@@ -274,10 +272,10 @@ saved =
       do: {p.id, p.name, Enum.map(p.notes, &Humdinger.Music.note_name(&1.midi))}
 
 IO.puts("  record_stop → phrase saved: #{inspect(saved)}")
-button.("stop")
+button.(:stop)
 
 IO.puts(
-  "  stop → #{inspect(rpc.(Humdinger.Engine, :status, []))}, service running #{rpc.(Humdinger.Background, :running?, [])}, " <>
+  "  stop → #{inspect(rpc.(Humdinger.Engine, :status, []))}, service status #{inspect(rpc.(MobBackground, :status, []))}, " <>
     "notification #{inspect(notification.())}"
 )
 

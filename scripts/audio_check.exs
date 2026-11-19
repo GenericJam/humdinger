@@ -10,7 +10,7 @@
 # Put the phone next to the Mac's speaker: the script plays sines with
 # afplay. FILE=<path on the phone> also analyses that file (adb push it into
 # /data/data/com.genericjam.humdinger/files/ first, e.g. with
-# `adb shell run-as`). BACKGROUND=1 starts Humdinger.Background, presses
+# `adb shell run-as`). BACKGROUND=1 starts MobBackground (:microphone), presses
 # Home, turns the screen off and on, and checks readings keep coming for
 # SECS (default 35) seconds.
 
@@ -59,7 +59,7 @@ defmodule HumAudioCheck.Collector do
       {:hum_audio, _ref, other} ->
         loop(%{st | other: [other | st.other]})
 
-      {:background, _action} = tap ->
+      {:mob_background, _event} = tap ->
         loop(%{st | other: [tap | st.other]})
 
       {:report, from} ->
@@ -276,7 +276,7 @@ if file = System.get_env("FILE") do
 end
 
 # ── 5. Background ──
-# NOSERVICE=1 runs the same without Humdinger.Background: the control, where
+# NOSERVICE=1 runs the same without MobBackground: the control, where
 # Android silences the microphone once the app is in the background.
 if System.get_env("BACKGROUND") == "1" do
   secs = String.to_integer(System.get_env("SECS", "35"))
@@ -285,7 +285,8 @@ if System.get_env("BACKGROUND") == "1" do
 
   if System.get_env("NOSERVICE") != "1" do
     bg =
-      on_phone.("Humdinger.Background.start(pid, %{text: \"A4 −12¢ → FMutate A · ch 1\"})",
+      on_phone.(
+        ~s[MobBackground.start(pid, mode: :microphone, notification: %{title: "Humdinger · listening", text: "A4 −12¢ → FMutate A · ch 1"})],
         pid: c4
       )
 
@@ -329,7 +330,11 @@ if System.get_env("BACKGROUND") == "1" do
       if s == on_at, do: adb.(~w(shell input keyevent KEYCODE_WAKEUP))
 
       if s == tone_at,
-        do: on_phone.("Humdinger.Background.update(%{text: \"C5 +3¢ → FMutate A · ch 1\"})", [])
+        do:
+          on_phone.(
+            ~s[MobBackground.update(%{title: "Humdinger · listening", text: "C5 +3¢ → FMutate A · ch 1"})],
+            []
+          )
 
       if s == tone_at, do: tone.(523, 2)
       Process.sleep(1_000)
@@ -355,7 +360,7 @@ if System.get_env("BACKGROUND") == "1" do
   st4 = report.(c4)
   summarize.("background", st4, t0c)
   :ok = :rpc.call(node, Humdinger.Audio.Native, :stop, [ref4])
-  on_phone.("Humdinger.Background.stop()", [])
+  on_phone.("MobBackground.stop()", [])
   {notif, _} = adb.(~w(shell dumpsys notification --noredact))
 
   IO.puts(
@@ -369,13 +374,16 @@ end
 # ── 6. Notification buttons ──
 # BUTTONS=1: with the app in the background, send the service the intents its
 # buttons carry (as the app's own uid, through run-as), each of which must
-# arrive as {:background, action}; listen anew from the background (allowed
-# while the service runs); then update and stop the notification. Tapping
-# the buttons in the shade takes the same path from SystemUI.
+# arrive as {:mob_background, {:action, id}}; listen anew from the background
+# (allowed while the service runs); then update and stop the notification.
+# Tapping the buttons in the shade takes the same path from SystemUI.
 if System.get_env("BUTTONS") == "1" do
   adb = fn args -> elem(System.cmd("adb", ["-s", serial | args], stderr_to_stdout: true), 0) end
   c5 = new_collector.()
-  notice = ~s[Humdinger.Background.start(pid, %{text: "A4 −12¢ → FMutate A · ch 1"})]
+
+  notice =
+    ~s|MobBackground.start(pid, mode: :microphone, notification: %{title: "Humdinger · listening", text: "A4 −12¢ → FMutate A · ch 1", actions: [%{id: :pause, label: "Pause"}, %{id: :record, label: "Record"}, %{id: :stop, label: "Stop"}]})|
+
   :ok = on_phone.(notice, pid: c5)
   Process.sleep(800)
   adb.(~w(shell input keyevent KEYCODE_HOME))
@@ -383,11 +391,11 @@ if System.get_env("BUTTONS") == "1" do
 
   for action <- ~w(pause resume record record_stop stop) do
     adb.(~w(shell run-as com.genericjam.humdinger am startservice --user 0
-         -n com.genericjam.humdinger/.HumListenService
-         -a com.genericjam.humdinger.listen.BUTTON --es button) ++ [action])
+         -n com.genericjam.humdinger/io.mob.background.BeamForegroundService
+         -a io.mob.background.BUTTON --es button) ++ [action])
 
     Process.sleep(500)
-    got = Enum.member?(report.(c5).other, {:background, String.to_atom(action)})
+    got = Enum.member?(report.(c5).other, {:mob_background, {:action, String.to_atom(action)}})
     IO.puts("button #{action}: arrived #{got}")
   end
 
@@ -402,7 +410,7 @@ if System.get_env("BUTTONS") == "1" do
   with {:ok, ref} <- result, do: :rpc.call(node, Humdinger.Audio.Native, :stop, [ref])
 
   update =
-    ~s[Humdinger.Background.update(%{text: "C5 +3¢ → FMutate A · ch 1", state: :recording})]
+    ~s|MobBackground.update(%{title: "Humdinger · recording", text: "C5 +3¢ → FMutate A · ch 1", actions: [%{id: :pause, label: "Pause"}, %{id: :record_stop, label: "Stop rec"}, %{id: :stop, label: "Stop"}]})|
 
   on_phone.(update, [])
   Process.sleep(800)
@@ -411,7 +419,7 @@ if System.get_env("BUTTONS") == "1" do
     "updated notice shown: #{String.contains?(adb.(~w(shell dumpsys notification --noredact)), "C5 +3¢")}"
   )
 
-  on_phone.("Humdinger.Background.stop()", [])
+  on_phone.("MobBackground.stop()", [])
   Process.sleep(800)
 
   IO.puts(

@@ -8,15 +8,15 @@
          Normal (install-time) permission; no runtime request needed. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- Microphone: the hum_audio engine (c_src/hum_audio.c). Screens ask for
-         it with Mob.Permissions.request(socket, :microphone). -->
+    <!-- Microphone: the hum_audio engine (c_src/hum_audio.c) and the
+         mob_background :microphone foreground service. Screens ask for it
+         with Mob.Permissions.request(socket, :microphone). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Listening in the background (HumListenService): a foreground service
-         of type microphone, and its notification (Android 13+ asks for it:
-         Mob.Permissions.request(socket, :notifications)). -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Notification visibility on Android 13+ for the mob_background
+         foreground service (mob_background contributes FOREGROUND_SERVICE,
+         FOREGROUND_SERVICE_MICROPHONE and its <service> at build time).
+         LiveScreen asks for it with Mob.Permissions.request(socket, :notifications). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Camera. The mob_camera plugin merges the CAMERA permission at build, but
@@ -86,6 +86,9 @@
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- mob:plugin-permissions END -->
     <application
@@ -125,13 +128,7 @@
         <receiver android:name=".NotificationReceiver"
             android:exported="false" />
 
-        <!-- Keeps the microphone running while another app is in front
-             (Humdinger.Background, HumListenService.kt). -->
-        <service android:name=".HumListenService"
-            android:exported="false"
-            android:foregroundServiceType="microphone" />
-
-        <!-- FileProvider for camera temp files (photo / video capture) -->
+        <!-- FileProvider for camera temp files and Mob.Share.file/3 exports -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -157,6 +154,10 @@
         </service>
         <!-- mob_midi:virtual-device END -->
         <!-- mob:plugin-components BEGIN (managed — regenerated each build; do not edit) -->
+        <service android:name="io.mob.background.BeamForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync|microphone" />
+
         <activity android:name="io.mob.scanner.MobScannerActivity"
             android:exported="false"
             android:theme="@style/Theme.AppCompat.NoActionBar" />

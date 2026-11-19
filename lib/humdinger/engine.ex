@@ -55,24 +55,26 @@ defmodule Humdinger.Engine do
   Android silences a backgrounded app's microphone unless a foreground
   service runs, and Android 14 lets an app start one only from the
   foreground. So every successful `listen/0` or `resume/0` (the singer
-  pressed something: the app is in front) starts `Humdinger.Background`
-  unless it already runs. The notification (`Humdinger.Engine.Notice`)
-  follows the engine: its text at most 4 times a second and only when it
-  changes, its title and buttons at once.
+  pressed something: the app is in front) starts `MobBackground` in
+  `:microphone` mode unless it already runs. The notification
+  (`Humdinger.Engine.Notice.notification/1`) follows the engine: its text at
+  most 4 times a second and only when it changes, its title and buttons at
+  once.
 
   - `pause/0` keeps the service (and the notification, with Resume), so
     the singer can resume from the shade without opening the app: a
     running service lets the microphone start from the background.
   - `stop/0` stops it. So does the notification's Stop.
   - A microphone error keeps it, showing "no microphone" and Resume.
-  - The buttons: Pause, Resume (also after an error), Record, Stop rec and
-    Stop act as the functions of those names; Stop rec saves the take as a
-    phrase (`Humdinger.Phrase.from_take/2`, `Humdinger.Phrases.save/1`),
-    since no screen is there to review it, and sends subscribers
+  - The buttons arrive as `{:mob_background, {:action, id}}`: Pause,
+    Resume (also after an error), Record, Stop rec and Stop act as the
+    functions of those names; Stop rec saves the take as a phrase
+    (`Humdinger.Phrase.from_take/2`, `Humdinger.Phrases.save/1`), since no
+    screen is there to review it, and sends subscribers
     `{:engine, :phrase_saved, phrase}`.
-  - If the service can't start (`Background.start/2` errors, or
-    `{:background, :failed}` arrives: Android refused the foreground
-    service) the engine keeps listening in the foreground and the frames'
+  - If the service can't start (`MobBackground.start/2` errors, or
+    `{:mob_background, {:error, :foreground_refused | :timeout}}` arrives)
+    the engine keeps listening in the foreground and the frames'
     `background` is `{:error, reason}`, so Live can say listening will stop
     when the app leaves the screen. The next `listen/0`/`resume/0` tries
     again. On Android 13+ the notification needs the `:notifications`
@@ -118,7 +120,7 @@ defmodule Humdinger.Engine do
   use GenServer
   require Logger
 
-  alias Humdinger.{Audio, Background, Midi, Phrase, Phrases, Settings, Take, Tracker}
+  alias Humdinger.{Audio, Midi, Phrase, Phrases, Settings, Take, Tracker}
   alias Humdinger.Engine.{Notice, Recording}
 
   @frame_ms 33
@@ -148,13 +150,13 @@ defmodule Humdinger.Engine do
   @doc """
   Start the engine. Options: `audio:` (default `Humdinger.Audio.impl/0`:
   the NIF on the phone, `Humdinger.Audio.Fake` in host tests), `output:`
-  (default `config :humdinger, :output`, else `Humdinger.Output`), `name:`
-  (default `Humdinger.Engine`), `max_take_ms:` (default
-  `Humdinger.Engine.Recording.max_ms/0`), `stall_ms:` (the tracker's, see
-  `Humdinger.Tracker.new/2`; screen tests that sing in bursts raise it).
-  Settings come from
-  `Humdinger.Settings.load/0`. The engine starts `:off`; `listen/0` turns
-  the microphone on.
+  (default `config :humdinger, :output`, else `Humdinger.Output`),
+  `background:` (default `config :humdinger, :background`, else
+  `MobBackground`), `name:` (default `Humdinger.Engine`), `max_take_ms:`
+  (default `Humdinger.Engine.Recording.max_ms/0`), `stall_ms:` (the
+  tracker's, see `Humdinger.Tracker.new/2`; screen tests that sing in bursts
+  raise it). Settings come from `Humdinger.Settings.load/0`. The engine
+  starts `:off`; `listen/0` turns the microphone on.
   """
   def start_link(opts \\ []) do
     {name, opts} = Keyword.pop(opts, :name, __MODULE__)
@@ -262,6 +264,7 @@ defmodule Humdinger.Engine do
      %{
        audio: Keyword.get_lazy(opts, :audio, &Audio.impl/0),
        output: Keyword.get_lazy(opts, :output, &default_output/0),
+       background_mod: Keyword.get_lazy(opts, :background, &default_background/0),
        output_subscribed: false,
        destination: nil,
        settings: settings,
@@ -290,6 +293,7 @@ defmodule Humdinger.Engine do
   end
 
   defp default_output, do: Application.get_env(:humdinger, :output, Humdinger.Output)
+  defp default_background, do: Application.get_env(:humdinger, :background, MobBackground)
 
   @impl GenServer
   def handle_call({:subscribe, pid}, _from, state) do
@@ -345,7 +349,13 @@ defmodule Humdinger.Engine do
   # A message from an earlier listen (stale) or a reference we don't hold.
   def handle_info({:hum_audio, _ref, _message}, state), do: {:noreply, state}
 
-  def handle_info({:background, action}, state), do: {:noreply, background(action, state)}
+  def handle_info({:mob_background, {:action, id}}, state)
+      when id in [:pause, :resume, :record, :record_stop, :stop],
+      do: {:noreply, background(id, state)}
+
+  def handle_info({:mob_background, {:error, reason}}, state)
+      when reason in [:foreground_refused, :timeout],
+      do: {:noreply, background_error(reason, state)}
 
   def handle_info({:output, :destinations, destinations}, state) do
     {:noreply, %{state | destination: Notice.destination(destinations)}}
@@ -406,7 +416,7 @@ defmodule Humdinger.Engine do
       sync_output(state)
     end
 
-    if state.background == :running, do: Background.stop()
+    if state.background == :running, do: state.background_mod.stop()
     :ok
   end
 
@@ -589,20 +599,23 @@ defmodule Humdinger.Engine do
   defp background(:stop, state), do: stop_all(state)
 
   # A late report about a service already stopped changes nothing.
-  defp background(:failed, %{background: :running} = state) do
-    :ok = Background.stop()
-    Logger.warning("Engine: Android refused the background service")
-    broadcast_frame(%{state | background: {:error, :failed}, notice: nil})
+  defp background_error(reason, %{background: :running} = state) do
+    :ok = state.background_mod.stop()
+    Logger.warning("Engine: Android refused the background service (#{reason})")
+    broadcast_frame(%{state | background: {:error, reason}, notice: nil})
   end
 
-  defp background(_other, state), do: state
+  defp background_error(_reason, state), do: state
 
   defp start_background(%{background: :running} = state), do: state
 
   defp start_background(state) do
     notice = notice(%{state | status: :listening})
 
-    case Background.start(self(), notice) do
+    case state.background_mod.start(self(),
+           mode: :microphone,
+           notification: Notice.notification(notice)
+         ) do
       :ok ->
         %{state | background: :running, notice: notice, notice_at: now_ms()}
 
@@ -613,7 +626,7 @@ defmodule Humdinger.Engine do
   end
 
   defp stop_background(%{background: :running} = state) do
-    :ok = Background.stop()
+    :ok = state.background_mod.stop()
     %{state | background: :off, notice: nil}
   end
 
@@ -629,7 +642,7 @@ defmodule Humdinger.Engine do
         state
 
       force? or now_ms() - state.notice_at >= @notice_every_ms ->
-        case Background.update(notice) do
+        case state.background_mod.update(Notice.notification(notice)) do
           :ok -> %{state | notice: notice, notice_at: now_ms()}
           {:error, :not_running} -> %{state | background: :off, notice: nil}
         end

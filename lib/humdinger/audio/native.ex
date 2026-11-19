@@ -57,20 +57,6 @@ defmodule Humdinger.Audio.Native do
   def cancel_analysis(ref) when is_reference(ref), do: Nif.cancel_analysis(ref)
 
   @impl true
-  def background_start(owner, %{title: title, text: text, state: state}) when is_pid(owner),
-    do: Nif.background_start(owner, title, text, state)
-
-  @impl true
-  def background_update(%{title: title, text: text, state: state}),
-    do: Nif.background_update(title, text, state)
-
-  @impl true
-  def background_stop, do: Nif.background_stop()
-
-  @impl true
-  def background_running?, do: Nif.background_running()
-
-  @impl true
   def play_piano(owner, notes) when is_pid(owner) and is_list(notes) do
     ref = make_ref()
 

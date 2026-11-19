@@ -59,4 +59,42 @@ defmodule Humdinger.Engine.NoticeTest do
     assert Notice.destination([d.("FMutate", true, false)]) == nil
     assert Notice.destination([]) == nil
   end
+
+  test "notification/1 maps each notice state to its MobBackground actions" do
+    listening = Notice.build(:listening, false, @singing, "FMutate A", 1)
+
+    assert Notice.notification(listening) == %{
+             title: "Humdinger · listening",
+             text: "A4 −12¢ → FMutate A · ch 1",
+             actions: [
+               %{id: :pause, label: "Pause"},
+               %{id: :record, label: "Record"},
+               %{id: :stop, label: "Stop"}
+             ]
+           }
+
+    recording = Notice.build(:listening, true, @singing, "FMutate A", 1)
+
+    assert Notice.notification(recording) == %{
+             title: "Humdinger · recording",
+             text: "A4 −12¢ → FMutate A · ch 1",
+             actions: [
+               %{id: :pause, label: "Pause"},
+               %{id: :record_stop, label: "Stop rec"},
+               %{id: :stop, label: "Stop"}
+             ]
+           }
+
+    paused = Notice.build(:paused, false, @quiet, "FMutate A", 1)
+
+    assert Notice.notification(paused) == %{
+             title: "Humdinger · paused",
+             text: "paused → FMutate A · ch 1",
+             actions: [
+               %{id: :resume, label: "Resume"},
+               %{id: :record, label: "Record"},
+               %{id: :stop, label: "Stop"}
+             ]
+           }
+  end
 end

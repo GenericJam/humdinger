@@ -53,7 +53,6 @@ defmodule Humdinger.PhraseScreenTest do
     FakePianoAudio.configure(self())
     Application.put_env(:humdinger, :audio, FakePianoAudio)
     Application.put_env(:humdinger, :output, FakeOutput)
-    Application.put_env(:humdinger, :file_share, Humdinger.Test.FileShare)
     dir = Path.join(System.tmp_dir!(), "humdinger-review-#{System.unique_integer([:positive])}")
     Application.put_env(:humdinger, :export_dir, dir)
 
@@ -65,7 +64,7 @@ defmodule Humdinger.PhraseScreenTest do
       FakePianoAudio.clear()
 
       Enum.each(
-        [:output, :file_share, :export_dir],
+        [:output, :export_dir],
         &Application.delete_env(:humdinger, &1)
       )
 
@@ -311,6 +310,12 @@ defmodule Humdinger.PhraseScreenTest do
     review() |> render_info({:tap, {:share, :mid}}) |> render_async()
     assert_receive {:share, path, "audio/midi", "New phrase"}
     assert Path.extname(path) == ".mid"
+  end
+
+  test "a failed share delivers {:mob_share, :error, reason} as a notice" do
+    view = review() |> render_info({:mob_share, :error, :no_app})
+    assert assigns(view).notice == "No app on this phone can take it."
+    assert text_of(view, "notice") == "No app on this phone can take it."
   end
 
   test "the staff tab: clef, rhythm and note names drive the engraving and the exports" do

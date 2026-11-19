@@ -18,10 +18,6 @@ defmodule Humdinger.Audio do
       {:hum_audio, ref, {:piano_error, reason}}   # sampled piano failed or lost output
 
   A message whose `ref` isn't the caller's current one is stale: ignore it.
-
-  Listening in the background (another app in front) needs Android's
-  foreground service, driven through `Humdinger.Background`: the
-  `background_*` callbacks below.
   """
 
   @typedoc """
@@ -54,19 +50,12 @@ defmodule Humdinger.Audio do
   @typedoc "A microphone. `kind`: `:builtin_mic`, `:wired_headset`, `:bluetooth`, `:usb` or `:other`."
   @type input :: %{id: integer(), name: String.t(), kind: atom()}
 
-  @typedoc "What the background notification shows; `state` picks its buttons."
-  @type notice :: %{
-          title: String.t(),
-          text: String.t(),
-          state: :listening | :paused | :recording
-        }
-
   @doc """
   Start the microphone, replacing whatever listened before (its reference
   goes stale). Options: `spectrum: boolean` (default false), `input: id`
   (from `inputs/0`; nil or missing: the system default). Errors:
   `:permission` (no microphone permission yet), `:microphone_unavailable`
-  (also: the app is in the background and `Humdinger.Background` isn't
+  (also: the app is in the background and `MobBackground` isn't
   running, which Android refuses). Listening stops by itself when `owner`
   exits.
   """
@@ -94,14 +83,6 @@ defmodule Humdinger.Audio do
   returned. Unknown or finished references are ignored.
   """
   @callback cancel_analysis(reference()) :: :ok
-  @doc "Start the background-listening service with `notice`; button taps go to `owner`."
-  @callback background_start(owner :: pid(), notice()) :: :ok | {:error, term()}
-  @doc "Change what the background notification shows."
-  @callback background_update(notice()) :: :ok | {:error, :not_running}
-  @doc "Stop the background-listening service. Idempotent."
-  @callback background_stop() :: :ok
-  @doc "Whether the background-listening service runs."
-  @callback background_running?() :: boolean()
 
   @doc """
   Synthesizes and plays `notes` using packaged piano samples, sending position

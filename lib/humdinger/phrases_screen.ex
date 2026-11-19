@@ -257,14 +257,20 @@ defmodule Humdinger.PhrasesScreen do
   def handle_async(:load, {:exit, _reason}, socket),
     do: {:noreply, Mob.Socket.assign(socket, phrases: [], notice: "Couldn't read the phrases.")}
 
-  def handle_async(:export, {:ok, result}, socket),
-    do: {:noreply, Mob.Socket.assign(socket, :notice, PhraseActions.error_text(result))}
+  def handle_async(:share, {:ok, {:ok, path, title}}, socket),
+    do: {:noreply, PhraseActions.share(socket, path, title)}
 
-  def handle_async(:export, {:exit, reason}, socket),
+  def handle_async(:share, {:ok, {:error, _} = error}, socket),
+    do: {:noreply, Mob.Socket.assign(socket, :notice, PhraseActions.error_text(error))}
+
+  def handle_async(:share, {:exit, reason}, socket),
     do: {:noreply, Mob.Socket.assign(socket, :notice, PhraseActions.error_text({:exit, reason}))}
 
   @impl true
   def handle_info({:press_out, :held}, socket), do: {:noreply, socket}
+
+  def handle_info({:mob_share, :error, reason}, socket),
+    do: {:noreply, Mob.Socket.assign(socket, :notice, PhraseActions.error_text({:error, reason}))}
 
   def handle_info({:tap, :back}, socket) do
     stop(socket)
@@ -321,7 +327,7 @@ defmodule Humdinger.PhrasesScreen do
     {:noreply,
      socket
      |> Mob.Socket.assign(sheet: nil, notice: nil)
-     |> Mob.Socket.start_async(:export, fn -> PhraseActions.share(phrase, kind) end)}
+     |> Mob.Socket.start_async(:share, fn -> PhraseActions.write_share(phrase, kind) end)}
   end
 
   def handle_info({:tap, {:share, id}}, socket),

@@ -38,6 +38,8 @@ extern fn asn1rt_nif_nif_init() callconv(.c) ?*anyopaque;
 extern fn crypto_nif_init() callconv(.c) ?*anyopaque;
 extern fn mob_nif_nif_init() callconv(.c) ?*anyopaque;
 extern fn mob_midi_nif_nif_init() callconv(.c) ?*anyopaque;
+extern fn mob_print_nif_nif_init() callconv(.c) ?*anyopaque;
+extern fn mob_background_nif_nif_init() callconv(.c) ?*anyopaque;
 extern fn mob_camera_nif_nif_init() callconv(.c) ?*anyopaque;
 extern fn mob_scanner_nif_nif_init() callconv(.c) ?*anyopaque;
 extern fn mob_secure_store_nif_nif_init() callconv(.c) ?*anyopaque;
@@ -77,6 +79,8 @@ const base_nifs = [_]ErtsStaticNif{
     .{ .nif_init = crypto_nif_init, .is_builtin = 1, .nif_mod = THE_NON_VALUE, .entry = null },
     .{ .nif_init = mob_nif_nif_init, .is_builtin = 0, .nif_mod = THE_NON_VALUE, .entry = null },
     .{ .nif_init = mob_midi_nif_nif_init, .is_builtin = 0, .nif_mod = THE_NON_VALUE, .entry = null },
+    .{ .nif_init = mob_print_nif_nif_init, .is_builtin = 0, .nif_mod = THE_NON_VALUE, .entry = null },
+    .{ .nif_init = mob_background_nif_nif_init, .is_builtin = 0, .nif_mod = THE_NON_VALUE, .entry = null },
     .{ .nif_init = mob_camera_nif_nif_init, .is_builtin = 0, .nif_mod = THE_NON_VALUE, .entry = null },
     .{ .nif_init = mob_scanner_nif_nif_init, .is_builtin = 0, .nif_mod = THE_NON_VALUE, .entry = null },
     .{ .nif_init = mob_secure_store_nif_nif_init, .is_builtin = 0, .nif_mod = THE_NON_VALUE, .entry = null },

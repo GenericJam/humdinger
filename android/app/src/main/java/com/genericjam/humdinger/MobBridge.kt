@@ -219,6 +219,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -3329,6 +3330,54 @@ object MobBridge {
                     putExtra(Intent.EXTRA_TEXT, text)
                 }
                 activity.startActivity(Intent.createChooser(intent, null))
+            }
+        }
+    }
+
+    /** Called from nif_share_file via JNI — opens the system share sheet for a local file. */
+    @JvmStatic
+    fun shareFile(pid: Long, path: String, mime: String, title: String) {
+        val activity = activityRef?.get()?.takeUnless { it.isFinishing || it.isDestroyed }
+            ?: run {
+                nativeDeliverAtom3(pid, "mob_share", "error", "no_activity")
+                return
+            }
+        activity.runOnUiThread {
+            if (activity.isFinishing || activity.isDestroyed) {
+                nativeDeliverAtom3(pid, "mob_share", "error", "no_activity")
+                return@runOnUiThread
+            }
+            val file = File(path)
+            if (!file.isFile || !file.canRead()) {
+                nativeDeliverAtom3(pid, "mob_share", "error", "not_found")
+                return@runOnUiThread
+            }
+            val uri = try {
+                FileProvider.getUriForFile(activity, "${activity.packageName}.fileprovider", file)
+            } catch (e: IllegalArgumentException) {
+                Log.w("MobBridge", "shareFile failed to resolve FileProvider URI for $path", e)
+                nativeDeliverAtom3(pid, "mob_share", "error", "failed")
+                return@runOnUiThread
+            }
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = mime
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_TITLE, title)
+                putExtra(Intent.EXTRA_SUBJECT, title)
+                clipData = ClipData.newUri(activity.contentResolver, title, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val chooser = Intent.createChooser(send, title).apply {
+                clipData = send.clipData
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            try {
+                activity.startActivity(chooser)
+            } catch (e: ActivityNotFoundException) {
+                nativeDeliverAtom3(pid, "mob_share", "error", "no_app")
+            } catch (e: Exception) {
+                Log.w("MobBridge", "shareFile failed", e)
+                nativeDeliverAtom3(pid, "mob_share", "error", "failed")
             }
         }
     }

@@ -14,10 +14,12 @@ defmodule Humdinger.Export do
   path=".">`) can grant other apps access to anything under the cache
   directory.
 
-  Mob itself can only share plain text (`Mob.Share.text/2`) and has no
-  printing, so sharing a file and printing go through a native hook set with
-  `config :humdinger, :file_share, Module` (a `Humdinger.Export.Native`).
-  Without one, `share/2` and `print/2` return `{:error, :unsupported}`.
+  Sharing hands the file to `Mob.Share.file/3` (`config :humdinger, :share`,
+  default `Mob.Share`). It is fire-and-forget and returns the screen socket;
+  setup failures arrive at `self()` as `{:mob_share, :error, reason}`, so
+  call `share/3` from the screen process rather than a `start_async` task.
+  Printing is PDF-only and calls `MobPrint.pdf/2` (`config :humdinger,
+  :print`, default `MobPrint`), which is synchronous.
   """
 
   alias Humdinger.Export.Pdf
@@ -144,29 +146,26 @@ defmodule Humdinger.Export do
   end
 
   @doc """
-  Opens the share sheet with an exported file. `{:error, :unsupported}`
-  when the app has no native file-share hook (see the moduledoc).
+  Opens the share sheet with an exported file (`Mob.Share.file/3`).
+  Fire-and-forget: returns `socket` unchanged, and setup failures arrive at
+  `self()` as `{:mob_share, :error, reason}`. Call from the screen process,
+  not inside a `start_async` task.
   """
-  @spec share(Path.t(), keyword()) :: :ok | {:error, term()}
-  def share(path, opts \\ []) when is_binary(path) do
+  @spec share(Mob.Socket.t(), Path.t(), keyword()) :: Mob.Socket.t()
+  def share(socket, path, opts \\ []) when is_binary(path) do
     kind = kind_of(path)
-
-    with {:ok, native} <- native() do
-      native.share_file(path, mime(kind), Keyword.get(opts, :title, Path.basename(path)))
-    end
+    title = Keyword.get(opts, :title, Path.basename(path))
+    share_module().file(socket, path, mime: mime(kind), title: title)
   end
 
   @doc """
-  Opens the print dialog with an exported PDF. `{:error, :unsupported}`
-  when the app has no native print hook.
+  Opens the print dialog with an exported PDF (`MobPrint.pdf/2`).
   """
   @spec print(Path.t(), keyword()) :: :ok | {:error, term()}
   def print(path, opts \\ []) when is_binary(path) do
     :pdf = kind_of(path)
-
-    with {:ok, native} <- native() do
-      native.print_pdf(path, Keyword.get(opts, :title, Path.rootname(Path.basename(path))))
-    end
+    title = Keyword.get(opts, :title, Path.rootname(Path.basename(path)))
+    print_module().pdf(path, title: title)
   end
 
   defp kind_of(path) do
@@ -176,10 +175,6 @@ defmodule Humdinger.Export do
       raise ArgumentError, "not an export: #{path}"
   end
 
-  defp native do
-    case Application.get_env(:humdinger, :file_share) do
-      nil -> {:error, :unsupported}
-      module -> {:ok, module}
-    end
-  end
+  defp share_module, do: Application.get_env(:humdinger, :share, Mob.Share)
+  defp print_module, do: Application.get_env(:humdinger, :print, MobPrint)
 end

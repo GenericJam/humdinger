@@ -20,7 +20,7 @@ defmodule Humdinger.Test.Screens do
 
   alias Humdinger.Audio.Fake
   alias Humdinger.{Engine, Music, Settings}
-  alias Humdinger.Test.FakeOutput
+  alias Humdinger.Test.{FakeBackground, FakeOutput}
 
   # ── Queries ─────────────────────────────────────────────────────────────
 
@@ -72,14 +72,18 @@ defmodule Humdinger.Test.Screens do
     :ok = Settings.save(saved)
     Fake.reset()
     FakeOutput.reset()
+    FakeBackground.reset()
 
-    for {key, value} <- [audio: Fake, output: FakeOutput] do
+    for {key, value} <- [audio: Fake, output: FakeOutput, background: FakeBackground] do
       previous = Application.fetch_env(:humdinger, key)
       Application.put_env(:humdinger, key, value)
       on_exit(fn -> restore_env(key, previous) end)
     end
 
-    start_supervised!({Engine, audio: Fake, output: FakeOutput, stall_ms: 60_000})
+    start_supervised!(
+      {Engine, audio: Fake, output: FakeOutput, background: FakeBackground, stall_ms: 60_000}
+    )
+
     :ok
   end
 

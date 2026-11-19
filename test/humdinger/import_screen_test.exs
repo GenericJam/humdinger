@@ -18,13 +18,12 @@ defmodule Humdinger.ImportScreenTest do
     audio = Application.get_env(:humdinger, :audio)
     Application.put_env(:humdinger, :audio, Fake)
     Application.put_env(:humdinger, :output, FakeOutput)
-    Application.put_env(:humdinger, :file_share, Humdinger.Test.FileShare)
     dir = Path.join(System.tmp_dir!(), "humdinger-import-#{System.unique_integer([:positive])}")
     Application.put_env(:humdinger, :export_dir, dir)
 
     on_exit(fn ->
       Application.put_env(:humdinger, :audio, audio)
-      Enum.each([:output, :file_share, :export_dir], &Application.delete_env(:humdinger, &1))
+      Enum.each([:output, :export_dir], &Application.delete_env(:humdinger, &1))
       File.rm_rf!(dir)
     end)
   end
@@ -283,6 +282,12 @@ defmodule Humdinger.ImportScreenTest do
     view = render_info(view, {:tap, :play})
     assert_receive {:output, [{:note_off, 64}]}
     assert "Play out" in texts(view)
+  end
+
+  test "a failed share delivers {:mob_share, :error, reason} as a notice" do
+    view = ready() |> render_info({:mob_share, :error, :no_app})
+    assert assigns(view).notice == "No app on this phone can take it."
+    assert text_of(view, "notice") == "No app on this phone can take it."
   end
 
   test "every tap target keeps its tap through re-renders" do

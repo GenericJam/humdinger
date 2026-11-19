@@ -4,7 +4,7 @@ defmodule Humdinger.EngineTest do
 
   alias Humdinger.Audio.Fake
   alias Humdinger.{Engine, Music, Phrase, Phrases, Repo, Scale, Settings, Take, Tracker}
-  alias Humdinger.Test.{FakeOutput, Listener}
+  alias Humdinger.Test.{FakeBackground, FakeOutput, Listener}
   alias Mob.ScreenCase.StateOwner
 
   # Where the notes go: FMutate is on but not reachable, so the notice
@@ -28,8 +28,9 @@ defmodule Humdinger.EngineTest do
     Repo.delete_all(Phrases.Row)
     Fake.reset()
     FakeOutput.reset(@destinations)
+    FakeBackground.reset()
     Listener.listen()
-    start_supervised!({Engine, output: FakeOutput})
+    start_supervised!({Engine, output: FakeOutput, background: FakeBackground})
     :ok
   end
 
@@ -90,7 +91,8 @@ defmodule Humdinger.EngineTest do
     end
   end
 
-  defp notice, do: Fake.background() && Fake.background().notice
+  defp notification, do: FakeBackground.current() && FakeBackground.current().notification
+  defp action_ids, do: notification() && Enum.map(notification().actions, & &1.id)
 
   test "the default audio is the configured one" do
     ref = listening()
@@ -227,7 +229,7 @@ defmodule Humdinger.EngineTest do
     assert Engine.listen() == {:error, :permission}
     assert Engine.status() == {:error, :permission}
     assert_receive {:engine, :frame, %{mood: :no_mic, background: :off}}
-    assert Fake.background() == nil
+    assert FakeBackground.current() == nil
 
     Fake.set_permission(true)
     assert Engine.listen() == :ok
@@ -529,7 +531,7 @@ defmodule Humdinger.EngineTest do
 
       assert output_events() == [{:note_off, 69}]
       refute Fake.listening?(ref)
-      assert Fake.background() == nil
+      assert FakeBackground.current() == nil
       assert eventually(fn -> Process.whereis(Engine) not in [nil, old] end)
       assert Engine.status() == :off
     end
@@ -698,11 +700,22 @@ defmodule Humdinger.EngineTest do
     test "listening starts it; it shows the note, where it goes and the channel" do
       ref = listening()
 
-      assert %{owner: owner, notice: %{title: "Humdinger · listening", state: :listening}} =
-               Fake.background()
+      assert %{
+               owner: owner,
+               mode: :microphone,
+               notification: %{
+                 title: "Humdinger · listening",
+                 actions: [
+                   %{id: :pause, label: "Pause"},
+                   %{id: :record, label: "Record"},
+                   %{id: :stop, label: "Stop"}
+                 ]
+               }
+             } = FakeBackground.current()
 
       assert owner == Process.whereis(Engine)
-      assert eventually(fn -> notice().text == "listening… → Humdinger port · ch 1" end)
+      assert FakeBackground.status() == {:running, :microphone}
+      assert eventually(fn -> notification().text == "listening… → Humdinger port · ch 1" end)
 
       # Sung in real time (the notice follows at most 4 times a second)
       # until the notice shows it, or 3 s.
@@ -711,7 +724,7 @@ defmodule Humdinger.EngineTest do
           Fake.sing(ref, sing(from, 10, 69.25))
           Process.sleep(10)
 
-          if notice().text == "A4 +25¢ → Humdinger port · ch 1",
+          if notification().text == "A4 +25¢ → Humdinger port · ch 1",
             do: {:halt, true},
             else: {:cont, false}
         end)
@@ -726,16 +739,18 @@ defmodule Humdinger.EngineTest do
       # Take the earlier status messages, so the next :listening is Resume's.
       assert_receive {:engine, :status, :listening}
       assert_receive {:engine, :status, :paused}
-      assert %{title: "Humdinger · paused", state: :paused} = notice()
+      assert %{title: "Humdinger · paused"} = notification()
+      assert action_ids() == [:resume, :record, :stop]
 
-      :ok = Fake.tap_background(:resume)
+      :ok = FakeBackground.tap(:resume)
       assert_receive {:engine, :status, :listening}
       assert Fake.current() not in [nil, old]
       # The notice follows the status message, in the same step.
       Engine.status()
-      assert %{title: "Humdinger · listening", state: :listening} = notice()
+      assert %{title: "Humdinger · listening"} = notification()
+      assert action_ids() == [:pause, :record, :stop]
 
-      :ok = Fake.tap_background(:pause)
+      :ok = FakeBackground.tap(:pause)
       assert_receive {:engine, :status, :paused}
       refute Fake.listening?(Fake.current() || old)
     end
@@ -743,23 +758,23 @@ defmodule Humdinger.EngineTest do
     test "Record and Stop rec in the shade save the take as a phrase" do
       :ok = Engine.subscribe(self())
       ref = listening()
-      :ok = Fake.tap_background(:record)
-      assert eventually(fn -> notice().state == :recording end)
-      assert notice().title == "Humdinger · recording"
+      :ok = FakeBackground.tap(:record)
+      assert eventually(fn -> action_ids() == [:pause, :record_stop, :stop] end)
+      assert notification().title == "Humdinger · recording"
       assert Engine.recording?()
 
       deliver(ref, sing(0, 300, 62.0) ++ sing(300, 300, 65.0) ++ sing(600, 100, nil))
-      :ok = Fake.tap_background(:record_stop)
+      :ok = FakeBackground.tap(:record_stop)
       assert_receive {:engine, :phrase_saved, %Phrase{id: id, name: name} = phrase}, 2000
       assert name == Phrase.default_name()
       assert Enum.map(phrase.notes, & &1.midi) == [62, 65]
       assert %Phrase{id: ^id} = Phrases.get(id)
       refute Engine.recording?()
-      assert notice().state == :listening
+      assert action_ids() == [:pause, :record, :stop]
 
       # Nothing sung: nothing saved.
-      :ok = Fake.tap_background(:record)
-      :ok = Fake.tap_background(:record_stop)
+      :ok = FakeBackground.tap(:record)
+      :ok = FakeBackground.tap(:record_stop)
       Engine.status()
       refute_received {:engine, :phrase_saved, _}
       assert [_one] = Phrases.list()
@@ -772,19 +787,19 @@ defmodule Humdinger.EngineTest do
       deliver(ref, sing(0, 300, 69.0))
       output_events()
 
-      :ok = Fake.tap_background(:stop)
+      :ok = FakeBackground.tap(:stop)
       assert_receive {:engine, :status, :off}
       assert output_events() == [{:note_off, 69}]
       refute Fake.listening?(ref)
-      assert Fake.background() == nil
+      assert FakeBackground.current() == nil
     end
 
     test "Engine.stop takes it away; listening again brings it back" do
       listening()
       :ok = Engine.stop()
-      assert Fake.background() == nil
+      assert FakeBackground.current() == nil
       listening()
-      assert Fake.background() != nil
+      assert FakeBackground.current() != nil
     end
 
     test "a microphone error keeps it, saying so, with Resume" do
@@ -798,37 +813,57 @@ defmodule Humdinger.EngineTest do
       assert %{
                title: "Humdinger · no microphone",
                text: "microphone disconnected · Resume to try again",
-               state: :paused
-             } = notice()
+               actions: [
+                 %{id: :resume, label: "Resume"},
+                 %{id: :record, label: "Record"},
+                 %{id: :stop, label: "Stop"}
+               ]
+             } = notification()
 
-      :ok = Fake.tap_background(:resume)
+      :ok = FakeBackground.tap(:resume)
       # The tap reaches the engine before this call does.
       assert Engine.status() == :listening
     end
 
     @tag :capture_log
-    test "when Android refuses it the engine keeps listening and says why" do
+    test "when Android refuses it or times out the engine keeps listening and says why" do
       :ok = Engine.subscribe(self())
       listening()
       latest_frame()
-      send(Process.whereis(Engine), {:background, :failed})
-      assert_receive {:engine, :frame, %{background: {:error, :failed}}}
+      :ok = FakeBackground.refuse()
+      assert_receive {:engine, :frame, %{background: {:error, :foreground_refused}}}
       assert Engine.status() == :listening
-      assert Fake.background() == nil
+      assert FakeBackground.current() == nil
 
       # The next listen from the foreground tries again.
       :ok = Engine.pause()
       :ok = Engine.resume()
-      assert Fake.background() != nil
+      assert FakeBackground.current() != nil
       latest_frame()
       Fake.sing(Fake.current(), sing(0, 10, nil))
       assert_receive {:engine, :frame, %{background: :running}}, 2000
 
+      # Timeout follows the same path with its real reason.
+      :ok = FakeBackground.refuse(:timeout)
+      assert_receive {:engine, :frame, %{background: {:error, :timeout}}}
+      assert Engine.status() == :listening
+      assert FakeBackground.current() == nil
+
       # A late report about a service already stopped changes nothing.
       :ok = Engine.stop()
-      send(Process.whereis(Engine), {:background, :failed})
+      send(Process.whereis(Engine), {:mob_background, {:error, :foreground_refused}})
       :ok = Engine.listen()
-      assert Fake.background() != nil
+      assert FakeBackground.current() != nil
+    end
+
+    @tag :capture_log
+    test "a synchronous start error keeps listening in front and reports the reason" do
+      :ok = Engine.subscribe(self())
+      FakeBackground.set_start_result({:error, :refused})
+      :ok = Engine.listen()
+      assert_receive {:engine, :frame, %{background: {:error, :refused}}}
+      assert Engine.status() == :listening
+      assert FakeBackground.current() == nil
     end
   end
 end

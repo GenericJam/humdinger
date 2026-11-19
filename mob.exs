@@ -39,8 +39,8 @@ config :mob_dev,
   multi_window: false,
 
   # The audio engine: c_src/hum_audio.c (AAudio microphone, YIN pitch,
-  # spectrum, file analysis, the background-listening service), linked into
-  # the app as a static NIF. Android only for now.
+  # spectrum, file analysis), linked into the app as a static NIF. Android
+  # only for now.
   static_nifs: [%{module: :hum_audio, archs: [:android]}]
 
 # Activated capability plugins (the packages added in mix.exs). Each contributes
@@ -50,30 +50,27 @@ config :mob_dev,
 #
 # mob_midi: virtual MIDI port, device watcher/hot-plug, USB-MIDI, and
 # Bluetooth-MIDI central.
-# humdinger_file_share: sharing an exported phrase file and printing its PDF
-# (plugins/humdinger_file_share, Kotlin + a Zig NIF), part of this repo.
+# mob_print: printing exported PDFs through the system print dialog.
+# mob_background: the microphone foreground service for listening while another
+# app is in front.
 # mob_camera + mob_scanner: scanning FMutate's pairing QR code (mob_scanner
 # needs mob_camera, which owns the :camera permission).
 # mob_secure_store: the FMutate pairing (cookie, client key) in the Android
 # Keystore / iOS Keychain.
 config :mob, :plugins, [
   :mob_midi,
-  :humdinger_file_share,
+  :mob_print,
+  :mob_background,
   :mob_camera,
   :mob_scanner,
   :mob_secure_store
 ]
 
-# humdinger_file_share is this app's own code, reviewed with it, so it builds
-# unsigned instead of carrying a signing key (mob_dev prints a banner).
 # mob_secure_store isn't released yet, so its checkout carries no signature
 # for the trust gate below. It is a git dependency pinned to a commit (mix.lock)
 # of the same first-party repo; once it is on Hex, drop it from this list and
 # add it to :trusted_plugins with the shared release key like the others.
-config :mob, :acknowledge_unsafe_plugins, [
-  :humdinger_file_share,
-  :mob_secure_store
-]
+config :mob, :acknowledge_unsafe_plugins, [:mob_secure_store]
 
 # Trust gate for the first-party plugins. Each is signed in CI with the shared
 # mob release key; this is that key's public fingerprint. The build refuses an
@@ -85,6 +82,8 @@ config :mob, :acknowledge_unsafe_plugins, [
 # [...]` for an unsigned prototype.
 config :mob, :trusted_plugins, %{
   mob_midi: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=",
+  mob_print: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=",
+  mob_background: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=",
   mob_audio_capture: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=",
   mob_camera: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=",
   mob_location: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=",

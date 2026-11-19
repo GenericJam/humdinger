@@ -3,7 +3,7 @@ defmodule Humdinger.ExportTest do
   use ExUnit.Case, async: false
 
   alias Humdinger.{Export, Phrase, Scale}
-  alias Humdinger.Test.{FileShare, Listener}
+  alias Humdinger.Test.{Listener, Print}
 
   setup do
     dir = Path.join(System.tmp_dir!(), "humdinger-export-#{System.unique_integer([:positive])}")
@@ -103,44 +103,42 @@ defmodule Humdinger.ExportTest do
     end
   end
 
-  test "sharing and printing need the native hook", %{tmp_dir: dir} do
+  test "sharing forwards MIME and title through Mob.Share and returns socket; printing is PDF-only",
+       %{tmp_dir: dir} do
     {:ok, pdf} = Export.write(phrase(), :pdf, dir: dir)
     {:ok, xml} = Export.write(phrase(), :musicxml, dir: dir)
-
-    assert Export.share(pdf) == {:error, :unsupported}
-    assert Export.print(pdf) == {:error, :unsupported}
+    socket = %Mob.Socket{}
 
     Listener.listen()
-    Application.put_env(:humdinger, :file_share, FileShare)
 
-    try do
-      assert Export.share(xml) == :ok
+    assert Export.share(socket, xml) == socket
 
-      assert_received {:share, ^xml, "application/vnd.recordare.musicxml+xml",
-                       "Bus stop riff.musicxml"}
+    assert_received {:share, ^xml, "application/vnd.recordare.musicxml+xml",
+                     "Bus stop riff.musicxml"}
 
-      assert Export.print(pdf) == :ok
-      assert_received {:print, ^pdf, "Bus stop riff"}
-      assert_raise MatchError, fn -> Export.print(xml) end
-    after
-      Application.delete_env(:humdinger, :file_share)
-    end
+    assert Export.share(socket, pdf, title: "Bus stop riff") == socket
+    assert_received {:share, ^pdf, "application/pdf", "Bus stop riff"}
+
+    assert Export.print(pdf) == :ok
+    assert_received {:print, ^pdf, "Bus stop riff"}
+    assert Export.print(pdf, title: "Custom title") == :ok
+    assert_received {:print, ^pdf, "Custom title"}
+    assert_raise MatchError, fn -> Export.print(xml) end
+
+    Print.set_result({:error, :no_app})
+    assert Export.print(pdf) == {:error, :no_app}
   end
 
-  test "a name beyond the BMP reaches the share hook intact, file and title", %{tmp_dir: dir} do
+  test "a name beyond the BMP reaches the share double intact, file and title", %{tmp_dir: dir} do
     name = "Hook 🎵𝄞 bird"
     {:ok, mid} = Export.write(phrase(name), :mid, dir: dir)
     assert Path.basename(mid) == name <> ".mid"
     assert File.exists?(mid)
 
+    socket = %Mob.Socket{}
     Listener.listen()
-    Application.put_env(:humdinger, :file_share, FileShare)
 
-    try do
-      assert Export.share(mid, title: name) == :ok
-      assert_received {:share, ^mid, "audio/midi", ^name}
-    after
-      Application.delete_env(:humdinger, :file_share)
-    end
+    assert Export.share(socket, mid, title: name) == socket
+    assert_received {:share, ^mid, "audio/midi", ^name}
   end
 end
