@@ -254,6 +254,10 @@ defmodule Humdinger.EngineTest do
   end
 
   describe "one source at a time (real Output)" do
+    # Nothing here waits on wall-clock time: players run on clocks the test
+    # moves, the tracker never ends a note on its own (`stall_ms`), and what
+    # reached the port is read after syncing with the Engine and Output.
+
     # The port double reports the bytes Output sends it.
     defmodule PortProbe do
       @moduledoc false
@@ -265,55 +269,129 @@ defmodule Humdinger.EngineTest do
 
     setup do
       :ok = stop_supervised(Engine)
+      {:ok, clock} = Agent.start_link(fn -> 0 end)
 
       start_supervised!(
-        {Humdinger.Output, name: Humdinger.Output, port: PortProbe, fmutate: Humdinger.NoFMutate}
+        {Humdinger.Output,
+         name: Humdinger.Output,
+         port: PortProbe,
+         fmutate: Humdinger.NoFMutate,
+         clock: fn -> Agent.get(clock, & &1) end}
       )
 
-      start_supervised!({Engine, output: Humdinger.Output})
-      Humdinger.Output.sync()
-      port_bytes()
+      start_supervised!({Engine, output: Humdinger.Output, stall_ms: 600_000})
+      port_now()
+      %{clock: clock}
+    end
+
+    # Everything the Engine and Output have sent so far, in order.
+    defp port_now do
+      sync_engine()
+      drain_port([])
+    end
+
+    defp sync_engine do
+      if engine = Process.whereis(Engine) do
+        :sys.replace_state(engine, fn state ->
+          state.output.sync()
+          state
+        end)
+      else
+        Humdinger.Output.sync()
+      end
+
       :ok
     end
 
-    defp port_bytes(acc \\ []) do
+    defp sync_player(player) do
+      :sys.replace_state(player, fn state ->
+        case state.output do
+          {module, server} -> module.sync(server)
+          module -> module.sync()
+        end
+
+        state
+      end)
+
+      :ok
+    end
+
+    defp drain_port(acc) do
       receive do
-        {:port, bytes} -> port_bytes([bytes | acc])
+        {:port, bytes} -> drain_port([bytes | acc])
       after
-        100 -> Enum.reverse(acc)
+        0 -> Enum.reverse(acc)
       end
     end
 
+    defp player(clock_fun),
+      do: Humdinger.Player.start_link(output: Humdinger.Output, clock: clock_fun)
+
+    defp play(player, notes, tag) do
+      :ok = Humdinger.Player.play(player, notes, tag)
+      sync_player(player)
+    end
+
+    defp test_note do
+      :ok = Humdinger.Output.test_note()
+      player = GenServer.call(Humdinger.Output, :test_player)
+      sync_player(player)
+      player
+    end
+
+    defp new_clock do
+      {:ok, clock} = Agent.start_link(fn -> 0 end)
+      clock
+    end
+
+    defp clock_fun(clock), do: fn -> Agent.get(clock, & &1) end
+
+    # Moves `clock` to `t` and runs `player`'s pending tick now.
+    defp at(player, clock, t) do
+      Agent.update(clock, fn _ -> t end)
+
+      case :sys.get_state(player).token do
+        nil -> :ok
+        token -> send(player, {:tick, token})
+      end
+
+      sync_player(player)
+    end
+
     defp player_note(midi, dur), do: [%{start_ms: 0, dur_ms: dur, midi: midi, velocity: 90}]
+    defp note_on?(bytes, note), do: match?(<<0x90, ^note, _>>, bytes)
 
     test "a player takes over on the same pitch, and the singer is back once it has finished" do
       ref = listening()
       deliver(ref, sing(0, 300, 69.0))
-      assert <<0x90, 69, _>> = Enum.find(port_bytes(), &match?(<<0x90, _, _>>, &1))
+      assert Enum.any?(port_now(), &note_on?(&1, 69))
 
-      {:ok, player} = Humdinger.Player.start_link(output: Humdinger.Output)
-      :ok = Humdinger.Player.play(player, player_note(69, 800), :riff)
+      clock = new_clock()
+      {:ok, player} = player(clock_fun(clock))
+      :ok = play(player, player_note(69, 800), :riff)
 
       # The singer's note off, its controllers back, then the played note.
-      assert port_bytes() ==
+      assert port_now() ==
                [<<0x80, 69, 64>> | Humdinger.Midi.reset_controllers(1)] ++ [<<0x90, 69, 90>>]
 
       # Still singing, but nothing of it reaches the output; the status stays.
       deliver(ref, sing(300, 100, 72.0))
-      assert port_bytes() == []
+      assert port_now() == []
       assert Engine.status() == :listening
 
       # Finished only once the note-off is out and the singer has the output back.
-      assert_receive {:player, :finished, :riff}, 2_000
-      assert port_bytes() == [<<0x80, 69, 64>>]
+      at(player, clock, 800)
+      assert_received {:player, :finished, :riff}
+      assert port_now() == [<<0x80, 69, 64>>]
       deliver(ref, sing(400, 300, 72.0))
-      assert Enum.any?(port_bytes(), &match?(<<0x90, 72, _>>, &1))
+      assert Enum.any?(port_now(), &note_on?(&1, 72))
     end
 
     test "an engine restarted during playback stays out until the player is done" do
-      {:ok, player} = Humdinger.Player.start_link(output: Humdinger.Output)
-      :ok = Humdinger.Player.play(player, player_note(60, 600), :long)
-      port_bytes()
+      clock = new_clock()
+      {:ok, player} = player(clock_fun(clock))
+      :ok = play(player, player_note(60, 600), :long)
+      port_now()
 
       engine = Process.whereis(Engine)
       Process.exit(engine, :kill)
@@ -321,62 +399,75 @@ defmodule Humdinger.EngineTest do
 
       ref = listening()
       deliver(ref, sing(0, 300, 72.0))
-      refute Enum.any?(port_bytes(), &match?(<<0x90, 72, _>>, &1))
+      refute Enum.any?(port_now(), &note_on?(&1, 72))
 
-      assert_receive {:player, :finished, :long}, 2_000
+      at(player, clock, 600)
+      assert_received {:player, :finished, :long}
       deliver(ref, sing(300, 300, 74.0))
-      assert Enum.any?(port_bytes(), &match?(<<0x90, 74, _>>, &1))
+      assert Enum.any?(port_now(), &note_on?(&1, 74))
     end
 
     test "a player killed outright has its notes released and gives the singer back" do
-      {:ok, player} = Humdinger.Player.start_link(output: Humdinger.Output)
+      {:ok, player} = player(clock_fun(new_clock()))
       Process.unlink(player)
-      :ok = Humdinger.Player.play(player, player_note(60, 60_000), :long)
-      port_bytes()
+      :ok = play(player, player_note(60, 60_000), :long)
+      port_now()
+
+      Humdinger.Output.follow_session(self())
+      assert_receive {:output, :session, :active}
 
       # No terminate/2: Output's monitor on the session releases the note.
       Process.exit(player, :kill)
-      assert port_bytes() == [<<0x80, 60, 64>>]
+      assert_receive {:output, :session, :idle}
+      assert port_now() == [<<0x80, 60, 64>>]
 
       ref = listening()
       deliver(ref, sing(0, 300, 72.0))
-      assert Enum.any?(port_bytes(), &match?(<<0x90, 72, _>>, &1))
+      assert Enum.any?(port_now(), &note_on?(&1, 72))
     end
 
     test "two players don't play at once: the newer one takes over" do
-      {:ok, first} = Humdinger.Player.start_link(output: Humdinger.Output)
-      {:ok, second} = Humdinger.Player.start_link(output: Humdinger.Output)
-      :ok = Humdinger.Player.play(first, player_note(60, 60_000), :first)
-      port_bytes()
+      {:ok, first} = player(clock_fun(new_clock()))
+      second_clock = new_clock()
+      {:ok, second} = player(clock_fun(second_clock))
+      :ok = play(first, player_note(60, 60_000), :first)
+      port_now()
 
-      :ok = Humdinger.Player.play(second, player_note(64, 100), :second)
+      :ok = play(second, player_note(64, 100), :second)
+      # The first hears it was taken over (and stops) before Output answers its next call.
       assert_receive {:player, :finished, :first}
-      assert port_bytes() == [<<0x80, 60, 64>>, <<0x90, 64, 90>>]
       assert Humdinger.Player.playing(first) == nil
+      assert port_now() == [<<0x80, 60, 64>>, <<0x90, 64, 90>>]
 
-      assert_receive {:player, :finished, :second}, 2_000
-      assert port_bytes() == [<<0x80, 64, 64>>]
+      at(second, second_clock, 100)
+      assert_received {:player, :finished, :second}
+      assert port_now() == [<<0x80, 64, 64>>]
     end
 
-    test "test taps while singing restart the note and keep the singer out until the last ends" do
+    test "test taps while singing restart the note and keep the singer out until the last ends",
+         ctx do
       ref = listening()
       deliver(ref, sing(0, 300, 69.0))
-      port_bytes()
+      port_now()
 
-      :ok = Humdinger.Output.test_note()
-      :ok = Humdinger.Output.test_note()
+      test_player = test_note()
+      at(test_player, ctx.clock, 150)
+      ^test_player = test_note()
 
-      assert port_bytes() ==
+      # Struck again at 150: the first note ends there, not at its 300 ms.
+      assert port_now() ==
                [<<0x80, 69, 64>> | Humdinger.Midi.reset_controllers(1)] ++
                  [<<0x90, 69, 92>>, <<0x80, 69, 64>>, <<0x90, 69, 92>>]
 
-      # The second tap's note lasts its own 300 ms; the singer waits for it.
+      # The second lasts its own 300 ms; the singer waits for it.
       deliver(ref, sing(300, 100, 72.0))
-      assert_receive {:port, <<0x80, 69, 64>>}, 1_000
-      refute_received {:port, <<0x90, 72, _>>}
+      at(test_player, ctx.clock, 449)
+      assert port_now() == []
+      at(test_player, ctx.clock, 450)
+      assert port_now() == [<<0x80, 69, 64>>]
 
-      deliver(ref, sing(300, 300, 72.0))
-      assert Enum.any?(port_bytes(), &match?(<<0x90, 72, _>>, &1))
+      deliver(ref, sing(400, 300, 72.0))
+      assert Enum.any?(port_now(), &note_on?(&1, 72))
     end
   end
 

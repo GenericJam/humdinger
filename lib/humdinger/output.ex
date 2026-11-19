@@ -109,6 +109,8 @@ defmodule Humdinger.Output do
     :fmutate_ref,
     # The Player that plays test notes (started on the first one).
     :test_player,
+    # The test player's clock (nil: the real one); tests drive time with it.
+    :clock,
     # The session playing instead of the live source: %{ref, owner, mon}.
     :session,
     :settings,
@@ -149,7 +151,8 @@ defmodule Humdinger.Output do
   @doc """
   Starts Output. Options: `:name` (default `Humdinger.Output`; nil for none),
   `:fmutate`, `:settings`, `:port`, `:device` (see the moduledoc),
-  `:sent_interval_ms` (default 100).
+  `:sent_interval_ms` (default 100), `:clock` (the test-note player's
+  clock, a zero-arity function returning ms; tests use it to drive time).
   """
   def start_link(opts \\ []) do
     {name, opts} = Keyword.pop(opts, :name, __MODULE__)
@@ -289,7 +292,8 @@ defmodule Humdinger.Output do
         settings: module_opt(opts, :settings, Humdinger.Settings),
         port: Keyword.get(opts, :port, Port),
         device: Keyword.get(opts, :device, Device),
-        sent_interval: Keyword.get(opts, :sent_interval_ms, @sent_interval_ms)
+        sent_interval: Keyword.get(opts, :sent_interval_ms, @sent_interval_ms),
+        clock: Keyword.get(opts, :clock)
       })
 
     {:ok, state, {:continue, :connect}}
@@ -534,7 +538,10 @@ defmodule Humdinger.Output do
     :ok
   end
 
-  defp test_player_opts(_state), do: [owner: self(), output: {__MODULE__, self()}]
+  defp test_player_opts(state) do
+    opts = [owner: self(), output: {__MODULE__, self()}]
+    if state.clock, do: Keyword.put(opts, :clock, state.clock), else: opts
+  end
 
   # ── Sessions ─────────────────────────────────────────────────────────────
 

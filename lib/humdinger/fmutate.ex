@@ -80,7 +80,9 @@ defmodule Humdinger.FMutate do
   `Humdinger.FMutate.Transport`), `:discovery` (a function of browse options,
   default `Humdinger.FMutate.Discovery.browse/1`), `:backoff` (ms list, the
   last repeats), `:grace_ms` (delay before the first connection when the link
-  would start distribution itself).
+  would start distribution itself), `:resync_after` (a function of
+  `(pid, :resync, ms)` that delivers `:resync` to `pid` after `ms` and returns
+  a reference `Process.cancel_timer/1` accepts; default `&Process.send_after/3`).
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -131,6 +133,7 @@ defmodule Humdinger.FMutate do
       transport: Keyword.get(opts, :transport, Transport),
       discovery: Keyword.get(opts, :discovery, &Discovery.browse/1),
       backoff: Keyword.get(opts, :backoff, @backoff),
+      resync_after: Keyword.get(opts, :resync_after, &Process.send_after/3),
       record: nil,
       conn: nil,
       # FMutate's node atom once connected, kept after a disconnect so
@@ -543,7 +546,7 @@ defmodule Humdinger.FMutate do
   end
 
   defp schedule_resync(state),
-    do: %{state | resync_timer: Process.send_after(self(), :resync, @resync_ms)}
+    do: %{state | resync_timer: state.resync_after.(self(), :resync, @resync_ms)}
 
   # MIDI flows again (or the connection it was about is gone).
   defp end_resync(%{resync: nil} = state), do: state
