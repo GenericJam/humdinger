@@ -4,7 +4,7 @@
 
 Humdinger is a [Mob](https://hexdocs.pm/mob) mobile application (Elixir on the BEAM rendering native UI) that listens to a singer humming, singing, or whistling, detects pitch in real time, converts it into MIDI events, and routes those events to external or sibling synthesizers.
 
-> **Status:** Active development (`dev` and `test` workflows only; no production release pipeline). Humdinger currently generates no audio itself and emits MIDI only.
+> **Status:** Active development (`dev` and `test` workflows only; no production release pipeline). Singing produces MIDI only; the one local sound is Review's sampled-piano preview of a recorded phrase.
 
 ## Current features & platform support
 
@@ -22,6 +22,7 @@ Humdinger is a [Mob](https://hexdocs.pm/mob) mobile application (Elixir on the B
 - **Phrases, review, audio import & export**:
   - Record live phrases or import audio files up to 10 minutes (`Humdinger.ImportScreen`, `AMediaExtractor` + `AMediaCodec` decoding, `Humdinger.Transcribe`, `Humdinger.Tempo`).
   - Browse and manage saved phrases (`Humdinger.PhrasesScreen`), inspect/edit on Piano roll or Staff tabs (`Humdinger.PhraseScreen`), and play phrases out to configured MIDI destinations (`Humdinger.Player`).
+  - Preview a phrase on the phone as sampled piano (`Player` `mode: :piano`, `c_src/piano.c` mixed into an AAudio output stream in `c_src/hum_audio.c`), with a playhead and the sounding note highlighted on the roll and staff. Samples (`priv/piano/`, prepared by `scripts/prepare_piano.exs`) come from the University of Iowa Musical Instrument Samples; see [`priv/piano/LICENSE`](priv/piano/LICENSE).
   - Local SQLite persistence via `ecto_sqlite3` (`Humdinger.Repo`, migrations in [`priv/repo/migrations/`](priv/repo/migrations/)) plus crash-safe draft recovery (`Humdinger.PhraseDraft`).
   - Export, share, and print Standard MIDI (`.mid`), MusicXML 4.0 (`.musicxml`), and engraved PDF sheet music (`Humdinger.Export`, `Humdinger.Smf`, `Humdinger.MusicXml`, `Humdinger.Export.Pdf`, `plugins/humdinger_file_share/`).
 
