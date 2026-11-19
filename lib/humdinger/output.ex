@@ -536,13 +536,13 @@ defmodule Humdinger.Output do
   end
 
   # Only the device asked for last counts; an earlier one that connects anyway
-  # was replaced (or forgotten) and is closed.
+  # was replaced (or forgotten): it is closed, and its request is answered.
   def handle_info({:midi, :connected, %{device: id, address: address}}, state) do
     if address == waiting_for(state) do
       {:noreply, state |> bluetooth_connected(id, address) |> changed()}
     else
       _ = state.device.close(id)
-      {:noreply, state}
+      {:noreply, changed(%{state | connects: List.delete(state.connects, address)})}
     end
   end
 

@@ -1003,6 +1003,23 @@ defmodule Humdinger.OutputTest do
       assert Output.bluetooth(output).paired.address == "BB:BB:BB:BB:BB:BB"
     end
 
+    test "a replaced connect succeeding late is answered, so the newer one's failure shows" do
+      output = start()
+      :ok = Output.connect_bluetooth("AA:AA:AA:AA:AA:AA", output)
+      :ok = Output.connect_bluetooth("BB:BB:BB:BB:BB:BB", output)
+
+      send(output, {:midi, :connected, %{device: 12, address: "AA:AA:AA:AA:AA:AA"}})
+      assert_receive {:close, 12}
+
+      send(
+        output,
+        {:midi, :error, %{device: 0, op: :connect_bluetooth, reason: :open_failed, dropped: 0}}
+      )
+
+      assert %{connecting: nil, error: :open_failed} = Output.bluetooth(output)
+      refute row(output, :bt).detail == "connecting…"
+    end
+
     test "turning Bluetooth MIDI off and on again reconnects the remembered device" do
       address = "AA:BB:CC:DD:EE:FF"
       output = start(device: PairedDevice)
