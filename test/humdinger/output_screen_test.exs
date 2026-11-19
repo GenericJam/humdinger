@@ -74,6 +74,9 @@ defmodule Humdinger.OutputScreenTest do
       end
     end)
 
+    # The test note's player runs on this clock (tests move it).
+    {:ok, clock} = Agent.start_link(fn -> 0 end)
+
     start_supervised!(
       {Output,
        name: Output,
@@ -81,11 +84,12 @@ defmodule Humdinger.OutputScreenTest do
        settings: Settings,
        port: Port,
        device: Device,
-       sent_interval_ms: 0}
+       sent_interval_ms: 0,
+       clock: fn -> Agent.get(clock, & &1) end}
     )
 
     start_supervised!({Engine, audio: Fake, output: Output})
-    :ok
+    %{clock: clock}
   end
 
   defp mount, do: OutputScreen |> mount_screen() |> pump()
@@ -261,17 +265,60 @@ defmodule Humdinger.OutputScreenTest do
     # An app opens the Humdinger port, so Output sends to it.
     setup do
       send(Output, {:humdinger_midi, :port, ~s({"connections":1})})
+      Output.sync()
       :ok
     end
 
-    test "the test note goes out on the channel, and Last sent follows Output" do
+    defp sync_test_player do
+      player = GenServer.call(Output, :test_player)
+      sync_player(player)
+      player
+    end
+
+    defp sync_player(player) do
+      :sys.replace_state(player, fn state ->
+        case state.output do
+          {module, server} -> module.sync(server)
+          module -> module.sync()
+        end
+
+        state
+      end)
+
+      :ok
+    end
+
+    defp sync_engine do
+      :sys.replace_state(Engine, fn state ->
+        state.output.sync()
+        state
+      end)
+
+      :ok
+    end
+
+    defp at(player, clock, t) do
+      Agent.update(clock, fn _ -> t end)
+
+      case :sys.get_state(player).token do
+        nil -> :ok
+        token -> send(player, {:tick, token})
+      end
+
+      sync_player(player)
+    end
+
+    test "the test note goes out on the channel, and Last sent follows Output", ctx do
       view = mount() |> press(:test_note)
-      assert_receive {:port, <<0x90, 69, 92>>}
-      view = pump(view)
+      player = sync_test_player()
+      assert_received {:port, <<0x90, 69, 92>>}
+      view = pump(view, 0)
       assert "A4 on · vel 92 · ch 1" in texts(view)
 
-      assert_receive {:port, <<0x80, 69, 64>>}, 1_000
-      view = pump(view)
+      # 300 ms on the test note's clock, its tick run now.
+      at(player, ctx.clock, 300)
+      assert_received {:port, <<0x80, 69, 64>>}
+      view = pump(view, 0)
       assert "A4 off · ch 1" in texts(view)
     end
 
@@ -280,10 +327,12 @@ defmodule Humdinger.OutputScreenTest do
       assert Engine.settings().channel == 5
       assert Settings.load().channel == 5
       assert channel_selected(view) == [5]
+      sync_engine()
 
       view = press(view, :test_note)
-      assert_receive {:port, <<0x94, 69, 92>>}
-      assert "A4 on · vel 92 · ch 5" in texts(pump(view))
+      sync_test_player()
+      assert_received {:port, <<0x94, 69, 92>>}
+      assert "A4 on · vel 92 · ch 5" in texts(pump(view, 0))
     end
   end
 

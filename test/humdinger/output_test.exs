@@ -323,25 +323,75 @@ defmodule Humdinger.OutputTest do
 
     assert_receive {:port, <<0x90, 69, 92>>}, 1_000
     assert_receive {:port, <<0x80, 69, 64>>}, 1_000
-    assert System.monotonic_time(:millisecond) - started >= 300
+    elapsed = System.monotonic_time(:millisecond) - started
+    assert elapsed in 300..1_000
   end
 
   test "a second test note restarts the first instead of being cut short by it" do
-    output = start()
-    Output.test_note(output)
-    # Taking the output from the singer puts its controllers back first.
-    for bytes <- Humdinger.Midi.reset_controllers(1), do: assert_receive({:port, ^bytes})
-    assert_receive {:port, <<0x90, 69, 92>>}, 1_000
-    Process.sleep(150)
-    second = System.monotonic_time(:millisecond)
-    Output.test_note(output)
+    {:ok, clock} = Agent.start_link(fn -> 0 end)
+    output = start(clock: fn -> Agent.get(clock, & &1) end)
+    player = test_note(output)
 
-    # Struck again: the first ends, the second starts, and it lasts its own 300 ms.
-    assert_receive {:port, <<0x80, 69, 64>>}, 1_000
-    assert_receive {:port, <<0x90, 69, 92>>}, 1_000
-    assert_receive {:port, <<0x80, 69, 64>>}, 1_000
-    assert System.monotonic_time(:millisecond) - second >= 300
-    refute_receive {:port, _}, 400
+    # Taking the output from the singer puts its controllers back first.
+    assert sent_to_port(player) ==
+             Humdinger.Midi.reset_controllers(1) ++ [<<0x90, 69, 92>>]
+
+    at(player, clock, 150)
+    ^player = test_note(output)
+    # Struck again at 150: the first ends there, the second starts.
+    assert sent_to_port(player) == [<<0x80, 69, 64>>, <<0x90, 69, 92>>]
+
+    # It lasts its own 300 ms (to 450), not the first's (to 300).
+    at(player, clock, 449)
+    assert sent_to_port(player) == []
+    at(player, clock, 450)
+    assert sent_to_port(player) == [<<0x80, 69, 64>>]
+  end
+
+  defp test_note(output) do
+    :ok = Output.test_note(output)
+    player = GenServer.call(output, :test_player)
+    sync_player(player)
+    player
+  end
+
+  defp sync_player(player) do
+    :sys.replace_state(player, fn state ->
+      case state.output do
+        {module, server} -> module.sync(server)
+        module -> module.sync()
+      end
+
+      state
+    end)
+
+    :ok
+  end
+
+  # What the test player has sent the port through Output so far, in order.
+  defp sent_to_port(player) do
+    sync_player(player)
+    drain(:port, [])
+  end
+
+  defp drain(tag, acc) do
+    receive do
+      {^tag, bytes} -> drain(tag, [bytes | acc])
+    after
+      0 -> Enum.reverse(acc)
+    end
+  end
+
+  # Moves the test player's clock to `t` and runs its pending tick now.
+  defp at(player, clock, t) do
+    Agent.update(clock, fn _ -> t end)
+
+    case :sys.get_state(player).token do
+      nil -> :ok
+      token -> send(player, {:tick, token})
+    end
+
+    sync_player(player)
   end
 
   describe "one source at a time" do
