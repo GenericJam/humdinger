@@ -3,7 +3,7 @@
  * ~5.3 ms hop).
  *
  *   cc -O2 -o /tmp/pitch_host c_src/test/pitch_host.c -lm
- *   /tmp/pitch_host synth          # built-in tones: accuracy and octave errors
+ *   /tmp/pitch_host synth          # tone coverage/accuracy, noise and silence rejection
  *   ffmpeg -v error -i voice.m4a -ac 1 -ar 48000 -f f32le - | /tmp/pitch_host 48000 > pitch.csv
  *
  * File mode reads mono 32-bit float PCM on stdin and prints one reading per
@@ -99,7 +99,7 @@ static int run_synth(void) {
                 if (at + hop < win + RATE / 10) continue; /* window full, past the onset */
                 pitch_reading r = pitch_detect(p);
                 total++;
-                if (r.hz <= 0) {
+                if (!(r.hz > 0) || !isfinite(r.hz)) {
                     unvoiced++;
                     continue;
                 }
@@ -118,7 +118,8 @@ static int run_synth(void) {
         printf("%-34s %4.0f–%4.0f Hz  readings %6d  |err| median %5.2f ¢  p95 %5.2f ¢  max %6.2f ¢  "
                "octave errors %.3f%%  unvoiced %.3f%%\n",
                kind_name[kind], lo, hi, total, med, p95, worst, 100.0 * octave / total, 100.0 * unvoiced / total);
-        if (octave > 0 || p95 > 10) all_bad = 1;
+        /* At least 99% voiced per tone family; the lowest voice's vibrato crosses MIN_HZ. */
+        if (total == 0 || unvoiced * 100 > total || octave > 0 || p95 > 10) all_bad = 1;
     }
 
     /* Noise and silence must stay unpitched. */
@@ -129,15 +130,17 @@ static int run_synth(void) {
         pitch_push(p, x + at, hop);
         if (at < pitch_window_input_samples(p)) continue;
         readings++;
-        if (pitch_detect(p).hz > 0) pitched++;
+        if (pitch_detect(p).hz != 0) pitched++;
     }
     printf("%-34s pitched %d of %d readings\n", "white noise (−29 dBFS)", pitched, readings);
+    if (readings == 0 || pitched != 0) all_bad = 1;
     for (int i = 0; i < n; i++) x[i] = 0;
     pitch_free(p);
     p = pitch_new(RATE, MIN_HZ, MAX_HZ);
     pitch_push(p, x, n);
     pitch_reading r = pitch_detect(p);
     printf("%-34s hz %.1f clarity %.2f db %.1f\n", "digital silence", r.hz, r.clarity, r.rms_db);
+    if (r.hz != 0) all_bad = 1;
     printf("hop %d samples (%.2f ms), window %d samples (%.1f ms), analysis rate %d Hz\n", hop,
            1000.0 * hop / RATE, pitch_window_input_samples(p), 1000.0 * pitch_window_input_samples(p) / RATE,
            p->rate);
