@@ -425,20 +425,14 @@ defmodule Humdinger.Output do
   end
 
   # One Bluetooth device at a time: connecting another drops the paired one.
+  # An address already being connected isn't asked again (mob_midi would
+  # answer twice): it just becomes the one waited for.
   def handle_call({:connect_bluetooth, address}, _from, state) do
-    state =
-      case state.paired do
-        %{address: ^address} -> state
-        %{address: old} -> drop_bluetooth(state, old)
-        nil -> state
-      end
-
-    case state.device.connect(address) do
-      :ok ->
-        {:reply, :ok, changed(%{state | connects: state.connects ++ [address], scan_error: nil})}
-
-      {:error, reason} = error ->
-        {:reply, error, changed(%{state | scan_error: reason})}
+    if address in state.connects do
+      connects = List.delete(state.connects, address) ++ [address]
+      {:reply, :ok, changed(%{state | connects: connects, scan_error: nil})}
+    else
+      start_connect(state, address)
     end
   end
 
@@ -542,7 +536,7 @@ defmodule Humdinger.Output do
       {:noreply, state |> bluetooth_connected(id, address) |> changed()}
     else
       _ = state.device.close(id)
-      {:noreply, changed(%{state | connects: List.delete(state.connects, address)})}
+      {:noreply, changed(%{state | connects: retire_one(state.connects, address)})}
     end
   end
 
@@ -1235,6 +1229,33 @@ defmodule Humdinger.Output do
 
   defp waiting_for(%{connects: []}), do: nil
   defp waiting_for(%{connects: connects}), do: List.last(connects)
+
+  defp start_connect(state, address) do
+    state =
+      case state.paired do
+        %{address: ^address} -> state
+        %{address: old} -> drop_bluetooth(state, old)
+        nil -> state
+      end
+
+    case state.device.connect(address) do
+      :ok ->
+        {:reply, :ok, changed(%{state | connects: state.connects ++ [address], scan_error: nil})}
+
+      {:error, reason} = error ->
+        {:reply, error, changed(%{state | scan_error: reason})}
+    end
+  end
+
+  # Every connect is answered once: by :connected or by an (addressless)
+  # error. An answer retires its own request if still listed, else the oldest.
+  defp retire_one(connects, address) do
+    cond do
+      address in connects -> List.delete(connects, address)
+      connects == [] -> []
+      true -> tl(connects)
+    end
+  end
 
   # Bluetooth MIDI turned off: closing a Bluetooth device disconnects it in
   # mob_midi, so forget it here too (sync_devices/1 already closed the open

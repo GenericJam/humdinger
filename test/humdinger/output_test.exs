@@ -1020,6 +1020,35 @@ defmodule Humdinger.OutputTest do
       refute row(output, :bt).detail == "connecting…"
     end
 
+    test "the newer connect failing first, then the older one connecting, leaves nothing pending" do
+      output = start()
+      :ok = Output.connect_bluetooth("AA:AA:AA:AA:AA:AA", output)
+      :ok = Output.connect_bluetooth("BB:BB:BB:BB:BB:BB", output)
+
+      send(
+        output,
+        {:midi, :error, %{device: 0, op: :connect_bluetooth, reason: :open_failed, dropped: 0}}
+      )
+
+      send(output, {:midi, :connected, %{device: 12, address: "AA:AA:AA:AA:AA:AA"}})
+      assert_receive {:close, 12}
+      assert %{connecting: nil} = Output.bluetooth(output)
+      refute row(output, :bt).detail == "connecting…"
+    end
+
+    test "a second tap on a device already connecting doesn't ask again" do
+      output = start()
+      :ok = Output.connect_bluetooth("AA:AA:AA:AA:AA:AA", output)
+      assert_receive {:connect, "AA:AA:AA:AA:AA:AA"}
+      :ok = Output.connect_bluetooth("AA:AA:AA:AA:AA:AA", output)
+      refute_received {:connect, _}
+
+      send(output, {:midi, :connected, %{device: 12, address: "AA:AA:AA:AA:AA:AA"}})
+      assert_receive :list_devices
+      refute_received {:close, 12}
+      assert Output.bluetooth(output).paired.address == "AA:AA:AA:AA:AA:AA"
+    end
+
     test "turning Bluetooth MIDI off and on again reconnects the remembered device" do
       address = "AA:BB:CC:DD:EE:FF"
       output = start(device: PairedDevice)
