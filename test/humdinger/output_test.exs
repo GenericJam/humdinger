@@ -24,18 +24,17 @@ defmodule Humdinger.OutputTest do
   end
 
   defmodule Port do
-    def available?, do: true
-    def connections, do: 1
-    def send(bytes), do: Humdinger.OutputTest.report_from_double({:port, bytes})
+    def open(_name), do: :ok
+    def send(_id, bytes), do: Humdinger.OutputTest.report_from_double({:port, bytes})
+    def discard(_id), do: {:ok, 2}
   end
 
-  # A port whose writer is stuck behind a client: refuses while the test has
-  # set {RefusingPort, test} in persistent_term.
+  # A port whose queue is full behind a stalled listener: refuses while the
+  # test has set {RefusingPort, test} in persistent_term.
   defmodule RefusingPort do
-    def available?, do: true
-    def connections, do: 1
+    def open(_name), do: :ok
 
-    def send(bytes) do
+    def send(_id, bytes) do
       [test | _] = Process.get(:"$callers")
 
       if :persistent_term.get({__MODULE__, test}, false) do
@@ -45,13 +44,21 @@ defmodule Humdinger.OutputTest do
         Humdinger.OutputTest.report_from_double({:port, bytes})
       end
     end
+
+    def discard(_id) do
+      [test | _] = Process.get(:"$callers")
+      gen = :persistent_term.get({__MODULE__, :gen, test}, 1) + 1
+      :persistent_term.put({__MODULE__, :gen, test}, gen)
+      Humdinger.OutputTest.report_from_double({:port_discard, gen})
+      {:ok, gen}
+    end
   end
 
   # A port whose native side throws on every send (a NIF exception).
   defmodule RaisingPort do
-    def available?, do: true
-    def connections, do: 1
-    def send(_bytes), do: raise(ArgumentError, "port gone")
+    def open(_name), do: :ok
+    def send(_id, _bytes), do: raise(ArgumentError, "port gone")
+    def discard(_id), do: {:ok, 1}
   end
 
   # A registered FMutate process, so Output can monitor it and see it restart.
@@ -68,35 +75,60 @@ defmodule Humdinger.OutputTest do
   end
 
   defmodule Device do
-    def subscribe, do: :ok
-    def list, do: {:ok, []}
+    def list, do: Humdinger.OutputTest.report_from_double(:list_devices)
     def open(id), do: Humdinger.OutputTest.report_from_double({:open, id})
     def close(id), do: Humdinger.OutputTest.report_from_double({:close, id})
     def send(id, bytes), do: Humdinger.OutputTest.report_from_double({:device, id, bytes})
+    def discard(id), do: {:ok, id}
     def scan(ms), do: Humdinger.OutputTest.report_from_double({:scan, ms})
     def stop_scan, do: :ok
     def connect(address), do: Humdinger.OutputTest.report_from_double({:connect, address})
-    def disconnect(address), do: Humdinger.OutputTest.report_from_double({:disconnect, address})
     def recall, do: nil
     def remember(device), do: Humdinger.OutputTest.report_from_double({:remember, device})
   end
 
+  defmodule RefusingDevice do
+    defdelegate list, to: Humdinger.OutputTest.Device
+    defdelegate open(id), to: Humdinger.OutputTest.Device
+    defdelegate close(id), to: Humdinger.OutputTest.Device
+    defdelegate scan(ms), to: Humdinger.OutputTest.Device
+    defdelegate stop_scan, to: Humdinger.OutputTest.Device
+    defdelegate connect(address), to: Humdinger.OutputTest.Device
+    defdelegate recall, to: Humdinger.OutputTest.Device
+    defdelegate remember(device), to: Humdinger.OutputTest.Device
+
+    def send(id, bytes) do
+      [test | _] = Process.get(:"$callers")
+
+      if :persistent_term.get({__MODULE__, test}, false) do
+        Humdinger.OutputTest.report_from_double({:device_refused, id, bytes})
+        {:error, :queue_full}
+      else
+        Humdinger.OutputTest.report_from_double({:device, id, bytes})
+      end
+    end
+
+    def discard(id) do
+      Humdinger.OutputTest.report_from_double({:device_discard, id})
+      {:ok, 2}
+    end
+  end
+
   defmodule PairedDevice do
-    defdelegate subscribe, to: Humdinger.OutputTest.Device
     defdelegate list, to: Humdinger.OutputTest.Device
     defdelegate open(id), to: Humdinger.OutputTest.Device
     defdelegate close(id), to: Humdinger.OutputTest.Device
     defdelegate send(id, bytes), to: Humdinger.OutputTest.Device
+    defdelegate discard(id), to: Humdinger.OutputTest.Device
     defdelegate connect(address), to: Humdinger.OutputTest.Device
-    defdelegate disconnect(address), to: Humdinger.OutputTest.Device
     defdelegate remember(device), to: Humdinger.OutputTest.Device
     def recall, do: %{address: "AA:BB:CC:DD:EE:FF", name: "Minilogue"}
   end
 
   defmodule NoPort do
-    def available?, do: false
-    def connections, do: 0
-    def send(_bytes), do: {:error, :unavailable}
+    def open(_name), do: {:error, :unsupported}
+    def send(_id, _bytes), do: {:error, :unsupported}
+    def discard(_id), do: {:error, :unsupported}
   end
 
   @doc false
@@ -106,9 +138,12 @@ defmodule Humdinger.OutputTest do
     :ok
   end
 
+  @port_id 1
   @connected {:connected, %{name: "FMutate A", firmware: "X0X", device: "Pixel 8"}}
 
   defp start(opts \\ []) do
+    {open_port, opts} = Keyword.pop(opts, :open_port, Keyword.get(opts, :port, Port) != NoPort)
+
     defaults = [
       name: nil,
       fmutate: FMutate,
@@ -119,9 +154,22 @@ defmodule Humdinger.OutputTest do
     ]
 
     {:ok, pid} = Output.start_link(Keyword.merge(defaults, opts))
-    # A fresh Output resets the port's 16 channels (tested on its own).
     Output.sync(pid)
-    for bytes <- port_reset(), do: receive(do: ({:port, ^bytes} -> :ok), after: (0 -> :ok))
+
+    receive do
+      :list_devices -> :ok
+    after
+      0 -> :ok
+    end
+
+    if open_port do
+      send(pid, {:midi, :opened, %{device: @port_id, direction: :virtual, name: "Humdinger"}})
+      send(pid, {:midi, :virtual_status, %{device: @port_id, senders: 0, listeners: 1}})
+      # A fresh Output resets the port's 16 channels (tested on its own).
+      Output.sync(pid)
+      for bytes <- port_reset(), do: receive(do: ({:port, ^bytes} -> :ok), after: (0 -> :ok))
+    end
+
     pid
   end
 
@@ -137,6 +185,8 @@ defmodule Humdinger.OutputTest do
         device: Device
       )
 
+    send(output, {:midi, :opened, %{device: @port_id, direction: :virtual, name: "Humdinger"}})
+    send(output, {:midi, :virtual_status, %{device: @port_id, senders: 0, listeners: 1}})
     Output.send_events([{:note_on, 60, 100}], output)
     for bytes <- port_reset(), do: assert_receive({:port, ^bytes})
     assert_receive {:port, <<0x90, 60, 100>>}
@@ -147,24 +197,28 @@ defmodule Humdinger.OutputTest do
     Output.destinations(output)
   end
 
-  defp device_json(id, type, opts \\ []) do
-    JSON.encode!(%{
+  defp device_entry(id, type, opts \\ []) do
+    %{
       id: id,
       name: Keyword.get(opts, :name, "Synth #{id}"),
       type: type,
-      inputs: Keyword.get(opts, :inputs, 1),
-      outputs: 0,
+      direction: :output,
+      manufacturer: "",
+      input_ports: Keyword.get(opts, :input_ports, 0),
+      output_ports: Keyword.get(opts, :output_ports, 1),
       own: Keyword.get(opts, :own, false),
       address: Keyword.get(opts, :address, "")
-    })
+    }
   end
 
-  # Plugs a device in; mob_midi reports its output open unless `opened: false`.
+  # Delivers a device list (as mob_midi does) and reports the device open
+  # unless `opened: false`.
   defp plug(output, id, type, opts \\ []) do
-    send(output, {:humdinger_midi, :device_added, device_json(id, type, opts)})
+    send(output, {:midi, :devices, [device_entry(id, type, opts)]})
 
-    if Keyword.get(opts, :opened, true),
-      do: send(output, {:midi, :opened, %{device: id, direction: :output}})
+    if Keyword.get(opts, :opened, true) do
+      send(output, {:midi, :opened, %{device: id, port: 0, direction: :output, handle: id}})
+    end
 
     Output.destinations(output)
   end
@@ -476,10 +530,10 @@ defmodule Humdinger.OutputTest do
       output = start()
       Output.configure([channel: 2], output)
       Output.send_events([{:note_on, 60, 100}], output)
-      send(output, {:humdinger_midi, :port, ~s({"connections":0})})
+      send(output, {:midi, :virtual_status, %{device: @port_id, senders: 0, listeners: 0}})
       flush_port()
 
-      send(output, {:humdinger_midi, :port, ~s({"connections":1})})
+      send(output, {:midi, :virtual_status, %{device: @port_id, senders: 0, listeners: 1}})
       Output.send_events([{:note_on, 64, 100}], output)
 
       for bytes <- Humdinger.Midi.panic(), do: assert_receive({:port, ^bytes})
@@ -488,7 +542,13 @@ defmodule Humdinger.OutputTest do
 
     test "a port that refuses bytes gets nothing until it drains, then the releases first" do
       key = {RefusingPort, self()}
-      on_exit(fn -> :persistent_term.erase(key) end)
+      gen_key = {RefusingPort, :gen, self()}
+
+      on_exit(fn ->
+        :persistent_term.erase(key)
+        :persistent_term.erase(gen_key)
+      end)
+
       output = start(port: RefusingPort)
       Output.send_events([{:note_on, 60, 100}], output)
       assert_receive {:port, <<0x90, 60, 100>>}
@@ -496,18 +556,63 @@ defmodule Humdinger.OutputTest do
       :persistent_term.put(key, true)
       Output.send_events([{:note_off, 60}, {:note_on, 62, 100}], output)
       assert_receive {:refused, <<0x80, 60, 64>>}
+      assert_receive {:port_discard, 2}
       # Refused once, it isn't sent to again until it has drained.
       refute_receive {:refused, _}
       :persistent_term.put(key, false)
       Output.send_events([{:note_on, 64, 100}], output)
       refute_receive {:port, _}
 
-      send(output, {:humdinger_midi, :port, ~s({"connections":1,"drained":true})})
+      # Stale drain generation is ignored.
+      send(output, {:midi, :drained, %{device: @port_id, port: 0, handle: 1, generation: 1}})
+      Output.send_events([{:note_on, 64, 100}], output)
+      refute_receive {:port, _}
+
+      send(output, {:midi, :drained, %{device: @port_id, port: 0, handle: 1, generation: 2}})
       assert_receive {:port, <<0x80, 60, 64>>}
 
       for bytes <- Humdinger.Midi.panic(), do: assert_receive({:port, ^bytes})
+
+      # A duplicate drain for the handled generation doesn't panic again.
+      send(output, {:midi, :drained, %{device: @port_id, port: 0, handle: 1, generation: 2}})
+      Output.sync(output)
+      refute_receive {:port, _}
+
       Output.send_events([{:note_on, 65, 100}], output)
       assert_receive {:port, <<0x90, 65, 100>>}
+    end
+
+    test "a USB device that refuses bytes gets nothing until it drains, then releases first" do
+      key = {RefusingDevice, self()}
+      on_exit(fn -> :persistent_term.erase(key) end)
+      output = start(device: RefusingDevice)
+      plug(output, 7, "usb")
+      flush_devices()
+
+      Output.send_events([{:note_on, 60, 100}], output)
+      assert_receive {:device, 7, <<0x90, 60, 100>>}
+
+      :persistent_term.put(key, true)
+      Output.send_events([{:note_off, 60}, {:note_on, 62, 100}], output)
+      assert_receive {:device_refused, 7, <<0x80, 60, 64>>}
+      assert_receive {:device_discard, 7}
+      refute_receive {:device_refused, _, _}
+
+      :persistent_term.put(key, false)
+      Output.send_events([{:note_on, 64, 100}], output)
+      refute_receive {:device, 7, _}
+
+      # Stale drain generation is ignored.
+      send(output, {:midi, :drained, %{device: 7, port: 0, handle: 7, generation: 1}})
+      Output.send_events([{:note_on, 64, 100}], output)
+      refute_receive {:device, 7, _}
+
+      send(output, {:midi, :drained, %{device: 7, port: 0, handle: 7, generation: 2}})
+      assert_receive {:device, 7, <<0x80, 60, 64>>}
+      for bytes <- Humdinger.Midi.panic(), do: assert_receive({:device, 7, ^bytes})
+
+      Output.send_events([{:note_on, 65, 100}], output)
+      assert_receive {:device, 7, <<0x90, 65, 100>>}
     end
 
     test "FMutate resynchronising gets no MIDI, and its notes are its own to release" do
@@ -533,7 +638,7 @@ defmodule Humdinger.OutputTest do
       Output.send_events([{:note_on, 60, 100}], output)
       refute_receive {:device, 7, _}
 
-      send(output, {:midi, :opened, %{device: 7, direction: :output}})
+      send(output, {:midi, :opened, %{device: 7, port: 0, direction: :output, handle: 7}})
       Output.send_events([{:note_on, 62, 100}], output)
 
       for bytes <- Humdinger.Midi.panic(), do: assert_receive({:device, 7, ^bytes})
@@ -542,7 +647,13 @@ defmodule Humdinger.OutputTest do
 
     test "a port refusing a note doesn't stop USB from getting and tracking it" do
       key = {RefusingPort, self()}
-      on_exit(fn -> :persistent_term.erase(key) end)
+      gen_key = {RefusingPort, :gen, self()}
+
+      on_exit(fn ->
+        :persistent_term.erase(key)
+        :persistent_term.erase(gen_key)
+      end)
+
       output = start(port: RefusingPort)
       plug(output, 7, "usb")
       flush_devices()
@@ -558,7 +669,7 @@ defmodule Humdinger.OutputTest do
 
     test "a drain this Output didn't see the refusal for still resets the port" do
       output = start()
-      send(output, {:humdinger_midi, :port, ~s({"connections":1,"drained":true,"generation":3})})
+      send(output, {:midi, :drained, %{device: @port_id, port: 0, handle: 1, generation: 3}})
       for bytes <- Humdinger.Midi.panic(), do: assert_receive({:port, ^bytes})
     end
 
@@ -676,24 +787,36 @@ defmodule Humdinger.OutputTest do
 
     test "apps listening on the port, and nothing sent to it while none is" do
       output = start()
-      send(output, {:humdinger_midi, :port, ~s({"connections":2})})
+      send(output, {:midi, :virtual_status, %{device: @port_id, senders: 0, listeners: 2}})
       assert row(output, :port).detail == "virtual MIDI · 2 apps listening"
       Output.send_events([{:note_on, 60, 100}], output)
       assert_receive {:port, <<0x90, 60, 100>>}
 
-      send(output, {:humdinger_midi, :port, ~s({"connections":0})})
+      send(output, {:midi, :virtual_status, %{device: @port_id, senders: 0, listeners: 0}})
       assert %{available: true, detail: "virtual MIDI · any app can pick it"} = row(output, :port)
       Output.send_events([{:note_off, 60}], output)
       refute_receive {:port, _}
 
       # The app that held the note has gone: a new one doesn't get a stray note-off.
-      send(output, {:humdinger_midi, :port, ~s({"connections":1})})
+      send(output, {:midi, :virtual_status, %{device: @port_id, senders: 0, listeners: 1}})
       Output.set_enabled(:port, false, output)
       refute_receive {:port, <<0x80, 60, _>>}
     end
 
     test "where the port doesn't exist" do
       output = start(port: NoPort)
+      assert %{available: false, detail: "virtual MIDI · not on this phone"} = row(output, :port)
+    end
+
+    @tag :capture_log
+    test "where open_virtual fails asynchronously" do
+      output = start(open_port: false)
+
+      send(
+        output,
+        {:midi, :error, %{device: 0, op: :open_virtual, reason: :no_such_device, dropped: 0}}
+      )
+
       assert %{available: false, detail: "virtual MIDI · not on this phone"} = row(output, :port)
     end
 
@@ -709,22 +832,33 @@ defmodule Humdinger.OutputTest do
   end
 
   describe "USB devices" do
-    test "plugged in and pulled out" do
+    test "hot-plug re-lists devices, opens new ones and closes removed ones" do
       output = start()
-      plug(output, 7, "usb", name: "Volca Keys")
+      send(output, {:midi, :device_added, nil})
+      assert_receive :list_devices
+
+      send(output, {:midi, :devices, JSON.encode!([device_entry(7, "usb", name: "Volca Keys")])})
       assert_receive {:open, 7}
+      send(output, {:midi, :opened, %{device: 7, port: 0, direction: :output, handle: 7}})
       assert %{available: true, detail: "Volca Keys"} = row(output, :usb)
 
-      send(output, {:humdinger_midi, :device_removed, device_json(7, "usb")})
+      send(output, {:midi, :device_removed, nil})
+      assert_receive :list_devices
+      send(output, {:midi, :devices, JSON.encode!([])})
       assert %{available: false, detail: "nothing plugged in"} = row(output, :usb)
       assert_receive {:close, 7}
     end
 
     test "ignores devices it can't send to, its own port and other apps' virtual devices" do
       output = start()
-      plug(output, 1, "usb", inputs: 0)
-      plug(output, 2, "virtual", own: true)
-      plug(output, 3, "virtual", name: "FMutate A")
+
+      devices = [
+        device_entry(1, "usb", input_ports: 1, output_ports: 0),
+        device_entry(2, "virtual", own: true),
+        device_entry(3, "virtual", name: "FMutate A")
+      ]
+
+      send(output, {:midi, :devices, JSON.encode!(devices)})
       assert %{available: false} = row(output, :usb)
       refute_receive {:open, _}
     end
@@ -742,6 +876,18 @@ defmodule Humdinger.OutputTest do
       assert %{available: false, detail: "Volca Keys · can't open"} = row(output, :usb)
       Output.send_events([{:note_on, 60, 100}], output)
       refute_receive {:device, 7, _}
+    end
+
+    test "an own_device open_output error drops the device from external rows" do
+      output = start()
+      plug(output, 7, "usb", name: "Humdinger", opened: false)
+
+      send(
+        output,
+        {:midi, :error, %{device: 7, op: :open_output, reason: :own_device, dropped: 0}}
+      )
+
+      assert %{available: false, detail: "nothing plugged in"} = row(output, :usb)
     end
 
     test "devices of a destination that is off aren't opened until it is turned on" do
@@ -764,10 +910,11 @@ defmodule Humdinger.OutputTest do
       assert_receive {:scan, 10_000}
       assert_receive {:output, :bluetooth, %{scanning: true, found: []}}
 
-      found = ~s({"address":"AA:BB:CC:DD:EE:FF","name":"Minilogue","rssi":-60})
-      send(output, {:humdinger_midi, :ble_found, found})
-      send(output, {:humdinger_midi, :ble_found, found})
-      send(output, {:humdinger_midi, :ble_scan_done, "{}"})
+      send(output, {:midi, :bluetooth_scan, :started})
+      found = %{address: "AA:BB:CC:DD:EE:FF", name: "Minilogue", rssi: -60}
+      send(output, {:midi, :bluetooth_device, found})
+      send(output, {:midi, :bluetooth_device, found})
+      send(output, {:midi, :bluetooth_scan, :stopped})
 
       assert %{scanning: false, found: [%{address: "AA:BB:CC:DD:EE:FF", name: "Minilogue"}]} =
                Output.bluetooth(output)
@@ -776,9 +923,8 @@ defmodule Humdinger.OutputTest do
       assert_receive {:connect, "AA:BB:CC:DD:EE:FF"}
       assert row(output, :bt).detail == "connecting…"
 
-      # Android's own name for it can be the generic one; the scan's wins.
-      connected = ~s({"address":"AA:BB:CC:DD:EE:FF","id":12,"name":"MIDI device"})
-      send(output, {:humdinger_midi, :ble_connected, connected})
+      send(output, {:midi, :connected, %{device: 12, address: "AA:BB:CC:DD:EE:FF"}})
+      assert_receive :list_devices
       plug(output, 12, "bluetooth", name: "Minilogue", address: "AA:BB:CC:DD:EE:FF")
 
       assert_receive {:remember, %{address: "AA:BB:CC:DD:EE:FF", name: "Minilogue"}}
@@ -788,18 +934,29 @@ defmodule Humdinger.OutputTest do
       Output.send_events([{:note_on, 60, 100}], output)
       assert_receive {:device, 12, <<0x90, 60, 100>>}
 
-      # Forgetting it releases its notes and closes mob_midi's output too, or
-      # Android would keep the device connected.
+      # Forgetting releases notes and closes the device (which disconnects BLE).
       Output.forget_bluetooth(output)
       assert_receive {:device, 12, <<0x80, 60, 64>>}
       assert_receive {:close, 12}
-      assert_receive {:disconnect, "AA:BB:CC:DD:EE:FF"}
+      assert_receive {:remember, nil}
       assert %{available: false, detail: "none paired"} = row(output, :bt)
 
-      # A connection that completes after it was forgotten is dropped.
-      send(output, {:humdinger_midi, :ble_connected, connected})
-      assert_receive {:disconnect, "AA:BB:CC:DD:EE:FF"}
+      # A connection that completes after it was forgotten is closed at once.
+      send(output, {:midi, :connected, %{device: 12, address: "AA:BB:CC:DD:EE:FF"}})
+      assert_receive {:close, 12}
       assert Output.bluetooth(output).paired == nil
+    end
+
+    test "scan errors end the scan and record the reason" do
+      output = start()
+      assert :ok = Output.scan_bluetooth(output)
+
+      send(
+        output,
+        {:midi, :error, %{device: 0, op: :scan_bluetooth, reason: :permission_denied, dropped: 0}}
+      )
+
+      assert %{scanning: false, error: :permission_denied} = Output.bluetooth(output)
     end
 
     test "reconnects the remembered device at start and can forget it" do
@@ -808,14 +965,13 @@ defmodule Humdinger.OutputTest do
 
       send(
         output,
-        {:humdinger_midi, :ble_failed, ~s({"address":"AA:BB:CC:DD:EE:FF","reason":"open_failed"})}
+        {:midi, :error, %{device: 0, op: :connect_bluetooth, reason: :open_failed, dropped: 0}}
       )
 
       assert row(output, :bt).detail == "Minilogue · not connected"
       assert Output.bluetooth(output).error == :open_failed
 
       Output.forget_bluetooth(output)
-      assert_receive {:disconnect, "AA:BB:CC:DD:EE:FF"}
       assert_receive {:remember, nil}
       assert row(output, :bt).detail == "none paired"
     end

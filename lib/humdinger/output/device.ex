@@ -1,127 +1,97 @@
 defmodule Humdinger.Output.Device do
   @moduledoc """
-  External MIDI devices: USB-MIDI and Bluetooth-MIDI synths.
+  External MIDI devices: USB-MIDI and Bluetooth-MIDI synths, backed by
+  `mob_midi` (`MobMidi`).
 
-  Opening a device and sending to it goes through `mob_midi` (`MobMidi`). What
-  mob_midi 0.2.0 doesn't do on Android comes from the `humdinger_midi_port`
-  plugin (`HumdingerMidiBridge.kt`):
+  Every operation passes `nil` as the socket, so replies arrive in the calling
+  process (`Humdinger.Output`) as `{:midi, ...}` messages:
 
-  * the device list with each device's transport (`:usb`, `:bluetooth`,
-    `:virtual`): mob_midi's list has no transport, and the Output board
-    keeps USB and Bluetooth apart;
-  * hot-plug: mob_midi's Android side sends no `:device_added` /
-    `:device_removed` events, so the plugin's `MidiManager.DeviceCallback`
-    does;
-  * Bluetooth-MIDI as a central: a BLE scan for the BLE-MIDI service and
-    `MidiManager.openBluetoothDevice/3`. (`MobMidi.Ble` is the other role,
-    the phone advertising itself as a BLE-MIDI peripheral.) While the opened
-    device stays open, it is a MIDI device like a USB one.
+  * `list/0` → `{:midi, :devices, payload}` (normalised by `parse/1`) and
+    hot-plug `{:midi, :device_added | :device_removed, nil}`;
+  * `open/1` → `{:midi, :opened, %{device: id, port: 0, direction: :output, ...}}`
+    or `{:midi, :error, %{device: id, op: :open_output, reason: reason, dropped: _}}`;
+  * `scan/1` → `{:midi, :bluetooth_scan, :started}`,
+    `{:midi, :bluetooth_device, %{address: _, name: _, rssi: _}}`,
+    `{:midi, :bluetooth_scan, :stopped}`, or `{:midi, :error, %{op: :scan_bluetooth, ...}}`;
+  * `connect/1` → `{:midi, :connected, %{device: id, address: address}}` or
+    `{:midi, :error, %{op: :connect_bluetooth, reason: reason, ...}}`.
+    `close/1` closes the device's open ports and disconnects Bluetooth.
 
-  The plugin's events go to the process that called `subscribe/0` (one
-  process: `Humdinger.Output`), as `{:humdinger_midi, tag, json}`; mob_midi's
-  replies to `open/1` go to the caller as `{:midi, :opened, %{device: id}}`
-  or `{:midi, :error, %{device: id, op: :open_output, reason: reason}}`.
-
-  Only Android has the plugin: elsewhere these answer `{:error,
-  :unavailable}` and there are no devices.
+  On the host (and iOS for BLE-MIDI central), `MobMidi` answers
+  `{:error, :unsupported}`.
   """
 
-  @type id :: integer()
+  @type id :: MobMidi.device_id()
   @type t :: %{
           id: id(),
           name: String.t(),
-          type: :usb | :bluetooth | :virtual,
-          inputs: non_neg_integer(),
-          outputs: non_neg_integer(),
-          own: boolean(),
-          address: String.t()
+          direction: :input | :output | :both,
+          manufacturer: String.t(),
+          type: :usb | :bluetooth | :virtual | :other,
+          address: String.t(),
+          input_ports: non_neg_integer(),
+          output_ports: non_neg_integer(),
+          own: boolean()
         }
 
   @remembered_key {__MODULE__, :bluetooth}
 
   @doc """
-  Sends the plugin's events (port connections, devices added and removed,
-  Bluetooth scan results) to the calling process from now on.
+  Requests the current MIDI device list (and subscribes the calling process to
+  hot-plug events).
   """
-  @spec subscribe() :: :ok | {:error, term()}
-  def subscribe, do: :humdinger_midi_port_nif.subscribe()
+  @spec list() :: :ok | {:error, atom()}
+  def list, do: result(MobMidi.list_devices(nil))
 
-  @doc "The MIDI devices Android knows about now."
-  @spec list() :: {:ok, [t()]} | {:error, term()}
-  def list do
-    with json when is_binary(json) <- :humdinger_midi_port_nif.devices(),
-         {:ok, list} when is_list(list) <- JSON.decode(json) do
-      {:ok, Enum.map(list, &from_json/1)}
-    else
-      {:error, _} = error -> error
-      _ -> {:error, :bad_reply}
-    end
-  end
+  @doc "Normalises a `{:midi, :devices, payload}` payload into device maps."
+  @spec parse(list() | binary() | term()) :: [t()]
+  def parse(payload), do: MobMidi.parse_devices(payload)
 
-  @doc "A device from the plugin's JSON object."
-  @spec from_json(map()) :: t()
-  def from_json(map) do
-    %{
-      id: map["id"],
-      name: map["name"] || "MIDI device",
-      type: type(map["type"]),
-      inputs: map["inputs"] || 0,
-      outputs: map["outputs"] || 0,
-      own: map["own"] == true,
-      address: map["address"] || ""
-    }
-  end
-
-  defp type("usb"), do: :usb
-  defp type("bluetooth"), do: :bluetooth
-  defp type(_), do: :virtual
-
-  @doc "True when Humdinger can send to the device (it has an input port)."
+  @doc """
+  True when Humdinger can send to the device (it has a writeable port:
+  `output_ports > 0`, which is Android's `inputPortCount`).
+  """
   @spec writable?(t()) :: boolean()
-  def writable?(device), do: device.inputs > 0
+  def writable?(device), do: device.output_ports > 0
 
-  @doc "Opens the device's input port 0 for sending (mob_midi; replies to the caller)."
-  @spec open(id()) :: :ok | {:error, term()}
-  def open(id), do: result(MobMidi.open_output(nil, id))
+  @doc "Opens port 0 for sending (`{:midi, :opened, ...}` / `{:midi, :error, ...}`)."
+  @spec open(id()) :: :ok | {:error, atom()}
+  def open(id) when is_integer(id), do: result(MobMidi.open_output(nil, id))
 
-  @doc "Closes what `open/1` opened."
-  @spec close(id()) :: :ok | {:error, term()}
-  def close(id), do: result(MobMidi.close(nil, id))
+  @doc "Closes open ports on `id` and disconnects a Bluetooth-MIDI device."
+  @spec close(id()) :: :ok | {:error, atom()}
+  def close(id) when is_integer(id), do: result(MobMidi.close(nil, id))
 
   @doc "Sends one MIDI message to an opened (or still opening) device."
-  @spec send(id(), binary()) :: :ok | {:error, term()}
-  def send(id, bytes), do: result(MobMidi.send_raw(nil, id, bytes))
+  @spec send(id(), binary()) :: :ok | {:error, atom()}
+  def send(id, bytes) when is_integer(id) and is_binary(bytes),
+    do: result(MobMidi.send_raw(nil, id, bytes))
+
+  @doc "Drops queued bytes for `id` and returns `{:ok, generation}`."
+  @spec discard(id()) :: {:ok, pos_integer()} | {:error, atom()}
+  def discard(id) when is_integer(id), do: MobMidi.discard(id)
 
   # MobMidi returns the socket it was given (nil here) on success.
   defp result(nil), do: :ok
   defp result({:error, _} = error), do: error
 
   @doc """
-  Scans `ms` milliseconds for Bluetooth-MIDI devices. Each one found arrives
-  as `{:humdinger_midi, :ble_found, json}` (address, name, rssi), the end as
-  `:ble_scan_done`. Errors: `:no_permission` (request the `:midi_bluetooth`
-  capability with `Mob.Permissions.request/2`), `:bluetooth_off`,
-  `:location_off` (Android 11 and older find nothing without it),
-  `:no_bluetooth`.
+  Scans `ms` milliseconds for Bluetooth-MIDI devices (Android). On
+  `:permission_denied`, request the `:midi_bluetooth` capability with
+  `Mob.Permissions.request/2`.
   """
   @spec scan(pos_integer()) :: :ok | {:error, atom()}
-  def scan(ms), do: :humdinger_midi_port_nif.ble_scan(ms)
+  def scan(ms) when is_integer(ms) and ms > 0,
+    do: result(MobMidi.scan_bluetooth(nil, duration_ms: ms))
 
-  @doc "Ends a scan early."
-  @spec stop_scan() :: :ok | {:error, term()}
-  def stop_scan, do: :humdinger_midi_port_nif.ble_stop_scan()
+  @doc "Ends a Bluetooth-MIDI scan early."
+  @spec stop_scan() :: :ok | {:error, atom()}
+  def stop_scan, do: result(MobMidi.stop_bluetooth_scan(nil))
 
-  @doc """
-  Connects a Bluetooth-MIDI device by address. The outcome arrives as
-  `{:humdinger_midi, :ble_connected, json}` (address, id, name) or
-  `:ble_failed` (address, reason).
-  """
+  @doc "Connects a Bluetooth-MIDI device by address (Android)."
   @spec connect(String.t()) :: :ok | {:error, atom()}
-  def connect(address), do: :humdinger_midi_port_nif.ble_connect(address)
-
-  @doc "Disconnects a device `connect/1` connected."
-  @spec disconnect(String.t()) :: :ok | {:error, term()}
-  def disconnect(address), do: :humdinger_midi_port_nif.ble_disconnect(address)
+  def connect(address) when is_binary(address),
+    do: result(MobMidi.connect_bluetooth(nil, address))
 
   @doc "The Bluetooth-MIDI device last connected (`%{address, name}`), if any."
   @spec recall() :: %{address: String.t(), name: String.t()} | nil

@@ -3,39 +3,44 @@ defmodule Humdinger.Output.Port do
   The Humdinger port: a virtual MIDI device named "Humdinger" with one output
   port, which any app on the phone can pick as a MIDI source.
 
-  On Android it is `HumdingerMidiService`, a `MidiDeviceService` declared in
-  the app manifest by the `humdinger_midi_port` plugin. Android lists it while
-  the app is installed and binds the service, in the app's process, when an
-  app opens the port. `send/1` hands bytes to the port, timestamped now;
-  Android fans them out to every app connected to it. With no app connected
-  they are dropped.
-
-  The port exists only where the plugin's NIF is linked (Android builds):
-  elsewhere `available?/0` is false and `send/1` answers
-  `{:error, :unavailable}`.
+  Backed by `mob_midi` (`MobMidi.open_virtual/2`, `send_raw/3`, `discard/1`):
+  on Android the app declares `io.mob.midi.MobMidiDeviceService` with
+  `res/xml/mob_midi_device.xml` (`mix mob_midi.gen.virtual_device`). Opening
+  subscribes the calling process to `{:midi, :opened, %{device: id,
+  direction: :virtual, name: "Humdinger"}}`, `{:midi, :virtual_status,
+  %{device: id, senders: _, listeners: n}}`, `{:midi, :drained, %{device: id,
+  port: 0, handle: _, generation: g}}` and `{:midi, :error, %{op:
+  :open_virtual, ...}}`. On the host these answer `{:error, :unsupported}`.
   """
 
-  @doc "True where the port exists (the native plugin is linked)."
-  @spec available?() :: boolean()
-  def available?, do: is_integer(:humdinger_midi_port_nif.port_connections())
+  @name "Humdinger"
+
+  @doc "The declared virtual MIDI device name."
+  @spec name() :: String.t()
+  def name, do: @name
+
+  @doc "Subscribes the calling process to the virtual MIDI device."
+  @spec open(String.t()) :: :ok | {:error, atom()}
+  def open(name \\ @name) when is_binary(name), do: result(MobMidi.open_virtual(nil, name))
 
   @doc """
-  Sends MIDI bytes (whole messages) to the apps connected to the port.
-  `{:error, :no_client}` means nobody is listening and the bytes were dropped.
-  `{:error, :queue_full}` means a client stopped reading: the writer dropped
-  what it had queued and refuses bytes until it has drained, which arrives
-  as a `:port` event with `"drained": true` (see `Humdinger.Output`).
+  Sends MIDI bytes (whole messages) to the apps listening to `device_id`.
+  `{:error, :no_listener}` means nobody is listening; `{:error, :queue_full}`
+  means the port's queue filled and refuses sends until `{:midi, :drained,
+  ...}` arrives.
   """
-  @spec send(binary()) ::
-          :ok | {:error, :no_client | :queue_full | :send_failed | :unavailable | :failed}
-  def send(bytes) when is_binary(bytes), do: :humdinger_midi_port_nif.port_send(bytes)
+  @spec send(MobMidi.device_id(), binary()) :: :ok | {:error, atom()}
+  def send(device_id, bytes) when is_integer(device_id) and is_binary(bytes),
+    do: result(MobMidi.send_raw(nil, device_id, bytes))
 
-  @doc "How many apps have the port open (0 where it doesn't exist)."
-  @spec connections() :: non_neg_integer()
-  def connections do
-    case :humdinger_midi_port_nif.port_connections() do
-      n when is_integer(n) -> n
-      {:error, _} -> 0
-    end
-  end
+  @doc """
+  Drops queued bytes for `device_id` and starts a new queue generation
+  (`{:ok, generation}`), which the next `{:midi, :drained, ...}` carries.
+  """
+  @spec discard(MobMidi.device_id()) :: {:ok, pos_integer()} | {:error, atom()}
+  def discard(device_id) when is_integer(device_id), do: MobMidi.discard(device_id)
+
+  # MobMidi returns the socket it was given (nil here) on success.
+  defp result(nil), do: :ok
+  defp result({:error, _} = error), do: error
 end

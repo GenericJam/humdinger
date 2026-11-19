@@ -9,8 +9,8 @@ defmodule Humdinger.OutputScreen do
   up). "Pair FMutate · QR or code" opens `Humdinger.PairScreen`; "Scan
   Bluetooth" opens a sheet listing what `Output.scan_bluetooth/0` finds
   (`{:output, :bluetooth, view}`), with Connect and Forget. A scan refused
-  with `{:error, :no_permission}` asks for the `:midi_bluetooth` capability
-  and scans again once it is granted.
+  with `:permission_denied` asks for the `:midi_bluetooth` capability and
+  scans again once it is granted.
 
   CHANNEL changes go through `Humdinger.Engine.update_settings/1`, so notes
   still sounding are released on the old channel first. WHAT GETS SENT
@@ -359,7 +359,7 @@ defmodule Humdinger.OutputScreen do
 
   def bt_message(%{error: nil}, _), do: nil
 
-  def bt_message(%{error: :no_permission}, _),
+  def bt_message(%{error: :permission_denied}, _),
     do: "Humdinger needs the Nearby devices permission to scan."
 
   def bt_message(%{error: :bluetooth_off}, _),
@@ -368,11 +368,12 @@ defmodule Humdinger.OutputScreen do
   def bt_message(%{error: :location_off}, _),
     do: "Location is off. Android needs it on to find Bluetooth devices."
 
-  def bt_message(%{error: :no_bluetooth}, _), do: "This phone has no Bluetooth LE."
-  def bt_message(%{error: :unavailable}, _), do: "Bluetooth MIDI isn't available on this phone."
+  def bt_message(%{error: reason}, _) when reason in [:unsupported, :no_midi_service],
+    do: "Bluetooth MIDI isn't available on this phone."
+
   def bt_message(%{error: :scan_failed}, _), do: "The scan didn't start. Try again."
 
-  def bt_message(%{error: reason}, _) when reason in [:open_failed, :connect_failed],
+  def bt_message(%{error: reason}, _) when reason in [:open_failed, :bad_address],
     do: "Couldn't connect. Check the device is on and close by, then try again."
 
   def bt_message(%{error: _}, _), do: "Something went wrong with Bluetooth. Try again."
@@ -466,7 +467,7 @@ defmodule Humdinger.OutputScreen do
     do: {:noreply, Mob.Socket.assign(socket, :last_sent, summary)}
 
   def handle_info({:output, :bluetooth, view}, socket),
-    do: {:noreply, Mob.Socket.assign(socket, :bluetooth, view)}
+    do: {:noreply, apply_bluetooth(socket, view)}
 
   def handle_info({:fmutate, :status, status}, socket),
     do: {:noreply, Mob.Socket.assign(socket, :fmutate, status)}
@@ -475,18 +476,25 @@ defmodule Humdinger.OutputScreen do
 
   # A scan the permission refused asks for it; the grant scans again.
   defp scan(socket) do
-    case Output.scan_bluetooth() do
-      {:error, :no_permission} when socket.assigns.bt_permission == :unknown ->
-        if device_calls?(), do: Mob.Permissions.request(socket, :midi_bluetooth)
-        Mob.Socket.assign(socket, bt_permission: :asking, bluetooth: Output.bluetooth())
+    _ = Output.scan_bluetooth()
+    apply_bluetooth(socket, Output.bluetooth())
+  end
 
-      {:error, :no_permission} ->
-        Mob.Socket.assign(socket, bt_permission: :denied, bluetooth: Output.bluetooth())
+  defp apply_bluetooth(socket, %{error: :permission_denied} = view) do
+    case {socket.assigns.bt_sheet, socket.assigns.bt_permission} do
+      {true, :unknown} ->
+        if device_calls?(), do: Mob.Permissions.request(socket, :midi_bluetooth)
+        Mob.Socket.assign(socket, bt_permission: :asking, bluetooth: view)
+
+      {true, :granted} ->
+        Mob.Socket.assign(socket, bt_permission: :denied, bluetooth: view)
 
       _ ->
-        Mob.Socket.assign(socket, :bluetooth, Output.bluetooth())
+        Mob.Socket.assign(socket, :bluetooth, view)
     end
   end
+
+  defp apply_bluetooth(socket, view), do: Mob.Socket.assign(socket, :bluetooth, view)
 
   defp fmutate_name(destinations) do
     case Enum.find(destinations, &(&1.id == :fmutate)) do

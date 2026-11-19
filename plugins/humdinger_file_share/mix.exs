@@ -12,8 +12,8 @@ defmodule HumdingerFileShare.MixProject do
       version: "0.1.0",
       elixir: "~> 1.18",
       deps: [],
-      # Same as humdinger_midi_port: as a path dependency, pruning would drop
-      # the OTP libraries (xmerl) mob_dev's tooling needs from the code path.
+      # As a path dependency, pruning would drop the OTP libraries (xmerl)
+      # mob_dev's tooling needs from the code path.
       prune_code_paths: false
     ]
   end

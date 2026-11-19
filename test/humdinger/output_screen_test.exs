@@ -22,27 +22,21 @@ defmodule Humdinger.OutputScreenTest do
   end
 
   defmodule Port do
-    def available?, do: true
-    def connections, do: 0
-    def send(bytes), do: Humdinger.OutputScreenTest.report({:port, bytes})
+    def open(_name), do: :ok
+    def send(_id, bytes), do: Humdinger.OutputScreenTest.report({:port, bytes})
+    def discard(_id), do: {:ok, 1}
   end
 
   defmodule Device do
     alias Humdinger.OutputScreenTest, as: T
-    def subscribe, do: :ok
-    def list, do: {:ok, []}
+    def list, do: :ok
     def open(_id), do: :ok
-    def close(_id), do: :ok
+    def close(id), do: T.report({:close, id})
     def send(id, bytes), do: T.report({:device, id, bytes})
-
-    def scan(ms) do
-      T.report({:scan, ms})
-      :persistent_term.get({__MODULE__, :scan}, :ok)
-    end
-
+    def discard(_id), do: {:ok, 1}
+    def scan(ms), do: T.report({:scan, ms})
     def stop_scan, do: T.report(:stop_scan)
     def connect(address), do: T.report({:connect, address})
-    def disconnect(address), do: T.report({:disconnect, address})
     def recall, do: nil
     def remember(_device), do: :ok
   end
@@ -66,7 +60,6 @@ defmodule Humdinger.OutputScreenTest do
 
     on_exit(fn ->
       :persistent_term.erase({FMutate, :status})
-      :persistent_term.erase({Device, :scan})
 
       case previous do
         {:ok, module} -> Application.put_env(:humdinger, :fmutate, module)
@@ -87,6 +80,10 @@ defmodule Humdinger.OutputScreenTest do
        sent_interval_ms: 0,
        clock: fn -> Agent.get(clock, & &1) end}
     )
+
+    send(Output, {:midi, :opened, %{device: 1, direction: :virtual, name: "Humdinger"}})
+    send(Output, {:midi, :virtual_status, %{device: 1, senders: 0, listeners: 0}})
+    Output.sync()
 
     start_supervised!({Engine, audio: Fake, output: Output})
     %{clock: clock}
@@ -176,11 +173,7 @@ defmodule Humdinger.OutputScreenTest do
     test "every tap target carries the press-out handle (MOB-509), sheet and Forget included" do
       view = mount() |> set_fmutate(@connected) |> press(:scan_bluetooth)
 
-      send(
-        Output,
-        {:humdinger_midi, :ble_found,
-         JSON.encode!(%{address: "AA", name: "Minilogue", rssi: -60})}
-      )
+      send(Output, {:midi, :bluetooth_device, %{address: "AA", name: "Minilogue", rssi: -60}})
 
       view = pump(view)
 
@@ -264,7 +257,7 @@ defmodule Humdinger.OutputScreenTest do
   describe "channel and test note" do
     # An app opens the Humdinger port, so Output sends to it.
     setup do
-      send(Output, {:humdinger_midi, :port, ~s({"connections":1})})
+      send(Output, {:midi, :virtual_status, %{device: 1, senders: 0, listeners: 1}})
       Output.sync()
       :ok
     end
@@ -369,11 +362,8 @@ defmodule Humdinger.OutputScreenTest do
       assert find(view, :sheet)
       assert "Looking for Bluetooth MIDI devices…" in texts(view)
 
-      send(
-        Output,
-        {:humdinger_midi, :ble_found,
-         JSON.encode!(%{address: "AA:BB", name: "Minilogue", rssi: -61})}
-      )
+      send(Output, {:midi, :bluetooth_scan, :started})
+      send(Output, {:midi, :bluetooth_device, %{address: "AA:BB", name: "Minilogue", rssi: -61}})
 
       view = pump(view)
       assert "Minilogue" in texts(view)
@@ -384,12 +374,8 @@ defmodule Humdinger.OutputScreenTest do
       assert "Connecting…" in texts(view)
       refute {:connect_bluetooth, "AA:BB"} in tap_tags(view)
 
-      send(
-        Output,
-        {:humdinger_midi, :ble_connected, JSON.encode!(%{address: "AA:BB", name: "x"})}
-      )
-
-      send(Output, {:humdinger_midi, :ble_scan_done, JSON.encode!(%{})})
+      send(Output, {:midi, :connected, %{device: 12, address: "AA:BB"}})
+      send(Output, {:midi, :bluetooth_scan, :stopped})
       view = pump(view)
       assert assigns(view).bluetooth.paired == %{address: "AA:BB", name: "Minilogue"}
       assert "Forget" in texts(view)
@@ -397,7 +383,7 @@ defmodule Humdinger.OutputScreenTest do
       assert "Minilogue · not connected" in card_texts(view, :bt)
 
       view = press(view, :forget_bluetooth)
-      assert_received {:disconnect, "AA:BB"}
+      assert_received {:close, 12}
       assert assigns(view).bluetooth.paired == nil
       assert "none paired" in card_texts(view, :bt)
 
@@ -412,13 +398,18 @@ defmodule Humdinger.OutputScreenTest do
     end
 
     test "a scan without the permission asks for it and scans once it's granted" do
-      :persistent_term.put({Device, :scan}, {:error, :no_permission})
       view = press(mount(), :scan_bluetooth)
       assert_received {:scan, _}
+
+      send(
+        Output,
+        {:midi, :error, %{device: 0, op: :scan_bluetooth, reason: :permission_denied, dropped: 0}}
+      )
+
+      view = pump(view)
       assert assigns(view).bt_permission == :asking
       assert "Allow Nearby devices so Humdinger can look for Bluetooth MIDI." in texts(view)
 
-      :persistent_term.put({Device, :scan}, :ok)
       view = view |> render_info({:permission, :midi_bluetooth, :granted}) |> pump()
       assert_received {:scan, _}
       assert assigns(view).bluetooth.scanning
@@ -426,10 +417,14 @@ defmodule Humdinger.OutputScreenTest do
     end
 
     test "a refused permission says how to turn it on" do
-      :persistent_term.put({Device, :scan}, {:error, :no_permission})
+      view = press(mount(), :scan_bluetooth)
 
-      view =
-        mount() |> press(:scan_bluetooth) |> render_info({:permission, :midi_bluetooth, :denied})
+      send(
+        Output,
+        {:midi, :error, %{device: 0, op: :scan_bluetooth, reason: :permission_denied, dropped: 0}}
+      )
+
+      view = view |> pump() |> render_info({:permission, :midi_bluetooth, :denied})
 
       assert "Bluetooth permission is off. Allow Nearby devices for Humdinger in Settings, then scan again." in texts(
                view
@@ -437,6 +432,13 @@ defmodule Humdinger.OutputScreenTest do
 
       # Scan again asks again (Android shows the prompt until "don't ask again").
       view = press(view, :scan_bluetooth)
+
+      send(
+        Output,
+        {:midi, :error, %{device: 0, op: :scan_bluetooth, reason: :permission_denied, dropped: 0}}
+      )
+
+      view = pump(view)
       assert assigns(view).bt_permission == :asking
       view = render_info(view, {:permission, :midi_bluetooth, :denied})
       assert assigns(view).bt_permission == :denied
@@ -444,7 +446,12 @@ defmodule Humdinger.OutputScreenTest do
 
     test "scan errors read as plain words" do
       view = press(mount(), :scan_bluetooth)
-      send(Output, {:humdinger_midi, :ble_scan_done, JSON.encode!(%{error: "bluetooth_off"})})
+
+      send(
+        Output,
+        {:midi, :error, %{device: 0, op: :scan_bluetooth, reason: :bluetooth_off, dropped: 0}}
+      )
+
       assert "Bluetooth is off. Turn it on, then scan again." in texts(pump(view))
     end
   end
