@@ -677,13 +677,16 @@ subscribes again.
 - `adb shell dumpsys midi` lists `name=Humdinger … mOutputPortCount=1`
   with the `io.mob.midi.MobMidiDeviceService` service info, even before the
   app runs.
-- Another process receiving from the port:
-  `deps/mob_midi/tools/midi_probe.sh <serial> Humdinger 30`
+- Another process receiving from the port: mob_midi's probe, which lives in
+  the mob_midi source repo (Hex doesn't ship `tools/`):
+  `~/code/mob_midi/tools/midi_probe.sh <serial> Humdinger listen 30`
   runs a MIDI client as the adb shell user (`app_process`, no app needed),
-  opens the port and prints `RECV 90 45 5c` per message. While it listens,
-  over dist: `Humdinger.Output.destinations()` shows `"virtual MIDI · 1 app
-  listening"` and `Humdinger.Output.test_note()` shows up as `RECV` lines.
-- A stuck client: `deps/mob_midi/tools/midi_probe.sh <serial> Humdinger 40 10`
+  opens the port and prints `RECV <port> <received ns> <sent ns> 90 45 5c`
+  per message. While it listens, over dist: `Humdinger.Output.destinations()`
+  shows `"virtual MIDI · 1 app listening"`, the client first receives the
+  per-channel reset, and `Humdinger.Output.test_note()` shows up as `RECV`
+  lines (`90 45 5c`, then `80 45 40` 300 ms later).
+- A stuck client: `~/code/mob_midi/tools/midi_probe.sh <serial> Humdinger stall 10`
   stops reading for 10 s at the first message. Flood the port over dist
   (`Output.send_events/1` with a few thousand bends): the probe prints
   `STALL`, `MobMidi.send_raw/3` answers `{:error, :queue_full}` once the

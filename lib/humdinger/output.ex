@@ -122,7 +122,6 @@ defmodule Humdinger.Output do
     :last_sent,
     :sent_at,
     :sent_timer,
-    :connecting,
     :paired,
     channel: 1,
     enabled: @default_enabled,
@@ -143,6 +142,10 @@ defmodule Humdinger.Output do
     device_gens: %{},
     # address => device_id from {:midi, :connected, ...}, so forget can close(id).
     bt_ids: %{},
+    # Bluetooth connects asked of mob_midi and not answered yet, oldest first;
+    # the last one is the device the user is waiting for. mob_midi's
+    # connect errors carry no address, so each one retires one request.
+    connects: [],
     sounding: Map.new(@ids, &{&1, MapSet.new()}),
     scanning: false,
     found: [],
@@ -431,21 +434,24 @@ defmodule Humdinger.Output do
       end
 
     case state.device.connect(address) do
-      :ok -> {:reply, :ok, changed(%{state | connecting: address, scan_error: nil})}
-      {:error, reason} = error -> {:reply, error, changed(%{state | scan_error: reason})}
+      :ok ->
+        {:reply, :ok, changed(%{state | connects: state.connects ++ [address], scan_error: nil})}
+
+      {:error, reason} = error ->
+        {:reply, error, changed(%{state | scan_error: reason})}
     end
   end
 
   def handle_call(:forget_bluetooth, _from, state) do
     state =
-      for address <- Enum.uniq([state.paired && state.paired.address, state.connecting]),
+      for address <- Enum.uniq([state.paired && state.paired.address | state.connects]),
           is_binary(address),
           reduce: state do
         acc -> drop_bluetooth(acc, address)
       end
 
     state.device.remember(nil)
-    {:reply, :ok, changed(%{state | paired: nil, connecting: nil})}
+    {:reply, :ok, changed(%{state | paired: nil, connects: []})}
   end
 
   @impl GenServer
@@ -529,17 +535,15 @@ defmodule Humdinger.Output do
     {:noreply, state |> add_bluetooth_found(address, found) |> changed()}
   end
 
-  def handle_info(
-        {:midi, :connected, %{device: id, address: address}},
-        %{connecting: address} = state
-      ) do
-    {:noreply, state |> bluetooth_connected(id, address) |> changed()}
-  end
-
-  # A connection nobody is waiting for any more (forgotten, or replaced).
-  def handle_info({:midi, :connected, %{device: id}}, state) do
-    _ = state.device.close(id)
-    {:noreply, state}
+  # Only the device asked for last counts; an earlier one that connects anyway
+  # was replaced (or forgotten) and is closed.
+  def handle_info({:midi, :connected, %{device: id, address: address}}, state) do
+    if address == waiting_for(state) do
+      {:noreply, state |> bluetooth_connected(id, address) |> changed()}
+    else
+      _ = state.device.close(id)
+      {:noreply, state}
+    end
   end
 
   def handle_info({:midi, :error, %{op: :open_virtual, reason: reason}}, state) do
@@ -560,12 +564,14 @@ defmodule Humdinger.Output do
     {:noreply, changed(%{state | scanning: false, scan_error: reason})}
   end
 
-  def handle_info(
-        {:midi, :error, %{op: :connect_bluetooth, reason: reason}},
-        %{connecting: addr} = state
-      )
-      when is_binary(addr) do
-    {:noreply, changed(%{state | connecting: nil, scan_error: reason})}
+  # The error belongs to some outstanding connect; it is reported only once
+  # none is left, so an old failure can't cancel the device chosen since.
+  def handle_info({:midi, :error, %{op: :connect_bluetooth, reason: reason}}, state) do
+    case state.connects do
+      [] -> {:noreply, state}
+      [_last] -> {:noreply, changed(%{state | connects: [], scan_error: reason})}
+      [_oldest | rest] -> {:noreply, changed(%{state | connects: rest})}
+    end
   end
 
   def handle_info({:midi, :error, %{op: :list_devices, reason: reason}}, state) do
@@ -856,10 +862,15 @@ defmodule Humdinger.Output do
       |> Enum.sort()
 
   defp toggle(state, id, false) do
-    state
-    |> silence_destination(id)
-    |> Map.update!(:enabled, &Map.put(&1, id, false))
-    |> sync_devices()
+    was_open = state.opened
+
+    state =
+      state
+      |> silence_destination(id)
+      |> Map.update!(:enabled, &Map.put(&1, id, false))
+      |> sync_devices()
+
+    if id == :bt, do: drop_bluetooth_devices(state, was_open), else: state
   end
 
   defp toggle(state, id, true) do
@@ -973,7 +984,7 @@ defmodule Humdinger.Output do
     end
   end
 
-  defp bluetooth_detail(%{connecting: address}) when is_binary(address), do: "connecting…"
+  defp bluetooth_detail(%{connects: [_ | _]}), do: "connecting…"
   defp bluetooth_detail(%{paired: %{name: name}}), do: "#{name} · not connected"
   defp bluetooth_detail(_state), do: "none paired"
 
@@ -993,7 +1004,7 @@ defmodule Humdinger.Output do
       scanning: state.scanning,
       found: state.found,
       error: state.scan_error,
-      connecting: state.connecting,
+      connecting: waiting_for(state),
       paired: state.paired
     }
   end
@@ -1182,7 +1193,7 @@ defmodule Humdinger.Output do
     paired = %{address: address, name: bluetooth_name(state, id, address)}
     state.device.remember(paired)
     if not Map.has_key?(state.devices, id), do: state.device.list()
-    %{state | paired: paired, connecting: nil, bt_ids: Map.put(state.bt_ids, address, id)}
+    %{state | paired: paired, connects: [], bt_ids: Map.put(state.bt_ids, address, id)}
   end
 
   defp bluetooth_name(state, id, address) do
@@ -1214,13 +1225,32 @@ defmodule Humdinger.Output do
   end
 
   # Reconnects the remembered Bluetooth device when Bluetooth is on.
-  defp reconnect_bluetooth(%{paired: %{address: address}, connecting: nil} = state) do
+  defp reconnect_bluetooth(%{paired: %{address: address}, connects: []} = state) do
     if state.enabled.bt and devices_for(state, :bt) == [] and state.device.connect(address) == :ok,
-      do: %{state | connecting: address},
+      do: %{state | connects: [address]},
       else: state
   end
 
   defp reconnect_bluetooth(state), do: state
+
+  defp waiting_for(%{connects: []}), do: nil
+  defp waiting_for(%{connects: connects}), do: List.last(connects)
+
+  # Bluetooth MIDI turned off: closing a Bluetooth device disconnects it in
+  # mob_midi, so forget it here too (sync_devices/1 already closed the open
+  # ones); turning it back on reconnects the remembered device instead of
+  # reopening a stale id.
+  defp drop_bluetooth_devices(state, was_open) do
+    ids = for {id, %{type: :bluetooth}} <- state.devices, do: id
+    for id <- ids, not Map.has_key?(was_open, id), do: state.device.close(id)
+
+    %{
+      state
+      | devices: Map.drop(state.devices, ids),
+        device_gens: Map.drop(state.device_gens, ids),
+        bt_ids: %{}
+    }
+  end
 
   # ── FMutate and Settings ───────────────────────────────────────────────────
 

@@ -975,6 +975,52 @@ defmodule Humdinger.OutputTest do
       assert_receive {:remember, nil}
       assert row(output, :bt).detail == "none paired"
     end
+
+    test "an earlier connect failing doesn't cancel the device chosen since" do
+      output = start()
+      assert :ok = Output.connect_bluetooth("AA:AA:AA:AA:AA:AA", output)
+      assert_receive {:connect, "AA:AA:AA:AA:AA:AA"}
+      assert :ok = Output.connect_bluetooth("BB:BB:BB:BB:BB:BB", output)
+      assert_receive {:connect, "BB:BB:BB:BB:BB:BB"}
+
+      # mob_midi's connect errors carry no address: this one is the first's.
+      send(
+        output,
+        {:midi, :error, %{device: 0, op: :connect_bluetooth, reason: :open_failed, dropped: 0}}
+      )
+
+      assert row(output, :bt).detail == "connecting…"
+      assert %{error: nil, connecting: "BB:BB:BB:BB:BB:BB"} = Output.bluetooth(output)
+
+      send(output, {:midi, :connected, %{device: 13, address: "BB:BB:BB:BB:BB:BB"}})
+      assert_receive :list_devices
+      assert Output.bluetooth(output).paired.address == "BB:BB:BB:BB:BB:BB"
+      refute_received {:close, 13}
+
+      # The first one connecting after all is closed: it was replaced.
+      send(output, {:midi, :connected, %{device: 12, address: "AA:AA:AA:AA:AA:AA"}})
+      assert_receive {:close, 12}
+      assert Output.bluetooth(output).paired.address == "BB:BB:BB:BB:BB:BB"
+    end
+
+    test "turning Bluetooth MIDI off and on again reconnects the remembered device" do
+      address = "AA:BB:CC:DD:EE:FF"
+      output = start(device: PairedDevice)
+      assert_receive {:connect, ^address}
+      send(output, {:midi, :connected, %{device: 12, address: address}})
+      assert_receive :list_devices
+      plug(output, 12, "bluetooth", name: "Minilogue", address: address)
+      assert_receive {:open, 12}
+
+      # Closing disconnects it in mob_midi.
+      Output.set_enabled(:bt, false, output)
+      assert_receive {:close, 12}
+
+      Output.set_enabled(:bt, true, output)
+      assert_receive {:connect, ^address}
+      refute_received {:open, 12}
+      assert row(output, :bt).detail == "connecting…"
+    end
   end
 
   defp eventually(check, tries \\ 20) do
