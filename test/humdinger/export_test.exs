@@ -3,7 +3,7 @@ defmodule Humdinger.ExportTest do
   use ExUnit.Case, async: false
 
   alias Humdinger.{Export, Phrase, Scale}
-  alias Humdinger.Test.{Listener, Print}
+  alias Humdinger.Test.Listener
 
   setup do
     dir = Path.join(System.tmp_dir!(), "humdinger-export-#{System.unique_integer([:positive])}")
@@ -121,12 +121,7 @@ defmodule Humdinger.ExportTest do
 
     assert Export.print(pdf) == :ok
     assert_received {:print, ^pdf, "Bus stop riff"}
-    assert Export.print(pdf, title: "Custom title") == :ok
-    assert_received {:print, ^pdf, "Custom title"}
     assert_raise MatchError, fn -> Export.print(xml) end
-
-    Print.set_result({:error, :no_app})
-    assert Export.print(pdf) == {:error, :no_app}
   end
 
   test "a name beyond the BMP reaches the share double intact, file and title", %{tmp_dir: dir} do

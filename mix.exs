@@ -32,10 +32,10 @@ defmodule Humdinger.MixProject do
     [
       # Pre-release local path deps (Mob.Share.file/3, MobPrint, MobBackground
       # microphone mode). Swap for the released Hex versions once published.
-      {:mob, path: "/Users/kevin/code/mob/mob-worktrees/share-file", override: true},
+      {:mob, path: "/Users/kevin/code/mob-worktrees/share-file", override: true},
       {:mob_print, path: "/Users/kevin/code/mob_print"},
       {:mob_background,
-       path: "/Users/kevin/code/mob_background/mob_background-worktrees/microphone-mode"},
+       path: "/Users/kevin/code/mob_background-worktrees/microphone-mode"},
       {:mob_dev, "~> 0.7.31", only: :dev, runtime: false},
       # Resizes the icon master for `mix mob.icon` (scripts/render_icon.exs).
       {:image, "~> 0.54", only: :dev, runtime: false},

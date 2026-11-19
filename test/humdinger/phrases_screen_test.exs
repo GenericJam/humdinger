@@ -5,7 +5,7 @@ defmodule Humdinger.PhrasesScreenTest do
   import Humdinger.Test.Screens
 
   alias Humdinger.{ImportScreen, Phrase, Phrases, PhraseScreen, PhrasesScreen, Repo, Scale, Style}
-  alias Humdinger.Test.{FakeOutput, Listener}
+  alias Humdinger.Test.{FakeOutput, Listener, Share}
 
   setup_all do: Humdinger.Test.Repo.start()
 
@@ -187,12 +187,18 @@ defmodule Humdinger.PhrasesScreenTest do
     assert File.read!(pdf) =~ "%PDF"
   end
 
-  test "a failed share delivers {:mob_share, :error, reason} as a notice" do
-    save("Bus stop riff", DateTime.utc_now())
+  test "a share that fails comes back to the screen as a notice" do
+    %{id: id} = save("Bus stop riff", DateTime.utc_now())
+    Share.set_error(:no_app)
 
-    view = loaded() |> render_info({:mob_share, :error, :no_app})
-    assert assigns(view).notice == "No app on this phone can take it."
-    assert text_of(view, "notice") == "No app on this phone can take it."
+    view =
+      loaded()
+      |> render_info({:tap, {:more, id}})
+      |> render_info({:tap, {:export, id, :mid}})
+      |> render_async()
+
+    assert_receive {:mob_share, :error, :no_app} = error
+    assert text_of(render_info(view, error), "notice") == "No app on this phone can take it."
   end
 
   test "a review's save reloads the list" do

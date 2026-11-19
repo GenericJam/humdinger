@@ -6,7 +6,7 @@ defmodule Humdinger.ImportScreenTest do
 
   alias Humdinger.Audio.Fake
   alias Humdinger.{ImportScreen, Music, Phrase, PhraseScreen, Scale, Style}
-  alias Humdinger.Test.{FakeOutput, Listener}
+  alias Humdinger.Test.{FakeOutput, Listener, Share}
 
   @duration 6000
   @wave_w 344
@@ -284,10 +284,11 @@ defmodule Humdinger.ImportScreenTest do
     assert "Play out" in texts(view)
   end
 
-  test "a failed share delivers {:mob_share, :error, reason} as a notice" do
-    view = ready() |> render_info({:mob_share, :error, :no_app})
-    assert assigns(view).notice == "No app on this phone can take it."
-    assert text_of(view, "notice") == "No app on this phone can take it."
+  test "a share that fails comes back to the screen as a notice" do
+    Share.set_error(:no_app)
+    view = ready() |> render_info({:tap, :export_mid}) |> render_async()
+    assert_receive {:mob_share, :error, :no_app} = error
+    assert text_of(render_info(view, error), "notice") == "No app on this phone can take it."
   end
 
   test "every tap target keeps its tap through re-renders" do

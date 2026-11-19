@@ -5,7 +5,7 @@ defmodule Humdinger.PhraseScreenTest do
   import Humdinger.Test.Screens
 
   alias Humdinger.{LiveScreen, Notation, Phrase, Phrases, PhraseScreen, Repo, Scale, Style}
-  alias Humdinger.Test.{FakeOutput, Listener}
+  alias Humdinger.Test.{FakeOutput, Listener, Share}
   alias Humdinger.Views.{PianoRoll, Staff}
 
   defmodule FakePianoAudio do
@@ -312,9 +312,12 @@ defmodule Humdinger.PhraseScreenTest do
     assert Path.extname(path) == ".mid"
   end
 
-  test "a failed share delivers {:mob_share, :error, reason} as a notice" do
-    view = review() |> render_info({:mob_share, :error, :no_app})
-    assert assigns(view).notice == "No app on this phone can take it."
+  test "a share that fails comes back to the screen as a notice" do
+    Share.set_error(:no_app)
+    view = review() |> render_info({:tap, {:share, :mid}}) |> render_async()
+    # Mob.Share.file/3 sends setup errors to its caller: the screen process.
+    assert_receive {:mob_share, :error, :no_app} = error
+    view = render_info(view, error)
     assert text_of(view, "notice") == "No app on this phone can take it."
   end
 

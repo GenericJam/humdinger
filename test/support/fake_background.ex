@@ -15,17 +15,23 @@ defmodule Humdinger.Test.FakeBackground do
   # ── MobBackground API ───────────────────────────────────────────────────
 
   @doc "Start a session owned by `self()`."
-  def start(opts) when is_list(opts), do: start(self(), opts)
+  def start(opts), do: start(self(), opts)
 
-  @doc "Start (or retarget) the background session owned by `owner`."
-  def start(owner, opts) when is_pid(owner) and is_list(opts) do
-    mode = Keyword.fetch!(opts, :mode)
-    notification = Keyword.fetch!(opts, :notification)
-    call({:start, owner, mode, notification})
+  @doc """
+  Start (or retarget) the background session owned by `owner`. Arguments go
+  through MobBackground's own validation, so what raises on the phone raises
+  here.
+  """
+  def start(owner, opts) do
+    _ = MobBackground.nif_args(owner, opts)
+    call({:start, owner, Keyword.fetch!(opts, :mode), Keyword.fetch!(opts, :notification)})
   end
 
-  @doc "Update the active session's notification."
-  def update(notification) when is_map(notification), do: call({:update, notification})
+  @doc "Update the active session's notification (validated like MobBackground)."
+  def update(notification) do
+    _ = MobBackground.notification_nif_args(notification)
+    call({:update, notification})
+  end
 
   @doc "Stop the active session. Idempotent."
   def stop, do: call(:stop)
@@ -52,8 +58,11 @@ defmodule Humdinger.Test.FakeBackground do
   """
   def refuse(reason \\ :foreground_refused) when is_atom(reason), do: call({:refuse, reason})
 
-  @doc "Configure what `start/2` returns (`:ok` or `{:error, reason}`)."
-  def set_start_result(result), do: call({:set_start_result, result})
+  @doc "Make `start/2` return `result` (`:ok` or `{:error, reason}`) until the test ends."
+  def set_start_result(result) do
+    :ok = call({:set_start_result, result})
+    ExUnit.Callbacks.on_exit(fn -> call({:set_start_result, :ok}) end)
+  end
 
   @doc "Stop any running session and restore default start behaviour."
   def reset, do: call(:reset)

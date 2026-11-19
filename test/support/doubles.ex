@@ -28,14 +28,29 @@ defmodule Humdinger.Test.Share do
   @moduledoc """
   A `Mob.Share` double (`config :humdinger, :share`): reports
   `{:share, path, mime, title}` to `Humdinger.Test.Listener` and returns
-  `socket` unchanged.
+  `socket` unchanged. Like `Mob.Share.file/3`, a setup failure set with
+  `set_error/1` goes to the calling process as `{:mob_share, :error, reason}`,
+  so a share made from the wrong process loses it here too.
   """
 
   alias Humdinger.Test.Listener
 
   def file(socket, path, opts \\ []) do
     Listener.tell({:share, path, opts[:mime], opts[:title]})
+
+    case Application.get_env(:humdinger, :test_share_error) do
+      nil -> :ok
+      reason -> send(self(), {:mob_share, :error, reason})
+    end
+
     socket
+  end
+
+  @doc "Make `file/3` fail with `reason` until the test ends."
+  def set_error(reason) do
+    Application.put_env(:humdinger, :test_share_error, reason)
+    ExUnit.Callbacks.on_exit(fn -> Application.delete_env(:humdinger, :test_share_error) end)
+    :ok
   end
 end
 

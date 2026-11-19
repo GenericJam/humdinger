@@ -197,7 +197,7 @@ defmodule Humdinger.OutputTest do
     Output.destinations(output)
   end
 
-  defp device_entry(id, type, opts \\ []) do
+  defp device_entry(id, type, opts) do
     %{
       id: id,
       name: Keyword.get(opts, :name, "Synth #{id}"),

@@ -245,9 +245,13 @@ IO.puts(
 IO.puts("  notification while A4 played: #{inspect(mid)}")
 IO.puts("  notification now: #{inspect(notification.())}")
 
-# ── 4. The notification's buttons (delivered to the engine as MobBackground does) ──
+# ── 4. The notification's buttons, through the intents the shade sends ─────
+# (BeamForegroundService → MobBackgroundBridge.nativeAction → the Engine).
 button = fn action ->
-  rpc.(Kernel, :send, [Humdinger.Engine, {:mob_background, {:action, action}}])
+  adb.(~w(shell run-as #{app} am startservice --user 0
+       -n #{app}/io.mob.background.BeamForegroundService
+       -a io.mob.background.BUTTON --es button #{action}))
+
   Process.sleep(600)
 end
 
