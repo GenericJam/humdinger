@@ -878,7 +878,10 @@ only), `ERL_NIF_INIT(Elixir.Humdinger.Audio.Nif, …)`. It includes
   and serializes metadata with `JSONObject`. A document's `lastPathSegment`
   is an opaque ID, not a filename: Downloads can return `raw:/storage/…`,
   which previously made the copy fail and report cancellation. Failed copies
-  remove their temporary files. Checked through the real Android Downloads
+  remove their temporary files; nothing removes the copies it delivers, so
+  the Import screen deletes its copy once the decoder is done with it (the
+  analysis or its error, a cancel, or a start that failed) and the copies it
+  doesn't use at once. Checked through the real Android Downloads
   picker on the moto g power 2021: a three-tone WAV reaches Import's ready
   state with A4, C5 and E5, then opens Review.
 - **Background.** Provided by the `mob_background` plugin
