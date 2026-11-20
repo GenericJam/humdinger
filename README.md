@@ -4,7 +4,7 @@
 
 Humdinger is a [Mob](https://hexdocs.pm/mob) mobile application (Elixir on the BEAM rendering native UI) that listens to a singer humming, singing, or whistling, detects pitch in real time, converts it into MIDI events, and routes those events to external or sibling synthesizers.
 
-> **Status:** Active development (`dev` and `test` workflows only; no production release pipeline). Singing produces MIDI only; the one local sound is Review's sampled-piano preview of a recorded phrase.
+> **Status:** Active development. Android APKs are published as [GitHub releases](https://github.com/GenericJam/humdinger/releases) (see [Releasing (Android APK)](#releasing-android-apk)). Singing produces MIDI only; the one local sound is Review's sampled-piano preview of a recorded phrase.
 
 ## Current features & platform support
 
@@ -118,6 +118,21 @@ agent-lease release <your-agent-name>
 - Mix aliases in [`mix.exs`](mix.exs): `mix android --device <serial>` (`mob.deploy --android`) and `mix android.native --device <serial>` (`mob.deploy --native --android`).
 - On-device verification scripts under [`scripts/`](scripts/) (`audio_check.exs`, `realtime_check.exs`, `engine_check.exs`, `background_check.exs`, `analysis_check.exs`, `first_run_check.exs`) run against a connected app via `SERIAL=<android-serial> mise exec -- mix run --no-start scripts/<script>.exs`.
 - Android allows only one `UiAutomation` client at a time: if `mobile-mcp` was used on the phone before `agent-device`, stop `com.mobilenext.mobilecli.DeviceServer` first (`adb -s <android-serial> shell pkill -f mobilecli.DeviceServer`).
+
+## Releasing (Android APK)
+
+Release APKs are signed with Humdinger's upload key: `android/upload_jks.keystore` (alias `upload`) with its passphrases in `android/keystore.properties`, both gitignored and readable only by their owner (certificate SHA-256 `bc25dceab5e1b3fb6dafdc5b8748aedc24f439b1fa7a8c5a39bce2120d7d03fc`). The key is the app's identity: an APK signed with any other key can't update an installed Humdinger. Without `keystore.properties` release builds come out unsigned.
+
+```bash
+# 1. Set versionCode (+1 every release) and versionName (= mix.exs version) in android/app/build.gradle
+# 2. Native libs for every ABI, otp.zip (android/app/src/release/assets/) and the AAB
+mise exec -- mix mob.release --android
+# 3. The APK from the same otp.zip and native libs
+(cd android && ./gradlew assembleRelease --no-daemon)
+# → android/app/build/outputs/apk/release/app-release.apk
+```
+
+Publish it as `Humdinger-<version>.apk` plus the same file as `Humdinger.apk` (the stable link `https://github.com/GenericJam/humdinger/releases/latest/download/Humdinger.apk`) and a `.sha256`.
 
 ## Design & source references
 

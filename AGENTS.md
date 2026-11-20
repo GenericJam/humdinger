@@ -1268,3 +1268,11 @@ real `adb shell input tap` (Mob.Test.tap skips the native path).
   --android --device <serial>`; restart with `mix mob.connect --no-iex
   --android-only --device <serial>`. Scripts over dist need
   `Node.set_cookie(MobDev.DistCookie.for_project!())`.
+- Release APK: README's "Releasing (Android APK)" (`mix mob.release
+  --android`, then `./gradlew assembleRelease`). It is signed with
+  `android/upload_jks.keystore` + `android/keystore.properties` (gitignored,
+  0600, only in the main checkout): the app's permanent signing identity.
+  Never print, copy into a worktree's commit, or regenerate them; bump
+  `versionCode` every release. Installing a release over a dev build (debug
+  key) fails until the dev build is uninstalled, which wipes the phone's
+  Humdinger data.
