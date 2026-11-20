@@ -412,9 +412,9 @@ below.
   handle `{:mob_share, :error, reason}` in `handle_info/2`). `print/2` is
   PDF-only and delegates synchronously to `MobPrint.pdf/2` (`config :humdinger,
   :print`, `Humdinger.Test.Print` in host tests), fine inside `start_async/3`.
-  `mob` (with `Mob.Share.file/3`), `mob_print`, and `mob_background` (with
-  `:microphone` mode) are currently pre-release local path dependencies in
-  `mix.exs` to be swapped for Hex versions once published.
+  Needs mob ≥ 0.9.31 (`Mob.Share.file/3`), mob_print 0.1 and mob_background
+  0.3 (`:microphone` mode); the app's `MobBridge.kt` carries `shareFile` from
+  mob_new 0.6.20.
 
 Verifying the Phrases part: the host tests (`test/humdinger/{phrase, tempo,
 phrases, notation, smf, music_xml, transcribe, export, pdf}_test.exs`,

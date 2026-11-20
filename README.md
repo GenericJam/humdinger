@@ -43,7 +43,7 @@ Pinned versions in [`.tool-versions`](.tool-versions):
    mise install
    ```
 
-2. Fetch Elixir dependencies (Hex packages locked in [`mix.lock`](mix.lock), pre-release local path checkouts for `mob`, `mob_print`, and `mob_background`, plus `mob_secure_store` pinned by commit from GitHub):
+2. Fetch Elixir dependencies (Hex packages locked in [`mix.lock`](mix.lock), plus `mob_secure_store` pinned by commit from GitHub):
 
    ```bash
    mise exec -- mix deps.get
