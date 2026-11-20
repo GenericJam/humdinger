@@ -8,13 +8,13 @@ Humdinger is a [Mob](https://hexdocs.pm/mob) mobile application (Elixir on the B
 
 ## Current features & platform support
 
-**Android-first** (`com.genericjam.humdinger`, `minSdk 28`, `compileSdk 35`, `targetSdk 35`, ABIs `arm64-v8a`, `armeabi-v7a`, `x86_64`, NDK `27.2.12479018`). Template files exist under [`ios/`](ios/), and pure Elixir/view code stays platform-neutral where cheap, but iOS is a later port: `mob.exs` registers `:hum_audio` for `archs: [:android]` only, the in-repo file-share plugin is an Android-only Kotlin + Zig NIF, and `config/config.exs` configures `Humdinger.Export.Android`.
+**Android-first** (`com.genericjam.humdinger`, `minSdk 28`, `compileSdk 35`, `targetSdk 35`, ABIs `arm64-v8a`, `armeabi-v7a`, `x86_64`, NDK `27.2.12479018`). Template files exist under [`ios/`](ios/), and pure Elixir/view code stays platform-neutral where cheap, but iOS is a later port: `mob.exs` registers `:hum_audio` for `archs: [:android]` only.
 
 - **Real-time voice-to-MIDI** (`c_src/hum_audio.c`, `c_src/pitch_yin.c`, `c_src/spectrum.c`, `Humdinger.Engine`, `Humdinger.Tracker`):
   - Live AAudio pitch detection (YIN, 60–1600 Hz, ~5.3 ms hop) and 128-bin log-spaced spectrum analysis.
   - Scale (snap with hysteresis) and Open (pitch-bend tracking) modes, configurable sensitivity gate, response time (`:fast` / `:balanced` / `:steady`), pitch-change mode (`:legato` / `:new_note`), stop behaviour (`:hold` / `:note_off`), velocity, CC 11, CC 1 vibrato, octave, transpose, and MIDI channel.
   - Portrait UI (`Humdinger.LiveScreen`, `Humdinger.SettingsSheet`, `Humdinger.SpectrumScreen`, `Humdinger.FirstRunScreen`) with the mascot **Mimi** (`Humdinger.Mimi`) and canvas views (`Humdinger.Views.*`).
-  - Android foreground microphone service (`Humdinger.Background` / `HumListenService.kt`) with ongoing notification controls (Pause, Resume, Record, Stop rec, Stop) so listening continues when another app is in front.
+  - Android foreground microphone service via `mob_background` (`MobBackground` in `:microphone` mode, `Humdinger.Engine.Notice`, `config :humdinger, :background`) with ongoing notification controls (Pause, Resume, Record, Stop rec, Stop; delivered as `{:mob_background, {:action, id}}`) so listening continues when another app is in front.
 - **MIDI output destinations** (`Humdinger.Output`, exclusive session arbitration to prevent stuck notes):
   - **FMutate** (`Humdinger.FMutate`, `Humdinger.PairScreen`): pairing over QR/link or Crockford code (SRP-6a, mDNS discovery, TLS 1.3 certificate pinning, `mob_secure_store` backed by Android Keystore) and MIDI over Erlang distribution. Same-phone background wake of FMutate via signature-permission service is not yet wired on FMutate's side.
   - **Humdinger virtual MIDI port** (`mob_midi` `~> 0.3.0`, `io.mob.midi.MobMidiDeviceService`): `"Humdinger"` output port declared via `mix mob_midi.gen.virtual_device` (`res/xml/mob_midi_device.xml`) that other Android apps can open.
@@ -24,7 +24,7 @@ Humdinger is a [Mob](https://hexdocs.pm/mob) mobile application (Elixir on the B
   - Browse and manage saved phrases (`Humdinger.PhrasesScreen`), inspect/edit on Piano roll or Staff tabs (`Humdinger.PhraseScreen`), and play phrases out to configured MIDI destinations (`Humdinger.Player`).
   - Preview a phrase on the phone as sampled piano (`Player` `mode: :piano`, `c_src/piano.c` mixed into an AAudio output stream in `c_src/hum_audio.c`), with a playhead and the sounding note highlighted on the roll and staff. Samples (`priv/piano/`, prepared by `scripts/prepare_piano.exs`) come from the University of Iowa Musical Instrument Samples; see [`priv/piano/LICENSE`](priv/piano/LICENSE).
   - Local SQLite persistence via `ecto_sqlite3` (`Humdinger.Repo`, migrations in [`priv/repo/migrations/`](priv/repo/migrations/)) plus crash-safe draft recovery (`Humdinger.PhraseDraft`).
-  - Export, share, and print Standard MIDI (`.mid`), MusicXML 4.0 (`.musicxml`), and engraved PDF sheet music (`Humdinger.Export`, `Humdinger.Smf`, `Humdinger.MusicXml`, `Humdinger.Export.Pdf`, `plugins/humdinger_file_share/`).
+  - Export, share, and print Standard MIDI (`.mid`), MusicXML 4.0 (`.musicxml`), and engraved PDF sheet music (`Humdinger.Export`, `Humdinger.Smf`, `Humdinger.MusicXml`, `Humdinger.Export.Pdf`): file sharing via `Mob.Share.file/3` (`{:mob_share, :error, reason}` setup errors) and PDF printing via `MobPrint.pdf/2` (`mob_print`).
 
 ## Toolchain & dev-only setup
 
@@ -124,11 +124,10 @@ agent-lease release <your-agent-name>
 - [`AGENTS.md`](AGENTS.md) — module contracts, architecture, measurement baselines, Mob screen rules, and verification procedures
 - [`CLAUDE.md`](CLAUDE.md) — pointer to `AGENTS.md`
 - [`mix.exs`](mix.exs) & [`mob.exs`](mob.exs) — dependencies, Mix aliases, static NIF declarations, and plugin trust config
-- [`config/config.exs`](config/config.exs) — Repo, Audio, and FileShare environment bindings
+- [`config/config.exs`](config/config.exs) — Repo, Audio, Share, Print, and Background environment bindings
 - [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — CI pipeline for host Elixir gates and C DSP harnesses
 - [`design/boards/`](design/boards/) & [`design/shots/`](design/shots/) — Claude Design HTML boards and rendered 390×844 reference artboards (`mimi-component.html`, `00-identity.html`–`12-import_audio.html`)
 - [`design/fmutate/protocol.md`](design/fmutate/protocol.md) & [`design/fmutate/HANDOFF.md`](design/fmutate/HANDOFF.md) — FMutate pairing, TLS distribution, and MIDI protocol specification
 - [`design/choir-coach-handoff.md`](design/choir-coach-handoff.md) — audio engine and pitch detector design notes ported from Choir Coach
 - [`c_src/`](c_src/) & [`c_src/test/`](c_src/test/) — native AAudio/YIN/spectrum/file-analysis C sources and host test harnesses
-- [`plugins/humdinger_file_share/`](plugins/humdinger_file_share/) — in-repo Android native plugin for exporting/printing files
 - [`priv/repo/migrations/`](priv/repo/migrations/) — SQLite schema migrations (`20260507000001_create_mob_screen_states.exs`, `20261112000001_create_phrases.exs`, `20261114000001_add_phrases_format.exs`)

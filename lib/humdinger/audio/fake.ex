@@ -20,9 +20,8 @@ defmodule Humdinger.Audio.Fake do
   older), two owners at once (`{:error, :busy}`), cancelled when the owner
   exits; `analysing?/1` tells whether one still runs.
 
-  The background service is recorded too: `background/0` shows what it
-  shows, `tap_background/1` presses a button. `play_piano/2` and
-  `cancel_piano/1` (always `:ok` in `Fake`) drive sampled-piano previews.
+  `play_piano/2` and `cancel_piano/1` (always `:ok` in `Fake`) drive
+  sampled-piano previews.
   """
 
   @behaviour Humdinger.Audio
@@ -59,19 +58,6 @@ defmodule Humdinger.Audio.Fake do
 
   @impl Humdinger.Audio
   def cancel_analysis(ref) when is_reference(ref), do: call({:cancel_analysis, ref})
-
-  @impl Humdinger.Audio
-  def background_start(owner, notice) when is_pid(owner),
-    do: call({:background_start, owner, notice})
-
-  @impl Humdinger.Audio
-  def background_update(notice), do: call({:background_update, notice})
-
-  @impl Humdinger.Audio
-  def background_stop, do: call(:background_stop)
-
-  @impl Humdinger.Audio
-  def background_running?, do: background() != nil
 
   @impl Humdinger.Audio
   @spec play_piano(pid(), [Humdinger.Player.note()]) :: {:ok, reference()} | {:error, term()}
@@ -137,16 +123,6 @@ defmodule Humdinger.Audio.Fake do
   @doc "Grant or deny the microphone permission: denied, `listen/2` answers `{:error, :permission}`."
   def set_permission(granted) when is_boolean(granted), do: call({:permission, granted})
 
-  @doc "`%{owner, notice}` while the background service runs, else nil."
-  def background, do: call(:background)
-
-  @doc """
-  Press a notification button: sends `{:background, action}` to the
-  owner. `{:error, :not_running}` when the service doesn't run.
-  """
-  def tap_background(action) when action in [:pause, :resume, :record, :record_stop, :stop],
-    do: call({:tap_background, action})
-
   @doc "Deliver `{:hum_audio, ref, {:piano_position, ms}}` to `ref`'s owner."
   def piano_position(ref, ms) when is_reference(ref) and is_number(ms) and ms >= 0,
     do: deliver(ref, {:piano_position, ms})
@@ -175,7 +151,7 @@ defmodule Humdinger.Audio.Fake do
   @doc "Force `play_piano/2` to fail with `reason`, or `nil` to clear."
   def set_piano_error(reason), do: call({:set_piano_error, reason})
 
-  @doc "Forget everything: no listener, permission granted, no service."
+  @doc "Forget everything: no listener, permission granted."
   def reset, do: call(:reset)
 
   # ── Server ───────────────────────────────────────────────────────────────
@@ -211,8 +187,6 @@ defmodule Humdinger.Audio.Fake do
       owners: %{},
       analyses: [],
       permission: true,
-      background: nil,
-      bg_monitor: nil,
       piano_ref: nil,
       piano_notes: nil,
       piano_monitor: nil,
@@ -281,37 +255,6 @@ defmodule Humdinger.Audio.Fake do
   def handle_call(:analyses, _from, s), do: {:reply, s.analyses, s}
   def handle_call({:permission, granted}, _from, s), do: {:reply, :ok, %{s | permission: granted}}
 
-  def handle_call({:background_start, _owner, _notice}, _from, %{permission: false} = s),
-    do: {:reply, {:error, :permission}, s}
-
-  def handle_call({:background_start, owner, notice}, _from, s) do
-    s = stop_background(s)
-
-    if Process.alive?(owner) do
-      bg = %{owner: owner, notice: notice}
-      {:reply, :ok, %{s | background: bg, bg_monitor: Process.monitor(owner)}}
-    else
-      {:reply, {:error, :owner_dead}, s}
-    end
-  end
-
-  def handle_call({:background_update, _notice}, _from, %{background: nil} = s),
-    do: {:reply, {:error, :not_running}, s}
-
-  def handle_call({:background_update, notice}, _from, s),
-    do: {:reply, :ok, put_in(s.background.notice, notice)}
-
-  def handle_call(:background_stop, _from, s), do: {:reply, :ok, stop_background(s)}
-  def handle_call(:background, _from, s), do: {:reply, s.background, s}
-
-  def handle_call({:tap_background, _action}, _from, %{background: nil} = s),
-    do: {:reply, {:error, :not_running}, s}
-
-  def handle_call({:tap_background, action}, _from, s) do
-    send(s.background.owner, {:background, action})
-    {:reply, :ok, s}
-  end
-
   def handle_call({:play_piano, owner, notes}, _from, s) do
     case validate_piano_notes(notes) do
       :ok ->
@@ -353,7 +296,7 @@ defmodule Humdinger.Audio.Fake do
     do: {:reply, :ok, %{s | piano_error: reason}}
 
   def handle_call(:reset, _from, s) do
-    _ = s |> stop_current() |> stop_background() |> stop_piano()
+    _ = s |> stop_current() |> stop_piano()
     Enum.each(s.running, fn {_ref, {_owner, m}} -> Process.demonitor(m, [:flush]) end)
     {:reply, :ok, fresh()}
   end
@@ -390,10 +333,6 @@ defmodule Humdinger.Audio.Fake do
   def handle_info({:DOWN, monitor, :process, _pid, _reason}, %{monitor: monitor} = s),
     do: {:noreply, stop_current(s)}
 
-  # The background service's owner died: the NIF stops the service.
-  def handle_info({:DOWN, monitor, :process, _pid, _reason}, %{bg_monitor: monitor} = s),
-    do: {:noreply, stop_background(s)}
-
   # The piano preview's owner died: the NIF stops playback.
   def handle_info({:DOWN, monitor, :process, _pid, _reason}, %{piano_monitor: monitor} = s),
     do: {:noreply, stop_piano(s)}
@@ -407,13 +346,6 @@ defmodule Humdinger.Audio.Fake do
   defp stop_current(s) do
     Process.demonitor(s.monitor, [:flush])
     %{s | current: nil, opts: nil, monitor: nil}
-  end
-
-  defp stop_background(%{bg_monitor: nil} = s), do: %{s | background: nil}
-
-  defp stop_background(s) do
-    Process.demonitor(s.bg_monitor, [:flush])
-    %{s | background: nil, bg_monitor: nil}
   end
 
   defp stop_piano(%{piano_monitor: nil} = s), do: %{s | piano_ref: nil, piano_notes: nil}

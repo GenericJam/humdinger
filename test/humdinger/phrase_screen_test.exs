@@ -5,7 +5,7 @@ defmodule Humdinger.PhraseScreenTest do
   import Humdinger.Test.Screens
 
   alias Humdinger.{LiveScreen, Notation, Phrase, Phrases, PhraseScreen, Repo, Scale, Style}
-  alias Humdinger.Test.{FakeOutput, Listener}
+  alias Humdinger.Test.{FakeOutput, Listener, Share}
   alias Humdinger.Views.{PianoRoll, Staff}
 
   defmodule FakePianoAudio do
@@ -53,7 +53,6 @@ defmodule Humdinger.PhraseScreenTest do
     FakePianoAudio.configure(self())
     Application.put_env(:humdinger, :audio, FakePianoAudio)
     Application.put_env(:humdinger, :output, FakeOutput)
-    Application.put_env(:humdinger, :file_share, Humdinger.Test.FileShare)
     dir = Path.join(System.tmp_dir!(), "humdinger-review-#{System.unique_integer([:positive])}")
     Application.put_env(:humdinger, :export_dir, dir)
 
@@ -65,7 +64,7 @@ defmodule Humdinger.PhraseScreenTest do
       FakePianoAudio.clear()
 
       Enum.each(
-        [:output, :file_share, :export_dir],
+        [:output, :export_dir],
         &Application.delete_env(:humdinger, &1)
       )
 
@@ -311,6 +310,15 @@ defmodule Humdinger.PhraseScreenTest do
     review() |> render_info({:tap, {:share, :mid}}) |> render_async()
     assert_receive {:share, path, "audio/midi", "New phrase"}
     assert Path.extname(path) == ".mid"
+  end
+
+  test "a share that fails comes back to the screen as a notice" do
+    Share.set_error(:no_app)
+    view = review() |> render_info({:tap, {:share, :mid}}) |> render_async()
+    # Mob.Share.file/3 sends setup errors to its caller: the screen process.
+    assert_receive {:mob_share, :error, :no_app} = error
+    view = render_info(view, error)
+    assert text_of(view, "notice") == "No app on this phone can take it."
   end
 
   test "the staff tab: clef, rhythm and note names drive the engraving and the exports" do

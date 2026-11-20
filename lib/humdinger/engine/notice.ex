@@ -1,6 +1,6 @@
 defmodule Humdinger.Engine.Notice do
   @moduledoc """
-  What the background notification shows (`Humdinger.Background`, the
+  What the background notification shows (`MobBackground`, the
   "Singing into FMutate" board), from the engine's state. Pure.
 
   | engine | title | text | buttons (`state`) |
@@ -14,11 +14,15 @@ defmodule Humdinger.Engine.Notice do
   The destination is the first one enabled and available
   (`Humdinger.Output.destinations/0`); with none the arrow part is left out
   (`A4 · ch 1`). A note held over a breath shows without cents.
+  `notification/1` turns a notice into the `MobBackground` notification map
+  with its three action buttons.
   """
 
   alias Humdinger.{Music, Tracker}
 
   @type t :: %{title: String.t(), text: String.t(), state: :listening | :paused | :recording}
+  @type action :: %{id: atom(), label: String.t()}
+  @type notification :: %{title: String.t(), text: String.t(), actions: [action()]}
 
   @doc """
   The notice for `status` (`Humdinger.Engine.status/0`), whether a take is
@@ -52,6 +56,15 @@ defmodule Humdinger.Engine.Notice do
   end
 
   @doc """
+  Turns a notice into the `MobBackground` notification map (`title`, `text`,
+  and the three action buttons for `state`).
+  """
+  @spec notification(t()) :: notification()
+  def notification(%{title: title, text: text, state: state}) do
+    %{title: title, text: text, actions: actions(state)}
+  end
+
+  @doc """
   Destination name for the notice: the first destination that is enabled and
   available, or nil.
   """
@@ -59,6 +72,20 @@ defmodule Humdinger.Engine.Notice do
           String.t() | nil
   def destination(destinations),
     do: Enum.find_value(destinations, fn d -> d.enabled and d.available and d.name end)
+
+  defp actions(state) do
+    [
+      if(state == :paused,
+        do: %{id: :resume, label: "Resume"},
+        else: %{id: :pause, label: "Pause"}
+      ),
+      if(state == :recording,
+        do: %{id: :record_stop, label: "Stop rec"},
+        else: %{id: :record, label: "Record"}
+      ),
+      %{id: :stop, label: "Stop"}
+    ]
+  end
 
   defp lead(%{note: nil}), do: "listening…"
   defp lead(%{note: note, cents: nil}), do: Music.note_name(note)

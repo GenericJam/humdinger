@@ -7,10 +7,10 @@
   default_font: nil,
   default_style: nil,
   lifecycle: [],
-  nifs: [:mob_midi_nif, :humdinger_file_share_nif, :mob_camera_nif,
+  nifs: [:mob_midi_nif, :mob_print_nif, :mob_background_nif, :mob_camera_nif,
    :mob_scanner_nif, :mob_secure_store_nif],
   notification_handlers: [],
-  plugins: [:mob_midi, :humdinger_file_share, :mob_camera, :mob_scanner,
+  plugins: [:mob_midi, :mob_print, :mob_background, :mob_camera, :mob_scanner,
    :mob_secure_store],
   screens: [
     %{

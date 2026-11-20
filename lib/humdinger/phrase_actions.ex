@@ -2,21 +2,35 @@ defmodule Humdinger.PhraseActions do
   @moduledoc """
   What the phrase screens (Phrases, Review, Import) do with a phrase
   besides editing it: hand an export to another app, print it, name where
-  "Play out" goes, and say what went wrong. Screens run `share/3` and
-  `print/2` in `Mob.Socket.start_async/3` (they write a file first).
+  "Play out" goes, and say what went wrong.
+
+  Screens write share files in `Mob.Socket.start_async/3` (`write_share/3`)
+  and open the share sheet from `handle_async/3` (`share/3`), so setup
+  failures from `Mob.Share.file/3` arrive at the screen process as
+  `{:mob_share, :error, reason}`. `print/2` writes the PDF and calls
+  `MobPrint.pdf/2` synchronously inside `start_async/3`.
   """
 
   alias Humdinger.{Export, Phrase}
 
   @doc """
   Writes the phrase as `kind` (`:mid`, `:musicxml`, `:pdf`; options as
-  `Humdinger.Export.render/3`) and opens the share sheet with it.
+  `Humdinger.Export.render/3`) and returns `{:ok, path, title}` for `share/3`.
   """
-  @spec share(Phrase.t(), Export.kind(), keyword()) :: :ok | {:error, term()}
-  def share(%Phrase{} = phrase, kind, opts \\ []) do
+  @spec write_share(Phrase.t(), Export.kind(), keyword()) ::
+          {:ok, Path.t(), String.t()} | {:error, File.posix()}
+  def write_share(%Phrase{} = phrase, kind, opts \\ []) do
     with {:ok, path} <- Export.write(phrase, kind, opts) do
-      Export.share(path, title: phrase.name)
+      {:ok, path, phrase.name}
     end
+  end
+
+  @doc """
+  Opens the share sheet for a written export from the screen process.
+  """
+  @spec share(Mob.Socket.t(), Path.t(), String.t()) :: Mob.Socket.t()
+  def share(socket, path, title) when is_binary(path) and is_binary(title) do
+    Export.share(socket, path, title: title)
   end
 
   @doc "Writes the phrase's sheet music as a PDF and opens the print dialog."

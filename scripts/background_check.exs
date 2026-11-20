@@ -1,5 +1,5 @@
-# Checks Humdinger.Background's lifecycle on a connected Android phone over
-# Erlang distribution: the races between start, update and stop, and that
+# Checks MobBackground's microphone-mode lifecycle on a connected Android phone
+# over Erlang distribution: the races between start, update and stop, and that
 # the service stops when its owner dies. Each check reads the notification
 # list (dumpsys) and watches the app's pid and logcat for a crash.
 #
@@ -28,13 +28,21 @@ on_phone = fn code ->
   value
 end
 
-# Our notification is posted (ours carry the id 4410).
+# MobBackground's notification carries id 9820.
 posted? = fn ->
   adb.(~w(shell dumpsys notification --noredact))
-  |> String.contains?("pkg=com.genericjam.humdinger user=UserHandle{0} id=4410")
+  |> String.contains?("pkg=com.genericjam.humdinger user=UserHandle{0} id=9820")
 end
 
-running? = fn -> :rpc.call(node, Humdinger.Background, :running?, []) end
+running? = fn -> match?({:running, :microphone}, :rpc.call(node, MobBackground, :status, [])) end
+
+start_bg = fn owner, text ->
+  :rpc.call(node, MobBackground, :start, [
+    owner,
+    [mode: :microphone, notification: %{title: "Humdinger · listening", text: text}]
+  ])
+end
+
 app_pid = pid_of_app.()
 since = String.trim(adb.(["shell", "date '+%m-%d %H:%M:%S.000'"]))
 results = :ets.new(:results, [:ordered_set, :public])
@@ -49,15 +57,15 @@ owner_code = """
 spawn(fn -> receive do :exit -> :ok end end)
 """
 
-:rpc.call(node, Humdinger.Background, :stop, [])
+:rpc.call(node, MobBackground, :stop, [])
 Process.sleep(1_000)
 
 # ── 1. Start then stop at once, before the service reaches startForeground ──
 owner = on_phone.(owner_code)
 
 for _ <- 1..20 do
-  :ok = :rpc.call(node, Humdinger.Background, :start, [owner, %{text: "start-stop"}])
-  :ok = :rpc.call(node, Humdinger.Background, :stop, [])
+  :ok = start_bg.(owner, "start-stop")
+  :ok = :rpc.call(node, MobBackground, :stop, [])
 end
 
 Process.sleep(1_500)
@@ -66,30 +74,33 @@ check.("20 × start then immediate stop: not running", running?.() == false)
 check.("20 × start then immediate stop: notification gone", not posted?.())
 
 # ── 2. start, stop, start in a row ends running and shown ──
-:ok = :rpc.call(node, Humdinger.Background, :start, [owner, %{text: "first"}])
-:ok = :rpc.call(node, Humdinger.Background, :stop, [])
-:ok = :rpc.call(node, Humdinger.Background, :start, [owner, %{text: "second"}])
+:ok = start_bg.(owner, "first")
+:ok = :rpc.call(node, MobBackground, :stop, [])
+:ok = start_bg.(owner, "second")
 Process.sleep(1_500)
 check.("start, stop, start: running", running?.() == true)
 check.("start, stop, start: notification shown", posted?.())
-:ok = :rpc.call(node, Humdinger.Background, :stop, [])
+:ok = :rpc.call(node, MobBackground, :stop, [])
 Process.sleep(1_000)
 check.("then stop: notification gone", not posted?.())
 
 # ── 3. Updates queued right before stop don't leave a notification behind ──
-:ok = :rpc.call(node, Humdinger.Background, :start, [owner, %{text: "updates"}])
+:ok = start_bg.(owner, "updates")
 Process.sleep(1_500)
 
 for i <- 1..30 do
-  :ok = :rpc.call(node, Humdinger.Background, :update, [%{text: "update #{i}"}])
+  :ok =
+    :rpc.call(node, MobBackground, :update, [
+      %{title: "Humdinger · listening", text: "update #{i}"}
+    ])
 end
 
-:ok = :rpc.call(node, Humdinger.Background, :stop, [])
+:ok = :rpc.call(node, MobBackground, :stop, [])
 Process.sleep(1_500)
 check.("30 updates then stop: notification gone", not posted?.())
 
 # ── 4. The owner dies: the service stops ──
-:ok = :rpc.call(node, Humdinger.Background, :start, [owner, %{text: "owner"}])
+:ok = start_bg.(owner, "owner")
 Process.sleep(1_500)
 check.("owner alive: running and shown", running?.() == true and posted?.())
 send(owner, :exit)
@@ -100,7 +111,7 @@ check.("owner died: notification gone", not posted?.())
 # ── 5. A dead owner can't start it ──
 check.(
   "dead owner: {:error, :owner_dead}",
-  :rpc.call(node, Humdinger.Background, :start, [owner, %{text: "dead"}]) == {:error, :owner_dead}
+  start_bg.(owner, "dead") == {:error, :owner_dead}
 )
 
 Process.sleep(500)

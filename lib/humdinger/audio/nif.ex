@@ -2,7 +2,7 @@ defmodule Humdinger.Audio.Nif do
   @moduledoc """
   The `hum_audio` NIF (`c_src/hum_audio.c`), statically linked into the
   Android app (`mob.exs`'s `:static_nifs`). Use it through
-  `Humdinger.Audio.Native` and `Humdinger.Background`.
+  `Humdinger.Audio.Native`.
 
   The NIF builds every message in its final shape (see `Humdinger.Audio`),
   so nothing on the BEAM side translates readings.
@@ -45,23 +45,6 @@ defmodule Humdinger.Audio.Nif do
   sends nothing more. `:ok`, also for an unknown or finished `ref`.
   """
   def cancel_analysis(_ref), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc """
-  Start (or update and retarget) the background service. `state` is
-  `:listening | :paused | :recording`. `:ok` or `{:error, :permission |
-  :refused | :unavailable | :owner_dead}`. `owner` is monitored: the
-  service stops when it exits.
-  """
-  def background_start(_owner, _title, _text, _state), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc "New notice for the running service. `:ok` or `{:error, :not_running}`."
-  def background_update(_title, _text, _state), do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc "Stop the background service. `:ok`."
-  def background_stop, do: :erlang.nif_error(:nif_not_loaded)
-
-  @doc "Whether the background service runs."
-  def background_running, do: :erlang.nif_error(:nif_not_loaded)
 
   @doc """
   Diagnostics: the input stream (`rate`, `burst`, `buffer`, `low_latency`,

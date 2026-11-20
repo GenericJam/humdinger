@@ -1,6 +1,6 @@
 /*
- * c_src/hum_audio.c — the microphone's pitch, level and spectrum, offline
- * analysis of audio files, and the background-listening service (Android).
+ * c_src/hum_audio.c — the microphone's pitch, level and spectrum, and offline
+ * analysis of audio files (Android).
  *
  *   input callback   AAudio microphone, low-latency mode, mono float
  *                    (VOICE_PERFORMANCE preset, VOICE_RECOGNITION before
@@ -28,33 +28,23 @@
  *   {hum_audio, Ref, {error, device_lost | input_error}}
  *   {hum_audio, Ref, {analysis, #{duration_ms, waveform, readings}}}
  *   {hum_audio, Ref, {analysis_error, Reason}}
- *   {background, Action}           notification buttons (see below)
  *
  * One listener at a time: listen/4 stops the previous one first, and its
  * reference goes stale. The owner is monitored; when it dies the microphone
  * stops.
  *
- * Background: background_start/4 starts the host package's
- * HumListenService (android/app/src/main/java/.../HumListenService.kt), a
- * foreground service of type microphone with an ongoing notification, so the
- * microphone keeps running while another app (FMutate) is in front. Its
- * buttons call HumListenBridge.nativeAction, registered here with RegisterNatives, which
- * sends {background, Action} to the process that started it. That process
- * is monitored: when it dies, the service stops.
- *
  * AAudio and libmediandk are opened with dlopen: the app links against
  * android-24 headers, where AAudio (API 26) doesn't exist, while the app's
  * minSdk is 28, so both libraries are always present at run time. Java
- * (AudioManager, permissions, the service) is reached through the JVM and
- * activity Mob's JNI glue exports.
+ * (AudioManager, permissions) is reached through the JVM and activity Mob's
+ * JNI glue exports.
  *
- * Locks, always taken in this order: lock → send_lock → bg_lock. `lock`
- * serialises the control path (open, start, stop and close the stream, join
- * the listen thread) and is never taken by callbacks; `send_lock` guards
- * the listener's owner and reference, so no message of a stopped listener
- * starts once stop has returned; `bg_lock` guards the background owner and
- * the service's Java handles. The stream is closed only once it is quiet
- * (stopped, no callback running).
+ * Locks, always taken in this order: lock → send_lock. `lock` serialises the
+ * control path (open, start, stop and close the stream, join the listen
+ * thread) and is never taken by callbacks; `send_lock` guards the listener's
+ * owner and reference, so no message of a stopped listener starts once stop
+ * has returned. The stream is closed only once it is quiet (stopped, no
+ * callback running).
  */
 
 #include <dlfcn.h>
@@ -110,8 +100,6 @@ extern jobject g_activity;
  * whichever is more) means the listen thread is behind: it skips to the
  * newest audio rather than deliver stale readings. */
 #define MAX_BACKLOG_MS 30
-
-#define SERVICE_CLASS "com.genericjam.humdinger.HumListenBridge"
 
 /* ── AAudio, declared by hand (see header comment) ───────────────────────── */
 
@@ -812,41 +800,6 @@ static ERL_NIF_TERM string_term(ErlNifEnv *env, JNIEnv *j, jstring s) {
     return enif_make_binary(env, &bin);
 }
 
-/* A UTF-8 binary as a Java string (UTF-16; invalid bytes become U+FFFD). */
-static jstring java_string(JNIEnv *j, const ErlNifBinary *b) {
-    jchar *u = malloc(sizeof(jchar) * (b->size * 2 + 1));
-    if (!u) return NULL;
-    size_t n = 0;
-    for (size_t i = 0; i < b->size;) {
-        unsigned char c = b->data[i];
-        uint32_t cp = 0xFFFD;
-        int len = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 0;
-        if (len == 0 || i + len > b->size) {
-            i++;
-        } else {
-            cp = len == 1 ? c : len == 2 ? c & 0x1F : len == 3 ? c & 0x0F : c & 0x07;
-            bool ok = true;
-            for (int k = 1; k < len; k++) {
-                unsigned char d = b->data[i + k];
-                if ((d >> 6) != 2) ok = false;
-                cp = (cp << 6) | (d & 0x3F);
-            }
-            i += ok ? (size_t)len : 1;
-            if (!ok || cp > 0x10FFFF) cp = 0xFFFD;
-        }
-        if (cp >= 0x10000) {
-            u[n++] = (jchar)(0xD800 + ((cp - 0x10000) >> 10));
-            u[n++] = (jchar)(0xDC00 + ((cp - 0x10000) & 0x3FF));
-        } else {
-            u[n++] = (jchar)cp;
-        }
-    }
-    jstring s = (*j)->NewString(j, u, (jsize)n);
-    free(u);
-    if (jni_failed(j)) return NULL;
-    return s;
-}
-
 /* AudioDeviceInfo.TYPE_* → kind for a microphone; NULL for the system's
  * internal routes (telephony, remote submix, echo reference, …). */
 static const char *input_kind(jint type) {
@@ -906,176 +859,6 @@ static ERL_NIF_TERM input_list(ErlNifEnv *env, JNIEnv *j) {
         (*j)->DeleteLocalRef(j, d);
     }
     return list;
-}
-
-/* ── The background service ──────────────────────────────────────────────── */
-
-static struct {
-    pthread_mutex_t lock;
-    jclass cls; /* global ref to HumListenBridge, or NULL until found */
-    jmethodID start, update, stop;
-    bool running;
-    ErlNifPid owner; /* where button taps go, while running */
-    /* Monitors `owner`: when it dies the service stops, so the notification
-     * never outlives the process its buttons talk to. `generation` bumps on
-     * every start and stop; a monitor of an older one says nothing. */
-    struct bg_watch *watch;
-    uint64_t generation;
-    /* The notice last handed to Java, to skip unchanged updates. */
-    ErlNifBinary title, text;
-    int state;
-} BG;
-
-enum { BG_LISTENING = 0, BG_PAUSED = 1, BG_RECORDING = 2 };
-
-typedef struct bg_watch {
-    uint64_t generation;
-} bg_watch;
-
-static ErlNifResourceType *bg_watch_type;
-
-/* Drop the owner's monitor (freeing the resource removes it). Caller holds BG.lock. */
-static void bg_forget_locked(void) {
-    BG.generation++;
-    if (BG.watch) {
-        enif_release_resource(BG.watch);
-        BG.watch = NULL;
-    }
-}
-
-/* Monitor `owner` instead of whoever was. False if it is already dead.
- * Caller holds BG.lock. */
-static bool bg_watch_locked(ErlNifEnv *env, const ErlNifPid *owner) {
-    bg_forget_locked();
-    bg_watch *w = enif_alloc_resource(bg_watch_type, sizeof(bg_watch));
-    if (!w) return false;
-    w->generation = BG.generation;
-    if (enif_monitor_process(env, w, owner, NULL) != 0) {
-        enif_release_resource(w);
-        return false;
-    }
-    BG.watch = w;
-    return true;
-}
-
-/* Stop the service (Java may be unreachable: `j` NULL) and forget the
- * owner. Caller holds BG.lock. */
-static void bg_stop_locked(JNIEnv *j) {
-    if (BG.cls && j) {
-        (*j)->CallStaticVoidMethod(j, BG.cls, BG.stop, g_activity);
-        jni_failed(j);
-    }
-    BG.running = false;
-    bg_forget_locked();
-}
-
-/* The owner died: stop the service, unless it was stopped or restarted
- * since. On a thread of its own: a down callback mustn't call into Java. */
-static void *bg_owner_down_main(void *arg) {
-    uint64_t generation = (uint64_t)(uintptr_t)arg;
-    bool attached = false;
-    JNIEnv *j = jni_env(&attached);
-    pthread_mutex_lock(&BG.lock);
-    if (BG.running && generation == BG.generation) {
-        LOGI("background owner died: service stopped");
-        bg_stop_locked(j);
-    }
-    pthread_mutex_unlock(&BG.lock);
-    if (j) jni_done(attached);
-    return NULL;
-}
-
-static void bg_owner_down(ErlNifEnv *env, void *obj, ErlNifPid *pid, ErlNifMonitor *mon) {
-    (void)env;
-    (void)pid;
-    (void)mon;
-    bg_watch *w = obj;
-    pthread_t t;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    if (pthread_create(&t, &attr, bg_owner_down_main, (void *)(uintptr_t)w->generation) != 0)
-        LOGE("background owner died, and no thread to stop the service");
-    pthread_attr_destroy(&attr);
-}
-
-/* HumListenBridge.nativeAction(action): a notification button. True if a
- * process was there to take it. */
-static jboolean JNICALL native_action(JNIEnv *j, jclass cls, jstring action) {
-    (void)cls;
-    char name[32] = {0};
-    jsize n = action ? (*j)->GetStringUTFLength(j, action) : 0;
-    if (n <= 0 || n >= (jsize)sizeof(name)) return JNI_FALSE;
-    (*j)->GetStringUTFRegion(j, action, 0, (*j)->GetStringLength(j, action), name);
-    if (jni_failed(j)) return JNI_FALSE;
-
-    jboolean delivered = JNI_FALSE;
-    pthread_mutex_lock(&BG.lock);
-    if (BG.running) {
-        ErlNifEnv *env = enif_alloc_env();
-        delivered = enif_send(NULL, &BG.owner, env, enif_make_tuple2(env, atom(env, "background"), atom(env, name)))
-                        ? JNI_TRUE
-                        : JNI_FALSE;
-        enif_free_env(env);
-        if (strcmp(name, "failed") == 0) {
-            BG.running = false;
-            bg_forget_locked();
-        }
-    }
-    pthread_mutex_unlock(&BG.lock);
-    return delivered;
-}
-
-/* Find HumListenBridge through the activity's class loader (FindClass on a
- * native thread only sees the system classes) and register nativeAction.
- * Caller holds BG.lock. */
-static bool bg_bind(JNIEnv *j) {
-    if (BG.cls) return true;
-    if (!g_activity) return false;
-    bool ok = false;
-    if ((*j)->PushLocalFrame(j, 16) != JNI_OK) return false;
-    jmethodID get_loader =
-        method(j, (*j)->GetObjectClass(j, g_activity), "getClassLoader", "()Ljava/lang/ClassLoader;");
-    jobject loader = get_loader ? (*j)->CallObjectMethod(j, g_activity, get_loader) : NULL;
-    if (jni_failed(j)) loader = NULL;
-    jmethodID load_class =
-        loader ? method(j, (*j)->GetObjectClass(j, loader), "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;")
-               : NULL;
-    jclass cls = load_class ? (jclass)(*j)->CallObjectMethod(j, loader, load_class, (*j)->NewStringUTF(j, SERVICE_CLASS))
-                            : NULL;
-    if (jni_failed(j)) cls = NULL;
-    if (cls) {
-        JNINativeMethod natives[] = {{"nativeAction", "(Ljava/lang/String;)Z", (void *)native_action}};
-        BG.start = (*j)->GetStaticMethodID(j, cls, "start",
-                                           "(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;I)Ljava/lang/String;");
-        if (jni_failed(j)) BG.start = NULL;
-        BG.update = (*j)->GetStaticMethodID(j, cls, "update", "(Ljava/lang/String;Ljava/lang/String;I)V");
-        if (jni_failed(j)) BG.update = NULL;
-        BG.stop = (*j)->GetStaticMethodID(j, cls, "stop", "(Landroid/content/Context;)V");
-        if (jni_failed(j)) BG.stop = NULL;
-        if (BG.start && BG.update && BG.stop && (*j)->RegisterNatives(j, cls, natives, 1) == 0 && !jni_failed(j)) {
-            BG.cls = (jclass)(*j)->NewGlobalRef(j, cls);
-            ok = BG.cls != NULL;
-        }
-    }
-    if (!ok) LOGE("background: %s not usable", SERVICE_CLASS);
-    (*j)->PopLocalFrame(j, NULL);
-    return ok;
-}
-
-static bool same_binary(const ErlNifBinary *a, const ErlNifBinary *b) {
-    return a->size == b->size && (a->size == 0 || memcmp(a->data, b->data, a->size) == 0);
-}
-
-/* Remember the notice handed to Java. Caller holds BG.lock. */
-static void bg_remember(const ErlNifBinary *title, const ErlNifBinary *text, int state) {
-    if (BG.title.data) enif_release_binary(&BG.title);
-    if (BG.text.data) enif_release_binary(&BG.text);
-    memset(&BG.title, 0, sizeof(BG.title));
-    memset(&BG.text, 0, sizeof(BG.text));
-    if (enif_alloc_binary(title->size, &BG.title)) memcpy(BG.title.data, title->data, title->size);
-    if (enif_alloc_binary(text->size, &BG.text)) memcpy(BG.text.data, text->data, text->size);
-    BG.state = state;
 }
 
 /* ── File analysis ───────────────────────────────────────────────────────── */
@@ -1698,114 +1481,6 @@ static ERL_NIF_TERM nif_cancel_analysis(ErlNifEnv *env, int argc, const ERL_NIF_
     pthread_mutex_unlock(&FJ.lock);
     free_job(dropped);
     return atom(env, "ok");
-}
-
-static bool get_notice(ErlNifEnv *env, const ERL_NIF_TERM argv[], ErlNifBinary *title, ErlNifBinary *text,
-                       int *state) {
-    char s[16];
-    if (!enif_inspect_binary(env, argv[0], title) || !enif_inspect_binary(env, argv[1], text) ||
-        !enif_get_atom(env, argv[2], s, sizeof(s), ERL_NIF_UTF8))
-        return false;
-    if (strcmp(s, "listening") == 0) *state = BG_LISTENING;
-    else if (strcmp(s, "paused") == 0) *state = BG_PAUSED;
-    else if (strcmp(s, "recording") == 0) *state = BG_RECORDING;
-    else return false;
-    return true;
-}
-
-/* background_start(Owner, Title, Text, State) -> ok | {error, Reason}.
- * Starts (or retargets and updates) the foreground service. Dirty IO. */
-static ERL_NIF_TERM nif_background_start(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
-    (void)argc;
-    ErlNifPid owner;
-    ErlNifBinary title, text;
-    int state;
-    if (!enif_get_local_pid(env, argv[0], &owner) || !get_notice(env, argv + 1, &title, &text, &state))
-        return enif_make_badarg(env);
-
-    bool attached;
-    JNIEnv *j = jni_env(&attached);
-    if (!j) return error_tuple(env, "unavailable");
-    ERL_NIF_TERM result = error_tuple(env, "unavailable");
-    pthread_mutex_lock(&BG.lock);
-    if (bg_bind(j) && (*j)->PushLocalFrame(j, 8) == JNI_OK) {
-        jstring jt = java_string(j, &title), jx = java_string(j, &text);
-        jstring err = jt && jx ? (jstring)(*j)->CallStaticObjectMethod(j, BG.cls, BG.start, g_activity, jt, jx, state)
-                               : NULL;
-        if (jni_failed(j) || !jt || !jx) {
-            result = error_tuple(env, "refused");
-        } else if (err) {
-            const char *e = (*j)->GetStringUTFChars(j, err, NULL);
-            result = error_tuple(env, e && strcmp(e, "permission") == 0 ? "permission" : "refused");
-            if (e) (*j)->ReleaseStringUTFChars(j, err, e);
-        } else {
-            BG.running = true;
-            BG.owner = owner;
-            bg_remember(&title, &text, state);
-            result = atom(env, "ok");
-            if (!bg_watch_locked(env, &owner)) {
-                /* The owner died meanwhile: nobody to take the buttons. */
-                bg_stop_locked(j);
-                result = error_tuple(env, "owner_dead");
-            }
-        }
-        (*j)->PopLocalFrame(j, NULL);
-    }
-    pthread_mutex_unlock(&BG.lock);
-    jni_done(attached);
-    return result;
-}
-
-/* background_update(Title, Text, State) -> ok | {error, not_running}. An
- * unchanged notice costs no Java call; the service limits posts to 4/s. */
-static ERL_NIF_TERM nif_background_update(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
-    (void)argc;
-    ErlNifBinary title, text;
-    int state;
-    if (!get_notice(env, argv, &title, &text, &state)) return enif_make_badarg(env);
-    pthread_mutex_lock(&BG.lock);
-    if (!BG.running) {
-        pthread_mutex_unlock(&BG.lock);
-        return error_tuple(env, "not_running");
-    }
-    if (state == BG.state && same_binary(&title, &BG.title) && same_binary(&text, &BG.text)) {
-        pthread_mutex_unlock(&BG.lock);
-        return atom(env, "ok");
-    }
-    bool attached;
-    JNIEnv *j = jni_env(&attached);
-    if (j && (*j)->PushLocalFrame(j, 8) == JNI_OK) {
-        jstring jt = java_string(j, &title), jx = java_string(j, &text);
-        if (jt && jx) (*j)->CallStaticVoidMethod(j, BG.cls, BG.update, jt, jx, state);
-        if (!jni_failed(j) && jt && jx) bg_remember(&title, &text, state);
-        (*j)->PopLocalFrame(j, NULL);
-    }
-    pthread_mutex_unlock(&BG.lock);
-    if (j) jni_done(attached);
-    return atom(env, "ok");
-}
-
-/* background_stop() -> ok. Dirty IO. */
-static ERL_NIF_TERM nif_background_stop(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
-    (void)argc;
-    (void)argv;
-    bool attached = false;
-    JNIEnv *j = jni_env(&attached);
-    pthread_mutex_lock(&BG.lock);
-    bg_stop_locked(j);
-    pthread_mutex_unlock(&BG.lock);
-    if (j) jni_done(attached);
-    return atom(env, "ok");
-}
-
-/* background_running() -> boolean. */
-static ERL_NIF_TERM nif_background_running(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
-    (void)argc;
-    (void)argv;
-    pthread_mutex_lock(&BG.lock);
-    bool running = BG.running;
-    pthread_mutex_unlock(&BG.lock);
-    return atom(env, running ? "true" : "false");
 }
 
 /* The lag below which `share` of the batches since listen were sent (the
@@ -2784,7 +2459,6 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     (void)info;
     pthread_mutex_init(&E.lock, NULL);
     pthread_mutex_init(&E.send_lock, NULL);
-    pthread_mutex_init(&BG.lock, NULL);
     pthread_mutex_init(&FJ.lock, NULL);
     pthread_mutex_init(&P.lock, NULL);
     pthread_mutex_init(&P.send_lock, NULL);
@@ -2795,9 +2469,6 @@ static int on_load(ErlNifEnv *env, void **priv, ERL_NIF_TERM info) {
     ErlNifResourceTypeInit init = {.dtor = NULL, .stop = NULL, .down = listener_down, .members = 3};
     listener_type = enif_init_resource_type(env, "hum_audio_listener", &init, ERL_NIF_RT_CREATE, NULL);
     if (!listener_type) return 1;
-    ErlNifResourceTypeInit bg_init = {.dtor = NULL, .stop = NULL, .down = bg_owner_down, .members = 3};
-    bg_watch_type = enif_init_resource_type(env, "hum_audio_background", &bg_init, ERL_NIF_RT_CREATE, NULL);
-    if (!bg_watch_type) return 1;
     ErlNifResourceTypeInit fj_init = {.dtor = NULL, .stop = NULL, .down = analysis_owner_down, .members = 3};
     analysis_watch_type = enif_init_resource_type(env, "hum_audio_analysis", &fj_init, ERL_NIF_RT_CREATE, NULL);
     if (!analysis_watch_type) return 1;
@@ -2818,10 +2489,6 @@ static ErlNifFunc nif_funcs[] = {
     {"inputs", 0, nif_inputs, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"analyze_file", 3, nif_analyze_file, 0},
     {"cancel_analysis", 1, nif_cancel_analysis, 0},
-    {"background_start", 4, nif_background_start, ERL_NIF_DIRTY_JOB_IO_BOUND},
-    {"background_update", 3, nif_background_update, ERL_NIF_DIRTY_JOB_IO_BOUND},
-    {"background_stop", 0, nif_background_stop, ERL_NIF_DIRTY_JOB_IO_BOUND},
-    {"background_running", 0, nif_background_running, 0},
     {"info", 0, nif_info, ERL_NIF_DIRTY_JOB_IO_BOUND},
     {"set_input_preset", 1, nif_set_input_preset, 0},
     {"play_piano", 4, nif_play_piano, ERL_NIF_DIRTY_JOB_IO_BOUND},

@@ -30,15 +30,15 @@ defmodule Humdinger.MixProject do
 
   defp deps do
     [
-      {:mob, "~> 0.9.27"},
+      {:mob, "~> 0.9.31"},
+      {:mob_print, "~> 0.1.0"},
+      {:mob_background, "~> 0.3.0"},
       {:mob_dev, "~> 0.7.31", only: :dev, runtime: false},
       # Resizes the icon master for `mix mob.icon` (scripts/render_icon.exs).
       {:image, "~> 0.54", only: :dev, runtime: false},
       {:ecto_sqlite3, "~> 0.18"},
       # Virtual MIDI port, USB-MIDI, and Bluetooth-MIDI (enumeration, hot-plug, BLE central).
       {:mob_midi, "~> 0.3.0"},
-      # Sharing and printing exported files (Android native, in this repo).
-      {:humdinger_file_share, path: "plugins/humdinger_file_share"},
       # Scanning FMutate's pairing QR code (mob_scanner needs mob_camera).
       {:mob_camera, "~> 0.1.15"},
       {:mob_scanner, "~> 0.1.8"},

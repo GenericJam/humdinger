@@ -15,7 +15,13 @@ config :humdinger, device_calls: config_env() != :test
 
 # The microphone: the hum_audio NIF on the phone, a scripted fake in host tests.
 config :humdinger,
-  audio: if(config_env() == :test, do: Humdinger.Audio.Fake, else: Humdinger.Audio.Native)
+  audio: if(config_env() == :test, do: Humdinger.Audio.Fake, else: Humdinger.Audio.Native),
+  # File sharing: Mob.Share on the phone, a reporting double in host tests.
+  share: if(config_env() == :test, do: Humdinger.Test.Share, else: Mob.Share),
+  # PDF printing: MobPrint on the phone, a reporting double in host tests.
+  print: if(config_env() == :test, do: Humdinger.Test.Print, else: MobPrint),
+  # Background microphone service: MobBackground on the phone, a fake in host tests.
+  background: if(config_env() == :test, do: Humdinger.Test.FakeBackground, else: MobBackground)
 
 # Humdinger's Android virtual MIDI device (read by mix mob_midi.gen.virtual_device).
 config :mob_midi, :virtual_device,
@@ -23,12 +29,6 @@ config :mob_midi, :virtual_device,
   inputs: 0,
   outputs: 1,
   manufacturer: "Humdinger"
-
-# Sharing and printing exports: the humdinger_file_share plugin on the phone.
-# Unset in host tests, where Export.share/print answer {:error, :unsupported}.
-if config_env() != :test do
-  config :humdinger, :file_share, Humdinger.Export.Android
-end
 
 if config_env() == :test do
   # Host tests use a fresh in-memory database each time the Repo starts.

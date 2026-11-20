@@ -78,7 +78,7 @@ pitch detector Humdinger's are ported from).
 | Phrases (saved) | `saved` | `Humdinger.PhrasesScreen` |
 | Review a phrase (piano roll / staff) | `record_review`, `sheet_music` | `Humdinger.PhraseScreen` |
 | Import audio → notes | `import_audio` | `Humdinger.ImportScreen` |
-| Singing into FMutate (background) | `fmutate_bg` | `Humdinger.Background` |
+| Singing into FMutate (background) | `fmutate_bg` | `MobBackground` + `Humdinger.Engine.Notice` |
 | Identity, Mimi | `identity`, `mimi` | `Humdinger.Mimi`, app icon |
 
 ## Architecture
@@ -138,24 +138,27 @@ first), `listening?/1`, `spectrum?/1`, `current/0`, `set_permission/1`,
 `reset/0` (one engine per VM: tests that listen are
 not `async`).
 
-**Background** (`Humdinger.Background`, Android `HumListenService`):
-listening on while FMutate is in front, as an ongoing notification (not an
-overlay). `start(owner \\ self(), notice) :: :ok | {:error, :permission |
-:refused | :unavailable}` (while the app is in the foreground),
-`update(notice) :: :ok | {:error, :not_running}` (call on every change;
-unchanged notices are free, the service posts ≤ 4/s), `stop/0`,
-`running?/0`. `notice = %{title, text, state: :listening | :paused |
-:recording}` (e.g. `%{title: "Humdinger · listening", text: "A4 −12¢ →
-FMutate A · ch 1"}`); `state` picks the buttons. Taps arrive at `owner` as
-`{:background, :pause | :resume | :record | :record_stop | :stop}`, or
-`{:background, :failed}` if Android refused the service after `start`.
-The buttons only report: the owner acts and then `update/1`s or `stop/0`s.
-The owner is monitored: when it exits the service stops (a dead owner
-gets `{:error, :owner_dead}`). `stop/0` right after `start` is safe: the
-service stops as soon as it has reached the foreground (stopping it before
-crashes the app on Android).
-Tests: `Fake.background/0` (`%{owner, notice} | nil`),
-`Fake.tap_background(action)`.
+**Background** (`MobBackground`, Android `io.mob.background.BeamForegroundService`;
+configured via `config :humdinger, :background`, default `MobBackground` and
+`Humdinger.Test.FakeBackground` in host tests): listening on while FMutate is
+in front, as an ongoing notification (not an overlay). `MobBackground.start(owner,
+mode: :microphone, notification: %{title, text, actions}) :: :ok | {:error,
+:permission | :refused | :unavailable | :owner_dead | :unsupported}` (while the
+app is in the foreground; max 3 actions), `update(notification) :: :ok | {:error,
+:not_running}` (unchanged notifications skip JNI; posts ≤ 4/s), `stop/0`,
+`status/0 :: :idle | {:running, mode} | {:error, term}`. `Humdinger.Engine.Notice`
+builds `%{title, text, state}` and `Notice.notification/1` maps `state`
+(`:listening | :paused | :recording`) to the three action buttons (`:pause` /
+`:resume`, `:record` / `:record_stop`, `:stop`). Taps arrive at `owner` as
+`{:mob_background, {:action, id}}`; async refusals/timeouts arrive as
+`{:mob_background, {:error, :foreground_refused | :timeout}}`. The buttons only
+report: the owner acts and then `update/1`s or `stop/0`s. The plugin monitors
+`owner` (stopping the service on exit), handles start→stop races, and contributes
+`FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE`, and its `<service>` to the
+merged manifest; the host declares `RECORD_AUDIO` and `POST_NOTIFICATIONS`.
+Tests: `FakeBackground.current/0` (`%{owner, mode, notification} | nil`),
+`FakeBackground.tap(id)`, `FakeBackground.refuse/0,1`,
+`FakeBackground.set_start_result/1`, `FakeBackground.reset/0`.
 
 **Tracker** (`Humdinger.Tracker`, pure): readings in, MIDI events out.
 `new(settings)`, `push(tracker, reading) :: {tracker, [event]}`,
@@ -220,9 +223,10 @@ fresh load so neither clobbers the other.
 
 **Engine** (`Humdinger.Engine`, GenServer under `Humdinger.Realtime`,
 after Output and before the root screen; starts `:off`, the Live screen
-calls `listen/0`): `start_link(audio:, output:, name:, max_take_ms:)`
-(defaults `Audio.impl/0`, i.e. the NIF on the phone and `Audio.Fake` in
-host tests; `config :humdinger, :output` or `Humdinger.Output`;
+calls `listen/0`): `start_link(audio:, output:, background:, name:,
+max_take_ms:)` (defaults `Audio.impl/0`, i.e. the NIF on the phone and
+`Audio.Fake` in host tests; `config :humdinger, :output` or
+`Humdinger.Output`; `config :humdinger, :background` or `MobBackground`;
 `Humdinger.Engine`; 10 min). Every call also takes the server as an
 optional first argument.
 `watch()` :: `{:ok, monitor} | {:error, :down}` (subscribe + monitor the
@@ -268,24 +272,25 @@ every 100 ms until it succeeds: Live puts the new engine back as it was
 (listening, or listening then paused), Spectrum turns its spectrum relay
 on again, First run just watches. A recording in progress is lost.
 
-The engine owns the background notification (`Humdinger.Background`,
-text from the pure `Engine.Notice`): every successful `listen/0`/`resume/0`
-(the app is in front: Android 14 only lets a foreground app start the
-service) starts it unless it runs; text "A4 −12¢ → FMutate A · ch 1" /
-"listening… → …" / "paused → …" (destination = the first enabled and
-available row of Output's `{:output, :destinations, list}`, which the
-engine subscribes to on its first listen; without one, "A4 −12¢ · ch 1"),
-titles "Humdinger · listening / recording / paused / no microphone",
-updated at most 4/s on change (title/buttons at once). Buttons: Pause,
-Resume (also after a mic error), Record, Stop rec (saves the take with
-`Phrase.from_take/2` + `Phrases.save/1`, default name, and sends
-`{:engine, :phrase_saved, phrase}`), Stop (= `stop/0`). A mic error keeps
+The engine owns the background notification (`MobBackground` in `:microphone`
+mode, via `config :humdinger, :background`; text and actions from the pure
+`Engine.Notice.build/5` and `Engine.Notice.notification/1`): every successful
+`listen/0`/`resume/0` (the app is in front: Android 14 only lets a foreground
+app start the service) starts it unless it runs; text "A4 −12¢ → FMutate A ·
+ch 1" / "listening… → …" / "paused → …" (destination = the first enabled and
+available row of Output's `{:output, :destinations, list}`, which the engine
+subscribes to on its first listen; without one, "A4 −12¢ · ch 1"), titles
+"Humdinger · listening / recording / paused / no microphone", updated at most
+4/s on change (title/buttons at once). Buttons arrive as `{:mob_background,
+{:action, id}}`: Pause, Resume (also after a mic error), Record, Stop rec
+(saves the take with `Phrase.from_take/2` + `Phrases.save/1`, default name, and
+sends `{:engine, :phrase_saved, phrase}`), Stop (= `stop/0`). A mic error keeps
 the service ("no microphone", Resume). If the service can't start, or
-`{:background, :failed}` arrives, the engine keeps listening in front and
-frames carry `background: {:error, reason}`; the next listen/resume tries
-again. On Android 13+ the notification needs the `:notifications`
-permission, which the engine can't detect (the service runs unseen):
-the Live screen requests it before the first `listen/0`.
+`{:mob_background, {:error, :foreground_refused | :timeout}}` arrives, the
+engine keeps listening in front and frames carry `background: {:error, reason}`;
+the next listen/resume tries again. On Android 13+ the notification needs the
+`:notifications` permission, which the engine can't detect (the service runs
+unseen): the Live screen requests it before the first `listen/0`.
 
 Verifying the Engine: host tests `test/humdinger/{engine,tracker,settings}_test.exs`,
 `test/humdinger/engine/` (`Audio.Fake` with `Humdinger.Test.FakeOutput`;
@@ -394,20 +399,22 @@ below.
 - `Export.render(phrase, :mid | :musicxml | :pdf, opts)`,
   `write(phrase, kind, opts) :: {:ok, path}` (into `Export.dir/0`: Android
   `cache/exports`, covered by the app's FileProvider `cache-path`),
-  `file_name/2`, `mime/1`, `share(path, title:)`, `print(path, title:)`.
+  `file_name/2`, `mime/1`, `share(socket, path, title:)`, `print(path, title:)`.
   The PDF is engraved in pure Elixir (`Humdinger.Export.Pdf`,
   `Humdinger.Pdf`, glyph outlines in `Humdinger.MusicGlyphs`, generated by
   `scripts/extract_music_glyphs.py` from `priv/fonts/NotoMusic-Regular.ttf`).
-  Mob 0.9 shares text only and can't print, so `share/2` and `print/2`
-  call the `Humdinger.Export.Native` module in `config :humdinger,
-  :file_share` (unset in test: `{:error, :unsupported}`). On the phone
-  that's `Humdinger.Export.Android`, over the in-repo plugin
-  `plugins/humdinger_file_share/` (unsigned, in
-  `:acknowledge_unsafe_plugins`; Android only): `HumdingerFileShareBridge.kt`
-  opens an `ACTION_SEND` chooser with the app FileProvider's URI (read
-  grant via `ClipData`) and `PrintManager.print` with an adapter copying the
-  PDF; errors `:not_found`, `:no_activity`, `:no_app`, `:failed`,
-  `:unsupported` off-device.
+  `share/3` delegates to `Mob.Share.file/3` (`config :humdinger, :share`,
+  `Humdinger.Test.Share` in host tests): fire-and-forget, returns `socket`, and
+  delivers setup failures (`:not_found`, `:no_activity`, `:no_app`, `:failed`,
+  `:unsupported`) to `self()` as `{:mob_share, :error, reason}`, so screens
+  write the file in `start_async/3` (`PhraseActions.write_share/3`) and call
+  `PhraseActions.share/3` from `handle_async/3` in the screen process (and
+  handle `{:mob_share, :error, reason}` in `handle_info/2`). `print/2` is
+  PDF-only and delegates synchronously to `MobPrint.pdf/2` (`config :humdinger,
+  :print`, `Humdinger.Test.Print` in host tests), fine inside `start_async/3`.
+  Needs mob ≥ 0.9.31 (`Mob.Share.file/3`), mob_print 0.1 and mob_background
+  0.3 (`:microphone` mode); the app's `MobBridge.kt` carries `shareFile` from
+  mob_new 0.6.20.
 
 Verifying the Phrases part: the host tests (`test/humdinger/{phrase, tempo,
 phrases, notation, smf, music_xml, transcribe, export, pdf}_test.exs`,
@@ -874,20 +881,18 @@ only), `ERL_NIF_INIT(Elixir.Humdinger.Audio.Nif, …)`. It includes
   remove their temporary files. Checked through the real Android Downloads
   picker on the moto g power 2021: a three-tone WAV reaches Import's ready
   state with A4, C5 and E5, then opens Review.
-- **Background.** `HumListenService` (host package,
-  `android/app/src/main/java/com/genericjam/humdinger/HumListenService.kt`)
-  is a foreground service of type microphone; `HumListenBridge` is its JNI
-  face. The NIF finds the bridge through the activity's class loader and
-  registers `nativeAction` with `RegisterNatives`, which sends
-  `{:background, action}`. Without the service Android silences a
-  backgrounded app's microphone as soon as the app goes idle (about a
-  minute; `adb shell am make-uid-idle com.genericjam.humdinger` does it at
-  once): readings keep coming, all at −90 dB. A backgrounded app can't open
-  a new microphone stream either (`listen/2` → `:microphone_unavailable`)
-  unless the service runs; with it, `listen/2` works from the background.
+- **Background.** Provided by the `mob_background` plugin
+  (`io.mob.background.BeamForegroundService`, `mode: :microphone`), which
+  delivers notification button taps as `{:mob_background, {:action, id}}`.
+  Without the service Android silences a backgrounded app's microphone as soon
+  as the app goes idle (about a minute; `adb shell am make-uid-idle
+  com.genericjam.humdinger` does it at once): readings keep coming, all at
+  −90 dB. A backgrounded app can't open a new microphone stream either
+  (`listen/2` → `:microphone_unavailable`) unless the service runs; with it,
+  `listen/2` works from the background.
 - **Locks.** `lock` (control path: open/start/stop/close, join) → `send_lock`
-  (the listener's owner and ref) → `BG.lock` (the service). A stream is
-  closed only once it is quiet; one that won't stop is left open, harmless.
+  (the listener's owner and ref). A stream is closed only once it is quiet;
+  one that won't stop is left open, harmless.
 
 Measured on the moto g power 2021 (Android 11), `scripts/audio_check.exs`:
 188 readings/s, 1.85 per message, message interval p50 9.8 ms; from the
@@ -1149,8 +1154,8 @@ own rounding.
   Edit as a phrase / Sheet music push Review with `Phrase.from_take/2`.
 
 Verifying: `mix test test/humdinger/{player,phrases_screen,phrase_screen,
-import_screen}_test.exs` (`Humdinger.Test.FakeOutput` and
-`Humdinger.Test.FileShare` report to the test through `config :humdinger,
+import_screen}_test.exs` (`Humdinger.Test.FakeOutput`, `Humdinger.Test.Share`
+and `Humdinger.Test.Print` report to the test through `config :humdinger,
 :test_listener` (`Humdinger.Test.Listener`), file analysis goes through
 `Audio.Fake`; the database helper is `test/support/test_repo.ex`). On the phone, over dist:
 `Humdinger.Phrases.save/1` a phrase, `Mob.Test.navigate(node,
