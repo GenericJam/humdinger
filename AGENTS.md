@@ -1266,8 +1266,9 @@ real `adb shell input tap` (Mob.Test.tap skips the native path).
   `mix credo --strict`, `mix test`.
 - Security scan: `mix mob.security_scan.log --project-root .`, then commit
   `SECURITY_SCAN.md`, `SECURITY_HISTORY.md` and `.security_scan/state.json`.
-  Without `--project-root .` every path is absolute (this checkout's, with
-  the username), so the next run from another checkout diffs as all new.
+  Without `--project-root .` file paths are absolute (this checkout's, with
+  the username), so a run from another checkout reports every file-level
+  finding as resolved and new again.
 - Devices are shared with other agents: lease first (`agent-lease acquire
   <name> --serial <serial>`), release when done (see `~/AGENTS.md`).
 - Android: `mix mob.deploy --native --android --device <serial>` after
