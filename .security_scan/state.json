@@ -1,7 +1,7 @@
 {
   "findings": [
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": "3.5.10",
       "id": "CVE-2026-107493",
       "key": "CVE-2026-107493|openssl|3.5.9",
@@ -14,7 +14,7 @@
       "version": "3.5.9"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": "3.5.10",
       "id": "CVE-2026-107496",
       "key": "CVE-2026-107496|openssl|3.5.9",
@@ -27,7 +27,7 @@
       "version": "3.5.9"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": "3.5.10",
       "id": "CVE-2026-124709",
       "key": "CVE-2026-124709|openssl|3.5.9",
@@ -40,7 +40,7 @@
       "version": "3.5.9"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": "3.5.10",
       "id": "CVE-2026-35190",
       "key": "CVE-2026-35190|openssl|3.5.9",
@@ -53,7 +53,7 @@
       "version": "3.5.9"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": "3.5.10",
       "id": "CVE-2026-88822",
       "key": "CVE-2026-88822|openssl|3.5.9",
@@ -66,7 +66,7 @@
       "version": "3.5.9"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": "3.5.10",
       "id": "CVE-2026-88823",
       "key": "CVE-2026-88823|openssl|3.5.9",
@@ -79,7 +79,7 @@
       "version": "3.5.9"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": "3.5.10",
       "id": "CVE-2026-95691",
       "key": "CVE-2026-95691|openssl|3.5.9",
@@ -92,7 +92,7 @@
       "version": "3.5.9"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": "3.5.10",
       "id": "CVE-2026-95692",
       "key": "CVE-2026-95692|openssl|3.5.9",
@@ -105,7 +105,7 @@
       "version": "3.5.9"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "MOB-DRIFT-ios_device-elixir",
       "key": "MOB-DRIFT-ios_device-elixir|mob/otp-tarball|ios_device@5c9c69fc",
@@ -118,7 +118,7 @@
       "version": "ios_device@5c9c69fc"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "MOB-DRIFT-ios_device-elixir",
       "key": "MOB-DRIFT-ios_device-elixir|mob/otp-tarball|ios_device@d199a49a",
@@ -131,7 +131,7 @@
       "version": "ios_device@d199a49a"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "MOB-DRIFT-ios_sim-elixir",
       "key": "MOB-DRIFT-ios_sim-elixir|mob/otp-tarball|ios_sim@5c9c69fc",
@@ -144,7 +144,7 @@
       "version": "ios_sim@5c9c69fc"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "MOB-DRIFT-ios_sim-elixir",
       "key": "MOB-DRIFT-ios_sim-elixir|mob/otp-tarball|ios_sim@d199a49a",
@@ -157,12 +157,12 @@
       "version": "ios_sim@d199a49a"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 1195",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 1195",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: Make sure destination can always hold the source data.,,CWE-120,\"            memcpy(enif_make_new_binary(env, a.n_wave, …",
@@ -170,12 +170,12 @@
       "version": "line 1195"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 1397",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 1397",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: Make sure destination can always hold the source data.,,CWE-120,\"    memcpy(p, path.data, path.size);\",b1cfee2fb6bdea55a…",
@@ -183,12 +183,12 @@
       "version": "line 1397"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 1574",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 1574",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -196,12 +196,12 @@
       "version": "line 1574"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 1775",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 1775",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -209,12 +209,12 @@
       "version": "line 1775"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 2284",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 2284",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -222,12 +222,12 @@
       "version": "line 2284"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 2285",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 2285",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: Make sure destination can always hold the source data.,,CWE-120,\"    memcpy(dir, dir_bin.data, dir_bin.size);\",9a9c3252d…",
@@ -235,12 +235,12 @@
       "version": "line 2285"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 556",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 556",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: Make sure destination can always hold the source data.,,CWE-120,\"    memcpy(enif_make_new_binary(env, SPEC_BINS, &bin), …",
@@ -248,12 +248,12 @@
       "version": "line 556"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 614",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 614",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  CWE-20).\",,,\"CWE-120, CWE-20\",        if (written - read > max_backlog) {,8d3c09489761ab00ba0d7925bbdccf5aa9d06042c18b3…",
@@ -261,12 +261,12 @@
       "version": "line 614"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 619",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 619",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  CWE-20).\",,,\"CWE-120, CWE-20\",\"            atomic_fetch_add(&E.skipped, to - read);\",5d450be6ac5cf04aac6c5df00662b4a07f…",
@@ -274,12 +274,12 @@
       "version": "line 619"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 623",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 623",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  CWE-20).\",,,\"CWE-120, CWE-20\",        while (written - read >= hop) {,714aaa706e31d2e1bdd4151bc652cdbbd723391044f4deacb…",
@@ -287,12 +287,12 @@
       "version": "line 623"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 633",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 633",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  CWE-20).\",,,\"CWE-120, CWE-20\",\"                if (b.count >= 2) send_batch(generation, &b, read);\",f95f87d23df47ce2eb9…",
@@ -300,12 +300,12 @@
       "version": "line 633"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 637",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 637",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  CWE-20).\",,,\"CWE-120, CWE-20\",            if (atomic_load(&E.spectrum_on) && read >= sp->n && read >= next_column && wr…",
@@ -313,12 +313,12 @@
       "version": "line 637"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 637",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 637",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  CWE-20).\",,,\"CWE-120, CWE-20\",            if (atomic_load(&E.spectrum_on) && read >= sp->n && read >= next_column && wr…",
@@ -326,12 +326,12 @@
       "version": "line 637"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 637",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 637",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  CWE-20).\",,,\"CWE-120, CWE-20\",            if (atomic_load(&E.spectrum_on) && read >= sp->n && read >= next_column && wr…",
@@ -339,12 +339,12 @@
       "version": "line 637"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 644",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 644",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  CWE-20).\",,,\"CWE-120, CWE-20\",                next_column = next_column + spectrum_every > read ? next_column + spectru…",
@@ -352,12 +352,12 @@
       "version": "line 644"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 648",
+      "key": "flawfinder/buffer|./c_src/hum_audio.c|line 648",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  CWE-20).\",,,\"CWE-120, CWE-20\",\"        if (b.count == 1 && now_ns() - b.first_at_ns >= BATCH_WAIT_NS) send_batch(genera…",
@@ -365,12 +365,12 @@
       "version": "line 648"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/piano.c|line 217",
+      "key": "flawfinder/buffer|./c_src/piano.c|line 217",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/piano.c",
+      "package": "./c_src/piano.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: Make sure destination can always hold the source data.,,CWE-120,\"    memcpy(copy, notes, (size_t)note_count * sizeof(pia…",
@@ -378,12 +378,12 @@
       "version": "line 217"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/pitch_yin.c|line 199",
+      "key": "flawfinder/buffer|./c_src/pitch_yin.c|line 199",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/pitch_yin.c",
+      "package": "./c_src/pitch_yin.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: Make sure destination can always hold the source data.,,CWE-120,\"    memcpy(p->frame, p->buf + p->buf_pos, sizeof(float)…",
@@ -391,12 +391,12 @@
       "version": "line 199"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/pitch_yin.c|line 200",
+      "key": "flawfinder/buffer|./c_src/pitch_yin.c|line 200",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/pitch_yin.c",
+      "package": "./c_src/pitch_yin.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: Make sure destination can always hold the source data.,,CWE-120,\"    memcpy(p->frame + head, p->buf, sizeof(float) * (si…",
@@ -404,12 +404,12 @@
       "version": "line 200"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/spectrum.c|line 235",
+      "key": "flawfinder/buffer|./c_src/spectrum.c|line 235",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/spectrum.c",
+      "package": "./c_src/spectrum.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: Make sure destination can always hold the source data.,,CWE-120,\"    memcpy(s->re, s->xw, sizeof(float) * (size_t)n);\",a…",
@@ -417,12 +417,12 @@
       "version": "line 235"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/test/piano_host.c|line 77",
+      "key": "flawfinder/buffer|./c_src/test/piano_host.c|line 77",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/test/piano_host.c",
+      "package": "./c_src/test/piano_host.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -430,12 +430,12 @@
       "version": "line 77"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/test/piano_host.c|line 79",
+      "key": "flawfinder/buffer|./c_src/test/piano_host.c|line 79",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/test/piano_host.c",
+      "package": "./c_src/test/piano_host.c",
       "severity": "high",
       "source": "flawfinder",
       "title": "buffer: Check that the limit is sufficiently small, or use a different input function.\",,CWE-120,\"    while (scanf(\"\"%31s\"\", cmd…",
@@ -443,12 +443,12 @@
       "version": "line 79"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/test/piano_host.c|line 85",
+      "key": "flawfinder/buffer|./c_src/test/piano_host.c|line 85",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/test/piano_host.c",
+      "package": "./c_src/test/piano_host.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -456,12 +456,12 @@
       "version": "line 85"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/test/piano_host.c|line 88",
+      "key": "flawfinder/buffer|./c_src/test/piano_host.c|line 88",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/test/piano_host.c",
+      "package": "./c_src/test/piano_host.c",
       "severity": "high",
       "source": "flawfinder",
       "title": "buffer: Check that the limit is sufficiently small, or use a different input function.\",,CWE-120,\"            if (scanf(\"\"%15s\"\"…",
@@ -469,12 +469,12 @@
       "version": "line 88"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/c_src/test/piano_host.c|line 90",
+      "key": "flawfinder/buffer|./c_src/test/piano_host.c|line 90",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/test/piano_host.c",
+      "package": "./c_src/test/piano_host.c",
       "severity": "high",
       "source": "flawfinder",
       "title": "buffer: Check that the limit is sufficiently small, or use a different input function.\",,CWE-120,\"                if (scanf(\"\"%1…",
@@ -482,12 +482,12 @@
       "version": "line 90"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c|line 1273",
+      "key": "flawfinder/buffer|./deps/exqlite/c_src/sqlite3_nif.c|line 1273",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c",
+      "package": "./deps/exqlite/c_src/sqlite3_nif.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: ,,CWE-126,\"        columns[i] = make_binary(env, name, strlen(name));\",1b2a47a800cc0d4f67c1b836d0713704ee62f0be2cac39212…",
@@ -495,12 +495,12 @@
       "version": "line 1273"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c|line 1438",
+      "key": "flawfinder/buffer|./deps/exqlite/c_src/sqlite3_nif.c|line 1438",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c",
+      "package": "./deps/exqlite/c_src/sqlite3_nif.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: Make sure destination can always hold the source data.,,CWE-120,\"    memcpy(buffer, serialized.data, size);\",3657a6a3c1c…",
@@ -508,12 +508,12 @@
       "version": "line 1438"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c|line 1802",
+      "key": "flawfinder/buffer|./deps/exqlite/c_src/sqlite3_nif.c|line 1802",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c",
+      "package": "./deps/exqlite/c_src/sqlite3_nif.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: ,,CWE-126,\"    ERL_NIF_TERM database = make_binary(msg_env, sqlite_database, strlen(sqlite_database));\",076d6c957f14361c…",
@@ -521,12 +521,12 @@
       "version": "line 1802"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c|line 1803",
+      "key": "flawfinder/buffer|./deps/exqlite/c_src/sqlite3_nif.c|line 1803",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c",
+      "package": "./deps/exqlite/c_src/sqlite3_nif.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: ,,CWE-126,\"    ERL_NIF_TERM table    = make_binary(msg_env, sqlite_table, strlen(sqlite_table));\",016f3e4f2c64ca16f71551…",
@@ -534,12 +534,12 @@
       "version": "line 1803"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c|line 1869",
+      "key": "flawfinder/buffer|./deps/exqlite/c_src/sqlite3_nif.c|line 1869",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c",
+      "package": "./deps/exqlite/c_src/sqlite3_nif.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -547,12 +547,12 @@
       "version": "line 1869"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c|line 2053",
+      "key": "flawfinder/buffer|./deps/exqlite/c_src/sqlite3_nif.c|line 2053",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c",
+      "package": "./deps/exqlite/c_src/sqlite3_nif.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: ,,CWE-126,\"    ERL_NIF_TERM error = make_binary(msg_env, zMsg, strlen(zMsg));\",b205045ec6312101015771f14aa5be5502a8c31a3…",
@@ -560,12 +560,12 @@
       "version": "line 2053"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c|line 224",
+      "key": "flawfinder/buffer|./deps/exqlite/c_src/sqlite3_nif.c|line 224",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c",
+      "package": "./deps/exqlite/c_src/sqlite3_nif.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: Make sure destination can always hold the source data.,,CWE-120,\"    memcpy(blob.data, bytes, size);\",3e6f67d676a83083c2…",
@@ -573,12 +573,12 @@
       "version": "line 224"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c|line 2270",
+      "key": "flawfinder/buffer|./deps/exqlite/c_src/sqlite3_nif.c|line 2270",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c",
+      "package": "./deps/exqlite/c_src/sqlite3_nif.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: ,,CWE-126,\"    return make_binary(env, msg, strlen(msg));\",594dc28b7097d494202190ed21d0599a84036877a1489778fe73ea5e26332…",
@@ -586,12 +586,12 @@
       "version": "line 2270"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c|line 2282",
+      "key": "flawfinder/buffer|./deps/exqlite/c_src/sqlite3_nif.c|line 2282",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c",
+      "package": "./deps/exqlite/c_src/sqlite3_nif.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: ,,CWE-126,\"    return make_binary(env, msg, strlen(msg));\",594dc28b7097d494202190ed21d0599a84036877a1489778fe73ea5e26332…",
@@ -599,12 +599,12 @@
       "version": "line 2282"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c|line 235",
+      "key": "flawfinder/buffer|./deps/exqlite/c_src/sqlite3_nif.c|line 235",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/exqlite/c_src/sqlite3_nif.c",
+      "package": "./deps/exqlite/c_src/sqlite3_nif.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: ,,CWE-126,    size_t len      = strlen(msg);,3cac19b5161ef7ea1c1d1be281e9d33fb3ab94f5e8bab458660285bf99715cd5,2.0.20,FF1…",
@@ -612,12 +612,12 @@
       "version": "line 235"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_code_versions.h|line 104",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_code_versions.h|line 104",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_code_versions.h",
+      "package": "./deps/mob/ios/mob_code_versions.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -625,12 +625,12 @@
       "version": "line 104"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_code_versions.h|line 143",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_code_versions.h|line 143",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_code_versions.h",
+      "package": "./deps/mob/ios/mob_code_versions.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -638,12 +638,12 @@
       "version": "line 143"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_code_versions.h|line 144",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_code_versions.h|line 144",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_code_versions.h",
+      "package": "./deps/mob/ios/mob_code_versions.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -651,12 +651,12 @@
       "version": "line 144"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_code_versions.h|line 160",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_code_versions.h|line 160",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_code_versions.h",
+      "package": "./deps/mob/ios/mob_code_versions.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -664,12 +664,12 @@
       "version": "line 160"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_code_versions.h|line 198",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_code_versions.h|line 198",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_code_versions.h",
+      "package": "./deps/mob/ios/mob_code_versions.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -677,12 +677,12 @@
       "version": "line 198"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_cookie.h|line 45",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_dist_cookie.h|line 45",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_cookie.h",
+      "package": "./deps/mob/ios/mob_dist_cookie.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -690,12 +690,12 @@
       "version": "line 45"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_cookie.h|line 60",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_dist_cookie.h|line 60",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_cookie.h",
+      "package": "./deps/mob/ios/mob_dist_cookie.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: Make sure destination can always hold the source data.,,CWE-120,\"    memcpy(out, buf, MOB_DIST_COOKIE_HEX_LEN);\",2dd6101…",
@@ -703,12 +703,12 @@
       "version": "line 60"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_cookie.h|line 71",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_dist_cookie.h|line 71",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_cookie.h",
+      "package": "./deps/mob/ios/mob_dist_cookie.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: ,,CWE-126,        size_t len = strlen(env_cookie);,0a72f2f28a52d5dcffa3c7c31b6dacdc0c532f574418731b49b49bf8223e2b94,2.0.…",
@@ -716,12 +716,12 @@
       "version": "line 71"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_cookie.h|line 73",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_dist_cookie.h|line 73",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_cookie.h",
+      "package": "./deps/mob/ios/mob_dist_cookie.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: Make sure destination can always hold the source data.,,CWE-120,\"            memcpy(out, env_cookie, len + 1);\",52d23db1…",
@@ -729,12 +729,12 @@
       "version": "line 73"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_cookie.h|line 79",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_dist_cookie.h|line 79",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_cookie.h",
+      "package": "./deps/mob/ios/mob_dist_cookie.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -742,12 +742,12 @@
       "version": "line 79"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_cookie.h|line 86",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_dist_cookie.h|line 86",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_cookie.h",
+      "package": "./deps/mob/ios/mob_dist_cookie.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -755,12 +755,12 @@
       "version": "line 86"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_port.h|line 65",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_dist_port.h|line 65",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_port.h",
+      "package": "./deps/mob/ios/mob_dist_port.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -768,12 +768,12 @@
       "version": "line 65"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_erts_dir.h|line 69",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_erts_dir.h|line 69",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_erts_dir.h",
+      "package": "./deps/mob/ios/mob_erts_dir.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: ,,CWE-126,        size_t n = strlen(e->d_name);,54cf20230fbf516e4b0299d262bc75fd322a9f2373fb8853ef01ec67b3199d7c,2.0.20,…",
@@ -781,12 +781,12 @@
       "version": "line 69"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_erts_dir.h|line 76",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_erts_dir.h|line 76",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_erts_dir.h",
+      "package": "./deps/mob/ios/mob_erts_dir.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -794,12 +794,12 @@
       "version": "line 76"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_erts_dir.h|line 81",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_erts_dir.h|line 81",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_erts_dir.h",
+      "package": "./deps/mob/ios/mob_erts_dir.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: Make sure destination can always hold the source data.,,CWE-120,\"        memcpy(out, e->d_name, n + 1);\",4a6fdc54c833e77…",
@@ -807,12 +807,12 @@
       "version": "line 81"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_init_args.h|line 29",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_init_args.h|line 29",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_init_args.h",
+      "package": "./deps/mob/ios/mob_init_args.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -820,12 +820,12 @@
       "version": "line 29"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_init_args.h|line 30",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_init_args.h|line 30",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_init_args.h",
+      "package": "./deps/mob/ios/mob_init_args.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -833,12 +833,12 @@
       "version": "line 30"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_node_host.h|line 100",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_node_host.h|line 100",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_node_host.h",
+      "package": "./deps/mob/ios/mob_node_host.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer: ,Risk is low because the source is a constant string.,CWE-120,\"    strncpy(buf, \"\"127.0.0.1\"\", len - 1);\",3696664b938df6…",
@@ -846,12 +846,12 @@
       "version": "line 100"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/buffer",
-      "key": "flawfinder/buffer|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_stored_queue.h|line 26",
+      "key": "flawfinder/buffer|./deps/mob/ios/mob_stored_queue.h|line 26",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_stored_queue.h",
+      "package": "./deps/mob/ios/mob_stored_queue.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "buffer:  leading to potential overflows or other issues (CWE-119!/CWE-120).\",\"Perform bounds checking, use functions that limit …",
@@ -859,12 +859,12 @@
       "version": "line 26"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/format",
-      "key": "flawfinder/format|/Users/kevin/code/humdinger-sec-audit/c_src/test/spectrum_host.c|line 93",
+      "key": "flawfinder/format|./c_src/test/spectrum_host.c|line 93",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/test/spectrum_host.c",
+      "package": "./c_src/test/spectrum_host.c",
       "severity": "high",
       "source": "flawfinder",
       "title": "format:  they can be exploited (CWE-134).\",Use a constant for the format specification.,,CWE-134,\"    printf(failed ? \"\"FAILED\\n…",
@@ -872,12 +872,12 @@
       "version": "line 93"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/integer",
-      "key": "flawfinder/integer|/Users/kevin/code/humdinger-sec-audit/c_src/test/pitch_host.c|line 188",
+      "key": "flawfinder/integer|./c_src/test/pitch_host.c|line 188",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/test/pitch_host.c",
+      "package": "./c_src/test/pitch_host.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "integer:  the resulting number can exceed the expected range (CWE-190).\",\"If source untrusted, check both minimum and maximum, ev…",
@@ -885,12 +885,12 @@
       "version": "line 188"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/misc",
-      "key": "flawfinder/misc|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 1034",
+      "key": "flawfinder/misc|./c_src/hum_audio.c|line 1034",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "misc:  force the opening of special file type (e.g., device files), move things around to create a race condition, control its…",
@@ -898,12 +898,12 @@
       "version": "line 1034"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/misc",
-      "key": "flawfinder/misc|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 1690",
+      "key": "flawfinder/misc|./c_src/hum_audio.c|line 1690",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "misc:  force the opening of special file type (e.g., device files), move things around to create a race condition, control its…",
@@ -911,12 +911,12 @@
       "version": "line 1690"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/misc",
-      "key": "flawfinder/misc|/Users/kevin/code/humdinger-sec-audit/c_src/test/piano_host.c|line 41",
+      "key": "flawfinder/misc|./c_src/test/piano_host.c|line 41",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/test/piano_host.c",
+      "package": "./c_src/test/piano_host.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "misc:  force the opening of special file type (e.g., device files), move things around to create a race condition, control its…",
@@ -924,12 +924,12 @@
       "version": "line 41"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/misc",
-      "key": "flawfinder/misc|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_cookie.h|line 42",
+      "key": "flawfinder/misc|./deps/mob/ios/mob_dist_cookie.h|line 42",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_dist_cookie.h",
+      "package": "./deps/mob/ios/mob_dist_cookie.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "misc:  force the opening of special file type (e.g., device files), move things around to create a race condition, control its…",
@@ -937,12 +937,12 @@
       "version": "line 42"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/misc",
-      "key": "flawfinder/misc|/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_init_args.h|line 86",
+      "key": "flawfinder/misc|./deps/mob/ios/mob_init_args.h|line 86",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/deps/mob/ios/mob_init_args.h",
+      "package": "./deps/mob/ios/mob_init_args.h",
       "severity": "low",
       "source": "flawfinder",
       "title": "misc:  force the opening of special file type (e.g., device files), move things around to create a race condition, control its…",
@@ -950,12 +950,12 @@
       "version": "line 86"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/obsolete",
-      "key": "flawfinder/obsolete|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 2157",
+      "key": "flawfinder/obsolete|./c_src/hum_audio.c|line 2157",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "obsolete:  alarm(), setitimer(), and nanosleep() is unspecified (CWE-676).\",Use nanosleep(2) or setitimer(2) instead.,,CWE-676,   …",
@@ -963,12 +963,12 @@
       "version": "line 2157"
     },
     {
-      "first_seen_at": "2026-11-20T23:10:21.474300Z",
+      "first_seen_at": "2026-11-20T23:24:09.751843Z",
       "fixed_in": null,
       "id": "flawfinder/obsolete",
-      "key": "flawfinder/obsolete|/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c|line 649",
+      "key": "flawfinder/obsolete|./c_src/hum_audio.c|line 649",
       "layer": "c_source",
-      "package": "/Users/kevin/code/humdinger-sec-audit/c_src/hum_audio.c",
+      "package": "./c_src/hum_audio.c",
       "severity": "low",
       "source": "flawfinder",
       "title": "obsolete:  alarm(), setitimer(), and nanosleep() is unspecified (CWE-676).\",Use nanosleep(2) or setitimer(2) instead.,,CWE-676,   …",
@@ -976,6 +976,6 @@
       "version": "line 649"
     }
   ],
-  "last_run_at": "2026-11-20T23:10:21.474300Z",
+  "last_run_at": "2026-11-20T23:24:09.751843Z",
   "version": 1
 }

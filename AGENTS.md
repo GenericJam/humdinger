@@ -1264,6 +1264,10 @@ real `adb shell input tap` (Mob.Test.tap skips the native path).
   toolchain (zig 0.17.0; a dev build earlier on the PATH fails the native build).
 - Gate before every commit: `mix format`, `mix compile --warnings-as-errors`,
   `mix credo --strict`, `mix test`.
+- Security scan: `mix mob.security_scan.log --project-root .`, then commit
+  `SECURITY_SCAN.md`, `SECURITY_HISTORY.md` and `.security_scan/state.json`.
+  Without `--project-root .` every path is absolute (this checkout's, with
+  the username), so the next run from another checkout diffs as all new.
 - Devices are shared with other agents: lease first (`agent-lease acquire
   <name> --serial <serial>`), release when done (see `~/AGENTS.md`).
 - Android: `mix mob.deploy --native --android --device <serial>` after
