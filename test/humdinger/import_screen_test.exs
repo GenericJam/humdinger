@@ -20,6 +20,10 @@ defmodule Humdinger.ImportScreenTest do
     Application.put_env(:humdinger, :output, FakeOutput)
     dir = Path.join(System.tmp_dir!(), "humdinger-import-#{System.unique_integer([:positive])}")
     Application.put_env(:humdinger, :export_dir, dir)
+    # Picked files are real copies, like Mob.Files.pick/2's, so their removal shows.
+    picks = Path.join(dir, "picked")
+    File.mkdir_p!(picks)
+    Process.put(:picks, picks)
 
     on_exit(fn ->
       Application.put_env(:humdinger, :audio, audio)
@@ -52,11 +56,16 @@ defmodule Humdinger.ImportScreenTest do
     %{duration_ms: @duration, waveform: waveform, readings: readings}
   end
 
-  defp item(name \\ "voice-memo.m4a", mime \\ "audio/mp4"),
-    do: %{path: "/tmp/" <> name, name: name, mime: mime, size: 1024}
+  defp picked(name), do: Path.join(Process.get(:picks), name)
 
-  # The reference of the newest `analyze_file/3` call (for `path`).
-  defp analysis_ref(path \\ "/tmp/voice-memo.m4a") do
+  defp item(name \\ "voice-memo.m4a", mime \\ "audio/mp4") do
+    File.write!(picked(name), "audio")
+    %{path: picked(name), name: name, mime: mime, size: 5}
+  end
+
+  # The reference of the newest `analyze_file/3` call (for the file `name`).
+  defp analysis_ref(name \\ "voice-memo.m4a") do
+    path = picked(name)
     assert [{ref, ^path} | _] = Fake.analyses()
     ref
   end
@@ -110,7 +119,7 @@ defmodule Humdinger.ImportScreenTest do
     view = ImportScreen |> mount_screen() |> render_info({:files, :picked, [item()]})
     first = analysis_ref()
     view = render_info(view, {:files, :picked, [item("other.mp3", "audio/mpeg")]})
-    second = analysis_ref("/tmp/other.mp3")
+    second = analysis_ref("other.mp3")
     refute Fake.analysing?(first)
     assert Fake.analysing?(second)
     assert assigns(view).ref == second
@@ -126,6 +135,56 @@ defmodule Humdinger.ImportScreenTest do
     ref = analysis_ref()
     ImportScreen.terminate(:shutdown, view.socket)
     refute Fake.analysing?(ref)
+  end
+
+  test "the picked copy is deleted once the decoder is done with it, unused ones at once" do
+    memo = picked("voice-memo.m4a")
+
+    # Kept while it is decoded, gone when the analysis arrives.
+    view = ImportScreen |> mount_screen() |> render_info({:files, :picked, [item()]})
+    assert File.exists?(memo)
+    view = analysed(view, analysis_ref())
+    assert assigns(view).stage == :ready
+    refute File.exists?(memo)
+
+    # Gone after a decoding error.
+    view = render_info(view, {:files, :picked, [item()]})
+    ref = analysis_ref()
+    :ok = Fake.analysis_error(ref, :not_supported)
+    assert_receive {:hum_audio, ^ref, {:analysis_error, :not_supported}} = message
+    assert {:error, _} = assigns(render_info(view, message)).stage
+    refute File.exists?(memo)
+
+    # Another file replaces a running analysis: the first copy goes, the second stays.
+    view = ImportScreen |> mount_screen() |> render_info({:files, :picked, [item()]})
+    view = render_info(view, {:files, :picked, [item("other.mp3", "audio/mpeg")]})
+    refute File.exists?(memo)
+    assert File.exists?(picked("other.mp3"))
+
+    # Back and terminate during an analysis.
+    render_info(view, {:tap, :back})
+    refute File.exists?(picked("other.mp3"))
+    view = ImportScreen |> mount_screen() |> render_info({:files, :picked, [item()]})
+    ImportScreen.terminate(:shutdown, view.socket)
+    refute File.exists?(memo)
+
+    # Only the first audio file of a pick is used; the rest go at once.
+    picks = [item("notes.pdf", "application/pdf"), item(), item("second.wav", "audio/wav")]
+    view = ImportScreen |> mount_screen() |> render_info({:files, :picked, picks})
+    assert assigns(view).stage == :analysing
+    assert File.exists?(memo)
+    refute File.exists?(picked("notes.pdf"))
+    refute File.exists?(picked("second.wav"))
+
+    # Nothing usable, or no engine to decode it: nothing kept.
+    view = render_info(view, {:files, :picked, [item("a.pdf", "application/pdf")]})
+    assert assigns(view).notice == "That isn't an audio file."
+    refute File.exists?(picked("a.pdf"))
+
+    Application.put_env(:humdinger, :audio, Humdinger.NoSuchEngine)
+    view = ImportScreen |> mount_screen() |> render_info({:files, :picked, [item("x.m4a")]})
+    assert {:error, _} = assigns(view).stage
+    refute File.exists?(picked("x.m4a"))
   end
 
   test "the result says what it heard, with the clear chip and the notes" do

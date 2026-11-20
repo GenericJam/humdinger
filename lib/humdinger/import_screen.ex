@@ -24,6 +24,12 @@ defmodule Humdinger.ImportScreen do
   - `{:error, text}` — the file couldn't be read (or this build has no
     audio engine); "Other file" tries again.
 
+  `Mob.Files.pick/2` hands over a copy of the file in the app's cache that
+  nothing else deletes: the screen removes it once the decoder is done with
+  it (the analysis or its error arrived, it was cancelled, or it never
+  started), and removes at once the copies it doesn't use (more than one
+  file picked, not audio).
+
   Actions: Edit as a phrase (`Humdinger.Phrase.from_take/2` →
   `Humdinger.PhraseScreen`), Export .mid (the share sheet), Sheet music (the
   review on its Staff tab), Play out (`Humdinger.Player`; stop while
@@ -459,7 +465,10 @@ defmodule Humdinger.ImportScreen do
     do: {:noreply, Mob.Socket.assign(socket, :notice, PhraseActions.error_text({:exit, reason}))}
 
   @impl true
-  def terminate(_reason, socket), do: cancel_analysis(socket)
+  def terminate(_reason, socket) do
+    cancel_analysis(socket)
+    discard_file(socket)
+  end
 
   @impl true
   def handle_info({:press_out, :held}, socket), do: {:noreply, socket}
@@ -470,7 +479,7 @@ defmodule Humdinger.ImportScreen do
   def handle_info({:tap, :back}, socket) do
     stop(socket)
     cancel_analysis(socket)
-    {:noreply, Mob.Socket.pop_screen(socket)}
+    {:noreply, socket |> discard_file() |> Mob.Socket.pop_screen()}
   end
 
   def handle_info({:tap, :pick}, socket) do
@@ -480,8 +489,13 @@ defmodule Humdinger.ImportScreen do
 
   def handle_info({:files, :picked, items}, socket) do
     case Mob.Files.accept(items, [:audio]) do
-      [%{path: path, name: name} | _] -> {:noreply, analyse(socket, path, name)}
-      [] -> {:noreply, Mob.Socket.assign(socket, :notice, "That isn't an audio file.")}
+      [%{path: path, name: name} | _] ->
+        discard_unused(items, path)
+        {:noreply, analyse(socket, path, name)}
+
+      [] ->
+        discard_unused(items, nil)
+        {:noreply, Mob.Socket.assign(socket, :notice, "That isn't an audio file.")}
     end
   end
 
@@ -495,11 +509,13 @@ defmodule Humdinger.ImportScreen do
         last_scale: :detected
       )
 
-    {:noreply, transcribe(socket)}
+    {:noreply, socket |> discard_file() |> transcribe()}
   end
 
-  def handle_info({:hum_audio, ref, {:analysis_error, reason}}, %{assigns: %{ref: ref}} = socket),
-    do: {:noreply, Mob.Socket.assign(socket, stage: {:error, error_text(reason)}, ref: nil)}
+  def handle_info({:hum_audio, ref, {:analysis_error, reason}}, %{assigns: %{ref: ref}} = socket) do
+    socket = Mob.Socket.assign(socket, stage: {:error, error_text(reason)}, ref: nil)
+    {:noreply, discard_file(socket)}
+  end
 
   def handle_info(_msg, %{assigns: %{stage: stage}} = socket) when stage != :ready,
     do: {:noreply, socket}
@@ -617,7 +633,9 @@ defmodule Humdinger.ImportScreen do
     cancel_analysis(socket)
 
     base =
-      Mob.Socket.assign(socket,
+      socket
+      |> discard_file()
+      |> Mob.Socket.assign(
         file: %{path: path, name: name},
         analysis: nil,
         take: nil,
@@ -627,8 +645,11 @@ defmodule Humdinger.ImportScreen do
       )
 
     case start_analysis(path) do
-      {:ok, ref} -> Mob.Socket.assign(base, stage: :analysing, ref: ref)
-      {:error, reason} -> Mob.Socket.assign(base, stage: {:error, error_text(reason)}, ref: nil)
+      {:ok, ref} ->
+        Mob.Socket.assign(base, stage: :analysing, ref: ref)
+
+      {:error, reason} ->
+        base |> Mob.Socket.assign(stage: {:error, error_text(reason)}, ref: nil) |> discard_file()
     end
   end
 
@@ -740,4 +761,18 @@ defmodule Humdinger.ImportScreen do
   end
 
   defp cancel_analysis(_socket), do: :ok
+
+  # The picked copy (see the moduledoc) goes once the decoder no longer needs
+  # it. A cancelled decoder may still have it open: unlinking is safe then.
+  defp discard_file(%{assigns: %{file: %{path: path} = file}} = socket) when is_binary(path) do
+    _ = File.rm(path)
+    Mob.Socket.assign(socket, :file, %{file | path: nil})
+  end
+
+  defp discard_file(socket), do: socket
+
+  defp discard_unused(items, keep) do
+    for %{path: path} when is_binary(path) and path != keep <- items, do: File.rm(path)
+    :ok
+  end
 end
