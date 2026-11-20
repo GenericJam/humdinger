@@ -146,3 +146,7 @@ Publish it as `Humdinger-<version>.apk` plus the same file as `Humdinger.apk` (t
 - [`design/choir-coach-handoff.md`](design/choir-coach-handoff.md) — audio engine and pitch detector design notes ported from Choir Coach
 - [`c_src/`](c_src/) & [`c_src/test/`](c_src/test/) — native AAudio/YIN/spectrum/file-analysis C sources and host test harnesses
 - [`priv/repo/migrations/`](priv/repo/migrations/) — SQLite schema migrations (`20260507000001_create_mob_screen_states.exs`, `20261112000001_create_phrases.exs`, `20261114000001_add_phrases_format.exs`)
+
+## Licence
+
+Humdinger's own code is licensed under the **MIT License** ([LICENSE](LICENSE)), copyright (c) 2026 GenericJam. Bundled fonts (SIL OFL 1.1), piano samples, the Erlang/OTP and Elixir runtime, Mob and the Android and Hex dependencies keep their own licences; [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists what ships in the APK and under which terms.
