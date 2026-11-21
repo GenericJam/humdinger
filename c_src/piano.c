@@ -1,6 +1,6 @@
 /*
- * c_src/piano.c — the built-in piano's renderer: plain C, no Android, no
- * BEAM. hum_audio.c includes it (the NIF renders and plays a phrase with
+ * c_src/piano.c — the built-in piano's renderer: plain C, no platform API, no
+ * BEAM. hum_io.c includes it (the "hum_piano" processor renders a phrase with
  * it); c_src/test/piano_host.c builds it on the Mac for the host tests.
  *
  * A bank is a handful of recorded piano notes (mono, 16-bit, one rate). A

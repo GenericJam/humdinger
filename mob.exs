@@ -38,10 +38,11 @@ config :mob_dev,
   # Mob.Scene (not released yet, mob#184): keep false until then.
   multi_window: false,
 
-  # The audio engine: c_src/hum_audio.c (AAudio microphone, YIN pitch,
-  # spectrum, file analysis), linked into the app as a static NIF. Android
-  # only for now.
-  static_nifs: [%{module: :hum_audio, archs: [:android]}]
+  # The audio engine's DSP: c_src/hum_audio.c (YIN pitch, spectrum, file
+  # analysis, the sampled piano), linked into the app as a static NIF. It is
+  # plain C over mob_audio_io's C ABI (the plugin owns the streams), so it
+  # builds for both platforms.
+  static_nifs: [%{module: :hum_audio, archs: [:all]}]
 
 # Activated capability plugins (the packages added in mix.exs). Each contributes
 # its native code, permissions, and any demo screens at build time. Drop a name
@@ -57,20 +58,24 @@ config :mob_dev,
 # needs mob_camera, which owns the :camera permission).
 # mob_secure_store: the FMutate pairing (cookie, client key) in the Android
 # Keystore / iOS Keychain.
+# mob_audio_io: the audio streams (microphone, the piano's output), input
+# devices and file decoding under c_src/hum_audio.c's processors.
 config :mob, :plugins, [
   :mob_midi,
   :mob_print,
   :mob_background,
   :mob_camera,
   :mob_scanner,
-  :mob_secure_store
+  :mob_secure_store,
+  :mob_audio_io
 ]
 
-# mob_secure_store isn't released yet, so its checkout carries no signature
-# for the trust gate below. It is a git dependency pinned to a commit (mix.lock)
-# of the same first-party repo; once it is on Hex, drop it from this list and
-# add it to :trusted_plugins with the shared release key like the others.
-config :mob, :acknowledge_unsafe_plugins, [:mob_secure_store]
+# mob_secure_store and mob_audio_io aren't released yet, so their checkouts
+# carry no signature for the trust gate below. Each is a git dependency
+# pinned to a commit (mix.lock) of a first-party repo; once one is on Hex,
+# drop it from this list and add it to :trusted_plugins with the shared
+# release key like the others.
+config :mob, :acknowledge_unsafe_plugins, [:mob_secure_store, :mob_audio_io]
 
 # Trust gate for the first-party plugins. Each is signed in CI with the shared
 # mob release key; this is that key's public fingerprint. The build refuses an

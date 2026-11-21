@@ -76,3 +76,17 @@ jobs:
         run: |
           cc -O2 -o /tmp/spectrum_host c_src/test/spectrum_host.c -lm
           /tmp/spectrum_host
+
+      # hum_io.c includes the plugin's header from deps/ (MOB-541): fetch the
+      # commit mix.lock pins without the Elixir toolchain.
+      - name: Check out mob_audio_io at mix.lock's commit
+        run: |
+          ref=$(grep -o '"mob_audio_io": {:git, "[^"]*", "[0-9a-f]\{40\}"' mix.lock | grep -o '[0-9a-f]\{40\}')
+          git clone -q https://github.com/GenericJam/mob_audio_io deps/mob_audio_io
+          git -C deps/mob_audio_io checkout -q "$ref"
+
+      - name: Build and run hum_io_host (the mob_audio_io processors, ASan + UBSan)
+        run: |
+          cc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined \
+            -o /tmp/hum_io_host c_src/test/hum_io_host.c -lm -lpthread
+          /tmp/hum_io_host priv/piano
