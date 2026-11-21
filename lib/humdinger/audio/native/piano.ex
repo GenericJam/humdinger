@@ -43,7 +43,7 @@ defmodule Humdinger.Audio.Native.Piano do
   def close do
     case GenServer.whereis(__MODULE__) do
       nil -> :ok
-      pid -> call(pid, :close)
+      pid -> close_with(pid, :close)
     end
   end
 
@@ -52,7 +52,24 @@ defmodule Humdinger.Audio.Native.Piano do
   def close(ref) do
     case GenServer.whereis(__MODULE__) do
       nil -> :ok
-      pid -> call(pid, {:close, ref})
+      pid -> close_with(pid, {:close, ref})
+    end
+  end
+
+  # A closing relay replies, then exits: wait for the exit, so the name is
+  # free for the next preview once this returns.
+  defp close_with(pid, request) do
+    monitor = Process.monitor(pid)
+
+    case call(pid, request) do
+      :closed ->
+        receive do
+          {:DOWN, ^monitor, :process, _, _} -> :ok
+        end
+
+      _ ->
+        Process.demonitor(monitor, [:flush])
+        :ok
     end
   end
 
@@ -90,10 +107,10 @@ defmodule Humdinger.Audio.Native.Piano do
   end
 
   @impl GenServer
-  def handle_call(:close, _from, state), do: {:stop, :normal, :ok, finish(state)}
+  def handle_call(:close, _from, state), do: {:stop, :normal, :closed, finish(state)}
 
   def handle_call({:close, ref}, _from, %{ref: ref} = state),
-    do: {:stop, :normal, :ok, finish(state)}
+    do: {:stop, :normal, :closed, finish(state)}
 
   def handle_call({:close, _stale}, _from, state), do: {:reply, :ok, state}
 

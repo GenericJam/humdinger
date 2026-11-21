@@ -11,6 +11,12 @@ defmodule Humdinger.Test.FakeAudioNif do
   An analysis is an Agent counting the frames pushed; it finishes as
   `%{duration_ms, waveform: <<>>, readings: []}`.
 
+  Like the NIF, `listen/3` refuses with `{:error, :microphone_unavailable}`
+  while a `"hum_mic"` stream is open in `MobAudioIo.Fake` (after stopping
+  the old listener), and `piano_prepare/2` with `{:error, :busy}` while a
+  `"hum_piano"` one is: the order `Humdinger.Audio.Native` closes and arms
+  in is what keeps those from happening.
+
   State is global: `async: false` tests, `reset/0` in `setup`.
   """
 
@@ -33,9 +39,16 @@ defmodule Humdinger.Test.FakeAudioNif do
   def listener, do: get(& &1.listener)
 
   def listen(owner, ref, spectrum) do
+    open? = open?("hum_mic")
+
     Agent.get_and_update(name(), fn s ->
       s = record(s, {:listen, owner, ref, spectrum})
-      {s.listen, if(s.listen == :ok, do: %{s | listener: ref}, else: s)}
+
+      cond do
+        open? -> {{:error, :microphone_unavailable}, %{s | listener: nil}}
+        s.listen == :ok -> {:ok, %{s | listener: ref}}
+        true -> {s.listen, s}
+      end
     end)
   end
 
@@ -70,8 +83,13 @@ defmodule Humdinger.Test.FakeAudioNif do
   end
 
   def piano_prepare(notes, dir) do
-    Agent.get_and_update(name(), fn s -> {s.prepare, record(s, {:piano_prepare, notes, dir})} end)
+    result = if open?("hum_piano"), do: {:error, :busy}, else: get(& &1.prepare)
+    update(&record(&1, {:piano_prepare, notes, dir}))
+    result
   end
+
+  defp open?(processor),
+    do: Enum.any?(MobAudioIo.Fake.status().streams, &(&1.processor == processor))
 
   def piano_position do
     Agent.get_and_update(name(), fn
