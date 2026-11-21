@@ -796,9 +796,9 @@ left with no owner).
 
 ## The audio engine
 
-The streams belong to the `mob_audio_io` plugin (a git dependency pinned
-to main's commit until 0.1.0 is on Hex: then `{:mob_audio_io, "~> 0.1"}`
-and its trust entry in `mob.exs`); Humdinger keeps the DSP.
+The streams belong to the signed `mob_audio_io` Hex plugin
+(`{:mob_audio_io, "~> 0.1"}`, locked to 0.1.0 and trusted with the shared
+release key in `mob.exs`); Humdinger keeps the DSP.
 `c_src/hum_audio.c` is a static NIF (`mob.exs` `:static_nifs`, `archs:
 [:all]`), `ERL_NIF_INIT(Elixir.Humdinger.Audio.Nif, …)`, plain C over
 erl_nif and the plugin's C ABI

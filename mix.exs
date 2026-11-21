@@ -35,10 +35,7 @@ defmodule Humdinger.MixProject do
       {:mob_background, "~> 0.3.0"},
       # The audio streams under the app's DSP (c_src/hum_audio.c): the
       # microphone, the piano's output, input devices and file decoding.
-      # Temporary: main's commit until 0.1.0 is on Hex, then
-      # {:mob_audio_io, "~> 0.1"} (see mob.exs for its trust entry).
-      {:mob_audio_io,
-       github: "GenericJam/mob_audio_io", ref: "faf1de89b969f5d43a0bf43ff2740008cd35039b"},
+      {:mob_audio_io, "~> 0.1"},
       {:mob_dev, "~> 0.7.31", only: :dev, runtime: false},
       # Resizes the icon master for `mix mob.icon` (scripts/render_icon.exs).
       {:image, "~> 0.54", only: :dev, runtime: false},

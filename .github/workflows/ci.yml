@@ -77,13 +77,18 @@ jobs:
           cc -O2 -o /tmp/spectrum_host c_src/test/spectrum_host.c -lm
           /tmp/spectrum_host
 
-      # hum_io.c includes the plugin's header from deps/ (MOB-541): fetch the
-      # commit mix.lock pins without the Elixir toolchain.
-      - name: Check out mob_audio_io at mix.lock's commit
-        run: |
-          ref=$(grep -o '"mob_audio_io": {:git, "[^"]*", "[0-9a-f]\{40\}"' mix.lock | grep -o '[0-9a-f]\{40\}')
-          git clone -q https://github.com/GenericJam/mob_audio_io deps/mob_audio_io
-          git -C deps/mob_audio_io checkout -q "$ref"
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: '1.20.0-otp-29'
+          otp-version: '29.1.2'
+          version-type: strict
+          install-hex: true
+          install-rebar: true
+
+      # hum_io.c includes the plugin's header from deps/ (MOB-541).
+      # Fetch the Hex package pinned by mix.lock, just like the Elixir job.
+      - name: Fetch locked dependencies for the processor header
+        run: mix deps.get --only test
 
       - name: Build and run hum_io_host (the mob_audio_io processors, ASan + UBSan)
         run: |

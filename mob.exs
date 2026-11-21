@@ -70,12 +70,9 @@ config :mob, :plugins, [
   :mob_audio_io
 ]
 
-# mob_secure_store and mob_audio_io aren't released yet, so their checkouts
-# carry no signature for the trust gate below. Each is a git dependency
-# pinned to a commit (mix.lock) of a first-party repo; once one is on Hex,
-# drop it from this list and add it to :trusted_plugins with the shared
-# release key like the others.
-config :mob, :acknowledge_unsafe_plugins, [:mob_secure_store, :mob_audio_io]
+# mob_secure_store remains an unsigned git dependency pinned in mix.lock.
+# Keep its explicit acknowledgement until its signed release is available.
+config :mob, :acknowledge_unsafe_plugins, [:mob_secure_store]
 
 # Trust gate for the first-party plugins. Each is signed in CI with the shared
 # mob release key; this is that key's public fingerprint. The build refuses an
@@ -86,6 +83,7 @@ config :mob, :acknowledge_unsafe_plugins, [:mob_secure_store, :mob_audio_io]
 # `mix mob.plugin.trust <name>`, or `config :mob, :acknowledge_unsafe_plugins,
 # [...]` for an unsigned prototype.
 config :mob, :trusted_plugins, %{
+  mob_audio_io: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=",
   mob_midi: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=",
   mob_print: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=",
   mob_background: "ed25519:nc56w+1Kx0gIt/4EkHxnMZCKHMzp4+S5kS/HoSzEZkg=",
