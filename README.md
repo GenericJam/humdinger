@@ -26,15 +26,6 @@ Humdinger is a [Mob](https://hexdocs.pm/mob) mobile application (Elixir on the B
   - Local SQLite persistence via `ecto_sqlite3` (`Humdinger.Repo`, migrations in [`priv/repo/migrations/`](priv/repo/migrations/)) plus crash-safe draft recovery (`Humdinger.PhraseDraft`).
   - Export, share, and print Standard MIDI (`.mid`), MusicXML 4.0 (`.musicxml`), and engraved PDF sheet music (`Humdinger.Export`, `Humdinger.Smf`, `Humdinger.MusicXml`, `Humdinger.Export.Pdf`): file sharing via `Mob.Share.file/3` (`{:mob_share, :error, reason}` setup errors) and PDF printing via `MobPrint.pdf/2` (`mob_print`).
 
-### Audio dependency release update
-
-The audio migration now uses the signed Hex `mob_audio_io` 0.1.0 package
-(`~> 0.1`, pinned in `mix.lock`), trusted by the shared release key in
-`mob.exs` without an unsafe exemption. `mob_secure_store` retains its
-separate unsafe acknowledgement. The migration PR remains draft pending
-its Android device acceptance checks; this dependency cutover changes no
-audio behavior and does not expand iOS delivery.
-
 ## Toolchain & dev-only setup
 
 Pinned versions in [`.tool-versions`](.tool-versions):
