@@ -13,7 +13,8 @@ config :mob, :repo, Humdinger.Repo
 # size, keep-awake, permissions) there.
 config :humdinger, device_calls: config_env() != :test
 
-# The microphone: the hum_audio NIF on the phone, a scripted fake in host tests.
+# The audio engine: Humdinger.Audio.Native (mob_audio_io's streams and the
+# hum_audio NIF) on the phone, a scripted fake in host tests.
 config :humdinger,
   audio: if(config_env() == :test, do: Humdinger.Audio.Fake, else: Humdinger.Audio.Native),
   # File sharing: Mob.Share on the phone, a reporting double in host tests.
@@ -37,4 +38,9 @@ if config_env() == :test do
   # Host tests keep secure-store values (the FMutate pairing) in a scratch
   # directory instead of the developer's data dir.
   config :mob_secure_store, dir: Path.join(System.tmp_dir!(), "humdinger_test_secure_store")
+
+  # Humdinger.Audio.Native's own tests run it on the host: the plugin's
+  # fake streams and a double of the hum_audio NIF.
+  config :mob_audio_io, backend: MobAudioIo.Fake
+  config :humdinger, audio_nif: Humdinger.Test.FakeAudioNif
 end

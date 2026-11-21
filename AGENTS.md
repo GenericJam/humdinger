@@ -125,8 +125,10 @@ foreground. Screens subscribe for display and send commands.
 
 ### Contracts between parts
 
-**Audio** (`Humdinger.Audio.Native`, `Nif`, `Fake`; `c_src/hum_audio.c`,
-`c_src/pitch_yin.c`, `c_src/spectrum.c`): see `Humdinger.Audio`. One
+**Audio** (`Humdinger.Audio.Native` + `Native.Mic`, `Native.Piano`,
+`Native.Analyses`, `Nif`, `Fake`; `mob_audio_io` underneath;
+`c_src/hum_audio.c`, `c_src/hum_io.c`, `c_src/pitch_yin.c`,
+`c_src/spectrum.c`): see `Humdinger.Audio` and "The audio engine". One
 listener at a time; a new `listen/2` replaces the old one (its ref goes
 stale); listening stops when the owner exits. `listen/2` answers
 `{:error, :permission}` until the screen has asked for the microphone
@@ -794,17 +796,51 @@ left with no owner).
 
 ## The audio engine
 
-`c_src/hum_audio.c` is a static NIF (`mob.exs` `:static_nifs`, Android
-only), `ERL_NIF_INIT(Elixir.Humdinger.Audio.Nif, …)`. It includes
-`pitch_yin.c` and `spectrum.c`, which are plain C and build on the Mac.
+The streams belong to the signed `mob_audio_io` Hex plugin
+(`{:mob_audio_io, "~> 0.1"}`, locked to 0.1.0 and trusted with the shared
+release key in `mob.exs`); Humdinger keeps the DSP.
+`c_src/hum_audio.c` is a static NIF (`mob.exs` `:static_nifs`, `archs:
+[:all]`), `ERL_NIF_INIT(Elixir.Humdinger.Audio.Nif, …)`, plain C over
+erl_nif and the plugin's C ABI
+(`deps/mob_audio_io/priv/include/mob_audio_io.h`, included by a relative
+path until MOB-541): no AAudio, JNI or Android log in the app any more. It
+includes `pitch_yin.c`, `spectrum.c` and `hum_io.c` (which includes
+`piano.c`); `hum_io.c` holds the two processors it registers at load with
+`mai_register`, plain C that builds on the Mac:
 
-- **Microphone.** AAudio input, low-latency performance mode, shared, mono
-  float at the device's rate (48 kHz everywhere so far), VOICE_PERFORMANCE
-  preset (VOICE_RECOGNITION before Android 10, where it doesn't exist), into
-  a lock-free ring. Opened with dlopen (the app links android-24 headers).
-  `RECORD_AUDIO` is checked over JNI first (`{:error, :permission}`). Why
-  that preset, measured with `realtime_check.exs PRESETS=1` (room level,
-  then a 220 Hz tone from the Mac at `afplay -v 8`, 5 s each):
+- `"hum_mic"` (capture): copies each block (folded to mono) into a
+  lock-free ring and notes when it arrived; atomics and the ring only.
+  `stream_event(STARTED)` gives the rate; a reopen starts a new stretch of
+  the ring (the listen thread starts over on it, so readings' `t` skips the
+  gap rather than drift).
+- `"hum_piano"` (render): `piano.c` straight into the output buffer
+  (allocation-free; the synth is built at STARTED on a normal thread at the
+  stream's rate) and an anchor (synth frame, `mai_time.present_ns`) per
+  block, from which `Nif.piano_position/0` gives the playhead and the end.
+
+`Humdinger.Audio.Native` owns the Elixir side: `Native.Mic` and
+`Native.Piano` are one process per stream (the stream's owner for
+`MobAudioIo.open/3`), which translate the plugin's messages into the
+contract's (`:device_lost` → `{:error, :device_lost}` /
+`{:piano_error, :device_lost}`, a failed reopen → `:input_error` /
+`:output_error`), close the stream when the Humdinger owner exits, and
+poll the piano's position (34 ms, sooner near the end). `listen/2` and
+`play_piano/2` run under a `:global.trans` lock so the old stream closes
+before the NIF re-arms (the NIF refuses with `:microphone_unavailable` /
+`:busy` while a stream on its processor is open). `inputs/0` is
+`MobAudioIo.devices(:input)` in the contract's kinds. Host tests run all
+of it on `MobAudioIo.Fake` and a NIF double (`Humdinger.Test.FakeAudioNif`,
+`config :humdinger, :audio_nif`): `test/humdinger/audio/native_test.exs`.
+
+- **Microphone.** `MobAudioIo.open(relay, :input, processor: "hum_mic",
+  preset: :performance, input_channels: 1)`: AAudio input, low-latency
+  performance mode, shared, mono float at the device's rate (48 kHz
+  everywhere so far), VOICE_PERFORMANCE (the plugin falls back to
+  VOICE_RECOGNITION before Android 10). The plugin checks `RECORD_AUDIO`
+  (`{:error, :permission}`); a chosen input it won't open falls back to the
+  default, as before. Why that preset, measured with `realtime_check.exs
+  PRESETS=1` on the engine before the plugin (room level, then a 220 Hz
+  tone from the Mac at `afplay -v 8`, 5 s each):
 
   | phone | preset | burst | room | tone (± spread) |
   |---|---|---|---|---|
@@ -824,9 +860,12 @@ only), `ERL_NIF_INIT(Elixir.Humdinger.Audio.Nif, …)`. It includes
   never worse: it keeps the moto g 2021's voice 11 dB further above its
   room than VOICE_RECOGNITION, and gets the 2024 phone's low-latency path
   (5 ms bursts instead of 20 ms). UNPROCESSED is optional per device and
-  hears the 2024 phone's voice 22 dB quieter. `Nif.set_input_preset/1`
-  exists only for such measurements.
-- **Readings.** A listen thread (priority −16, Android's audio priority)
+  hears the 2024 phone's voice 22 dB quieter. `Native.set_input_preset/1`
+  (`:voice_performance` → the plugin's `:performance`, `:voice_recognition`
+  → `:default`, `:unprocessed`, `:generic`) exists only for such
+  measurements.
+- **Readings.** A listen thread (priority −16, Android's audio priority;
+  user-interactive QoS on iOS)
   runs YIN every 255 samples (5.3 ms) over a 42 ms window decimated to
   16 kHz, range 60–1600 Hz (a hummed bass to a whistle): threshold 0.15,
   pitched when the dip is ≤ 0.35, nothing below −70 dBFS. The difference
@@ -856,23 +895,29 @@ only), `ERL_NIF_INIT(Elixir.Humdinger.Audio.Nif, …)`. It includes
   crashes), hence scalar partial sums on 32-bit ARM. The same template
   flaw affects every app built from mob_new's `build.zig` that does float
   math in C on armeabi-v7a.
-- **Files.** `analyze_file/3`: AMediaExtractor + AMediaCodec on a thread
-  per owner (m4a/AAC, MP3, WAV, Ogg Opus all checked on the moto g),
-  mixed to mono and analysed as it decodes (only the readings are kept):
-  readings every 10 ms, a peak byte per 50 ms. A container longer than
-  10 min is refused before decoding (`:too_long`). `Mob.Files.pick/2` hands
-  over a copied local path (never a `content://` URI), so paths are all it
-  takes. A job ends early and sends nothing on `cancel_analysis/1`, on a
-  newer analysis by the same owner (one per owner), or when the owner
-  exits (monitored); the decoder checks its cancel flag every buffer. Each
-  owner has one thread: a newer analysis while the owner's previous one is
-  still stopping waits for that thread, which then runs it, and an even
-  newer one replaces the waiting one, so a burst of replacements never
-  piles up decoders. While two other owners have a thread running
-  (cancelled ones too, until they notice) a third owner gets `{:error,
-  :busy}`. `info/0`'s `analyses` counts the running threads. The Import
-  screen cancels its analysis on Back, on `terminate/2` and before another
-  file.
+- **Files.** `analyze_file/3` (`Native.Analyses`): a job process streams
+  the file with `MobAudioIo.decode_stream/3` (mono, at the file's rate,
+  4096-frame chunks, at most 4 in flight: AMediaExtractor + AMediaCodec on
+  Android; m4a/AAC, MP3, WAV, Ogg Opus were checked on the moto g with the
+  old engine) and pushes each chunk into the NIF's analysis
+  (`analysis_new/push/finish`; only the readings are kept): readings every
+  10 ms, a peak byte per 50 ms. `max_ms: 600_500` refuses a container
+  longer than 10 min before decoding (`:too_long`), or as soon as the
+  decoded frames pass it. `Mob.Files.pick/2` hands over a copied local path
+  (never a `content://` URI), so paths are all it takes. A job ends early
+  and sends nothing on `cancel_analysis/1`, on a newer analysis by the same
+  owner (one per owner), or when the owner exits (monitored): the server
+  sends the job `:cancel`, which it takes ahead of queued chunks and
+  answers with `MobAudioIo.decode_cancel/1` (within one codec buffer). The
+  result is sent from the server, so nothing arrives once
+  `cancel_analysis/1` has returned. Each owner has one job: a newer
+  analysis while the owner's previous one is still stopping waits for it,
+  and an even newer one replaces the waiting one, so a burst of
+  replacements never piles up decoders. While two other owners have a job
+  running (cancelled ones too, until they end) a third owner gets
+  `{:error, :busy}`. `info/0`'s `analyses` counts the running jobs. The
+  Import screen cancels its analysis on Back, on `terminate/2` and before
+  another file.
   The generated Android bridge copies picker results into random cache
   filenames, obtains their original names from `OpenableColumns.DISPLAY_NAME`,
   and serializes metadata with `JSONObject`. A document's `lastPathSegment`
@@ -893,11 +938,15 @@ only), `ERL_NIF_INIT(Elixir.Humdinger.Audio.Nif, …)`. It includes
   −90 dB. A backgrounded app can't open a new microphone stream either
   (`listen/2` → `:microphone_unavailable`) unless the service runs; with it,
   `listen/2` works from the background.
-- **Locks.** `lock` (control path: open/start/stop/close, join) → `send_lock`
-  (the listener's owner and ref). A stream is closed only once it is quiet;
-  one that won't stop is left open, harmless.
+- **Locks.** `lock` (listen/stop, joining the listen thread) → `send_lock`
+  (the listener's owner and ref); the piano's own lock serialises
+  `piano_prepare/2` against its STARTED/STOPPED events. The audio thread
+  takes none. Opening, stopping, reopening and closing streams are the
+  plugin's.
 
-Measured on the moto g power 2021 (Android 11), `scripts/audio_check.exs`:
+Measured on the engine before the plugin (its own AAudio code; re-measure
+on the plugin when sound is allowed, see the PR), on the moto g power 2021
+(Android 11), `scripts/audio_check.exs`:
 188 readings/s, 1.85 per message, message interval p50 9.8 ms; from the
 newest analysed sample's arrival to the owner's mailbox p50 3–5 ms, p95
 8–11 ms (the higher with the spectrum on), max ≤ 18 ms; spectrum 29.9
@@ -913,7 +962,7 @@ start at the callback that delivered the samples (192 frames = 4 ms
 bursts).
 
 Keeping up, `scripts/realtime_check.exs` (5 s each; "lag" is `info/0`'s:
-from the input callback that delivered a batch's newest sample to the send,
+from the capture callback that delivered a batch's newest sample to the send,
 the stream's burst comes before it; "reading" and "column" are what one
 costs on the listen thread, which a phone at rest runs at a low clock):
 
@@ -944,11 +993,24 @@ How to check it:
 - Host, spectrum: `cc -O2 -o /tmp/spectrum_host c_src/test/spectrum_host.c
   -lm && /tmp/spectrum_host` (harmonics 1–4 of tones 98–659 Hz peak in their
   bins with valleys between; a −50 dB sine reads ≈128).
+- Host, the processors: `cc -std=c11 -O1 -g -Wall -Wextra -Werror
+  -fsanitize=address,undefined -o /tmp/hum_io_host c_src/test/hum_io_host.c
+  -lm -lpthread && /tmp/hum_io_host priv/piano` (the mic ring and its
+  stretches, stereo folding, the piano's build at STARTED, render, playhead,
+  end, stereo, the estimate without `present_ns`, reopen at the same and a
+  new rate; CI's `c-host` job runs it).
 - The C for Android: `$NDK/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang
   --target=aarch64-linux-android28 --sysroot=$NDK/toolchains/llvm/prebuilt/darwin-x86_64/sysroot
   -I ~/.mob/cache/otp-android-*/erts-*/include -DSTATIC_ERLANG_NIF_LIBNAME=hum_audio
-  -Wall -Wextra -fsyntax-only c_src/hum_audio.c` (also `armv7a-linux-androideabi28`,
-  `x86_64-linux-android28`).
+  -std=c11 -Wall -Wextra -Werror -c -o /tmp/hum_audio.o c_src/hum_audio.c` (also
+  `armv7a-linux-androideabi28` with `-mfloat-abi=softfp -mfpu=neon`,
+  `x86_64-linux-android28`); for iOS, `xcrun --sdk iphoneos clang -arch arm64
+  -mios-version-min=15.0 -I ~/.mob/cache/otp-ios-device-*/erts-*/include` and
+  the same flags. The whole native build without a device:
+  `MobDev.NativeBuild.prepare_plugin_build_state!()` then
+  `MobDev.NativeBuild.build_android_native(cfg)` (cfg: `mob.exs`'s
+  `:mob_dev`) or `MobDev.NativeBuild.build_ios(cfg, [])` (simulator, links,
+  installs nowhere).
 - Device: after `mix mob.deploy --native --android --device <serial>` and
   `mix mob.connect --no-iex --android-only --device <serial>`,
   `adb shell pm grant com.genericjam.humdinger android.permission.RECORD_AUDIO`,
@@ -1112,10 +1174,12 @@ speaker's actual position, ≤ 30 Hz), then `:finished` or
 `{:player, :error, tag, reason}`. Before acquiring, the player resolves and
 monitors the exact Output pid (`{:error, :output_down}` if there is none);
 Output dying, preemption, Stop, replay and the owner dying all cancel the
-native preview before the session is released. `cancel_piano/1` returns
-`{:error, :stream_stuck}` when AAudio won't stop the stream: the player
-reports it (Stop and Play return the error, the screen shows a notice) and
-the next play refuses rather than share the orphaned stream. Review's
+native preview before the session is released. The contract lets
+`cancel_piano/1` return `{:error, :stream_stuck}` (a stream that won't
+stop): the player reports it (Stop and Play return the error, the screen
+shows a notice) and the next play refuses rather than share the orphaned
+stream. `Native` no longer produces it (`MobAudioIo.close/1` returns once
+no callback can run); `Fake` still can. Review's
 highlight follows the played timeline (`note_index`), not the notation's
 own rounding.
 

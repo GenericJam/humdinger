@@ -3,6 +3,7 @@ defmodule Humdinger.App do
 
   use Mob.App
 
+  alias Humdinger.Audio.Native.Analyses
   alias Humdinger.FMutate
 
   # The development node mob.connect attaches to (Mob.Dist, Android).
@@ -47,6 +48,10 @@ defmodule Humdinger.App do
     # FMutate, the Humdinger port, USB and Bluetooth MIDI), then the Engine
     # (starts off; Live calls listen/0), supervised together.
     {:ok, _} = Humdinger.Realtime.start_link()
+
+    # File analysis (the Import screen): decodes and analyses off the
+    # screens, one job per owner, two owners at once.
+    {:ok, _} = Analyses.start_link()
 
     # Humdinger is held in portrait, like a phone normally is.
     Mob.Device.lock_orientation(:portrait)

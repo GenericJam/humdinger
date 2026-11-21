@@ -33,6 +33,9 @@ defmodule Humdinger.MixProject do
       {:mob, "~> 0.9.31"},
       {:mob_print, "~> 0.1.0"},
       {:mob_background, "~> 0.3.0"},
+      # The audio streams under the app's DSP (c_src/hum_audio.c): the
+      # microphone, the piano's output, input devices and file decoding.
+      {:mob_audio_io, "~> 0.1"},
       {:mob_dev, "~> 0.7.31", only: :dev, runtime: false},
       # Resizes the icon master for `mix mob.icon` (scripts/render_icon.exs).
       {:image, "~> 0.54", only: :dev, runtime: false},

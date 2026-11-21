@@ -13,8 +13,8 @@
  * cents with the interpolation.
  *
  * Ported from Choir Coach (~/code/choir_coach/c_src/pitch_yin.c). Pure C
- * with no platform dependencies: the Android engine includes it, and
- * c_src/test/pitch_host.c builds it on the Mac.
+ * with no platform dependencies: c_src/hum_audio.c includes it (live and
+ * file analysis), and c_src/test/pitch_host.c builds it on the Mac.
  */
 
 #include <math.h>

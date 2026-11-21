@@ -8,10 +8,10 @@ Humdinger is a [Mob](https://hexdocs.pm/mob) mobile application (Elixir on the B
 
 ## Current features & platform support
 
-**Android-first** (`com.genericjam.humdinger`, `minSdk 28`, `compileSdk 35`, `targetSdk 35`, ABIs `arm64-v8a`, `armeabi-v7a`, `x86_64`, NDK `27.2.12479018`). Template files exist under [`ios/`](ios/), and pure Elixir/view code stays platform-neutral where cheap, but iOS is a later port: `mob.exs` registers `:hum_audio` for `archs: [:android]` only.
+**Android-first** (`com.genericjam.humdinger`, `minSdk 28`, `compileSdk 35`, `targetSdk 35`, ABIs `arm64-v8a`, `armeabi-v7a`, `x86_64`, NDK `27.2.12479018`). Template files exist under [`ios/`](ios/), and pure Elixir/view code stays platform-neutral where cheap, but iOS is a later port. The audio DSP (`:hum_audio`, `archs: [:all]`) is plain C over [`mob_audio_io`](https://github.com/GenericJam/mob_audio_io) and already builds and links for the iOS simulator; nothing has been run on an iPhone yet.
 
-- **Real-time voice-to-MIDI** (`c_src/hum_audio.c`, `c_src/pitch_yin.c`, `c_src/spectrum.c`, `Humdinger.Engine`, `Humdinger.Tracker`):
-  - Live AAudio pitch detection (YIN, 60–1600 Hz, ~5.3 ms hop) and 128-bin log-spaced spectrum analysis.
+- **Real-time voice-to-MIDI** (`c_src/hum_audio.c`, `c_src/hum_io.c`, `c_src/pitch_yin.c`, `c_src/spectrum.c`, `Humdinger.Audio.Native`, `Humdinger.Engine`, `Humdinger.Tracker`):
+  - Live pitch detection (YIN, 60–1600 Hz, ~5.3 ms hop) and 128-bin log-spaced spectrum analysis, as processors on the [`mob_audio_io`](https://github.com/GenericJam/mob_audio_io) plugin's microphone stream (AAudio on Android).
   - Scale (snap with hysteresis) and Open (pitch-bend tracking) modes, configurable sensitivity gate, response time (`:fast` / `:balanced` / `:steady`), pitch-change mode (`:legato` / `:new_note`), stop behaviour (`:hold` / `:note_off`), velocity, CC 11, CC 1 vibrato, octave, transpose, and MIDI channel.
   - Portrait UI (`Humdinger.LiveScreen`, `Humdinger.SettingsSheet`, `Humdinger.SpectrumScreen`, `Humdinger.FirstRunScreen`) with the mascot **Mimi** (`Humdinger.Mimi`) and canvas views (`Humdinger.Views.*`).
   - Android foreground microphone service via `mob_background` (`MobBackground` in `:microphone` mode, `Humdinger.Engine.Notice`, `config :humdinger, :background`) with ongoing notification controls (Pause, Resume, Record, Stop rec, Stop; delivered as `{:mob_background, {:action, id}}`) so listening continues when another app is in front.
@@ -20,9 +20,9 @@ Humdinger is a [Mob](https://hexdocs.pm/mob) mobile application (Elixir on the B
   - **Humdinger virtual MIDI port** (`mob_midi` `~> 0.3.0`, `io.mob.midi.MobMidiDeviceService`): `"Humdinger"` output port declared via `mix mob_midi.gen.virtual_device` (`res/xml/mob_midi_device.xml`) that other Android apps can open.
   - **USB-MIDI & Bluetooth-MIDI**: device enumeration, hot-plug, BLE-MIDI central scan/connect, and queued output via `mob_midi`.
 - **Phrases, review, audio import & export**:
-  - Record live phrases or import audio files up to 10 minutes (`Humdinger.ImportScreen`, `AMediaExtractor` + `AMediaCodec` decoding, `Humdinger.Transcribe`, `Humdinger.Tempo`).
+  - Record live phrases or import audio files up to 10 minutes (`Humdinger.ImportScreen`, decoding with `MobAudioIo.decode_stream/3`, `Humdinger.Transcribe`, `Humdinger.Tempo`).
   - Browse and manage saved phrases (`Humdinger.PhrasesScreen`), inspect/edit on Piano roll or Staff tabs (`Humdinger.PhraseScreen`), and play phrases out to configured MIDI destinations (`Humdinger.Player`).
-  - Preview a phrase on the phone as sampled piano (`Player` `mode: :piano`, `c_src/piano.c` mixed into an AAudio output stream in `c_src/hum_audio.c`), with a playhead and the sounding note highlighted on the roll and staff. Samples (`priv/piano/`, prepared by `scripts/prepare_piano.exs`) come from the University of Iowa Musical Instrument Samples; see [`priv/piano/LICENSE`](priv/piano/LICENSE).
+  - Preview a phrase on the phone as sampled piano (`Player` `mode: :piano`, `c_src/piano.c` rendered by the `"hum_piano"` processor of `c_src/hum_io.c` into a `mob_audio_io` output stream), with a playhead and the sounding note highlighted on the roll and staff. Samples (`priv/piano/`, prepared by `scripts/prepare_piano.exs`) come from the University of Iowa Musical Instrument Samples; see [`priv/piano/LICENSE`](priv/piano/LICENSE).
   - Local SQLite persistence via `ecto_sqlite3` (`Humdinger.Repo`, migrations in [`priv/repo/migrations/`](priv/repo/migrations/)) plus crash-safe draft recovery (`Humdinger.PhraseDraft`).
   - Export, share, and print Standard MIDI (`.mid`), MusicXML 4.0 (`.musicxml`), and engraved PDF sheet music (`Humdinger.Export`, `Humdinger.Smf`, `Humdinger.MusicXml`, `Humdinger.Export.Pdf`): file sharing via `Mob.Share.file/3` (`{:mob_share, :error, reason}` setup errors) and PDF printing via `MobPrint.pdf/2` (`mob_print`).
 
@@ -144,7 +144,7 @@ Publish it as `Humdinger-<version>.apk` plus the same file as `Humdinger.apk` (t
 - [`design/boards/`](design/boards/) & [`design/shots/`](design/shots/) — Claude Design HTML boards and rendered 390×844 reference artboards (`mimi-component.html`, `00-identity.html`–`12-import_audio.html`)
 - [`design/fmutate/protocol.md`](design/fmutate/protocol.md) & [`design/fmutate/HANDOFF.md`](design/fmutate/HANDOFF.md) — FMutate pairing, TLS distribution, and MIDI protocol specification
 - [`design/choir-coach-handoff.md`](design/choir-coach-handoff.md) — audio engine and pitch detector design notes ported from Choir Coach
-- [`c_src/`](c_src/) & [`c_src/test/`](c_src/test/) — native AAudio/YIN/spectrum/file-analysis C sources and host test harnesses
+- [`c_src/`](c_src/) & [`c_src/test/`](c_src/test/) — the audio DSP (YIN, spectrum, file analysis, sampled piano) as `mob_audio_io` processors, and host test harnesses
 - [`priv/repo/migrations/`](priv/repo/migrations/) — SQLite schema migrations (`20260507000001_create_mob_screen_states.exs`, `20261112000001_create_phrases.exs`, `20261114000001_add_phrases_format.exs`)
 
 ## Licence

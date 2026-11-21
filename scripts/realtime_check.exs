@@ -1,9 +1,10 @@
 # Does the microphone engine keep up on this phone? Over Erlang distribution:
 # listens with the spectrum off, then on, and reports the reading rate, the
 # batch sizes, the engine's lag (Humdinger.Audio.Native.info/0: from the
-# input callback that delivered a batch's newest sample to the send; the
+# capture callback that delivered a batch's newest sample to the send; the
 # stream's burst comes before it), what a reading and a spectrum column
-# cost, and any audio dropped to catch up. PRESETS=1 also compares the input presets on a steady
+# cost, any audio dropped to catch up, and the stream's own figures from
+# mob_audio_io (burst, buffer, xruns, worst callback and gap). PRESETS=1 also compares the input presets on a steady
 # tone from the Mac's speaker (level mean and spread over 5 s, pitch).
 #
 #   mix mob.connect --no-iex --android-only --device <serial>
@@ -111,13 +112,13 @@ print = fn label, r ->
 end
 
 preset = String.to_atom(System.get_env("PRESET", "voice_performance"))
-:ok = :rpc.call(node, Humdinger.Audio.Nif, :set_input_preset, [preset])
+:ok = :rpc.call(node, Humdinger.Audio.Native, :set_input_preset, [preset])
 {_, off} = run.(spectrum: false)
 i = off.info
 
 IO.puts(
-  "stream: #{i.rate} Hz, burst #{i.burst}, buffer #{i.buffer}, low latency #{i.low_latency}, " <>
-    "preset #{i.preset}, xruns #{i.xruns}"
+  "stream: #{i.rate} Hz, burst #{i.burst}, buffer #{i.buffer}, preset #{i.preset}, xruns #{i.xruns}, " <>
+    "callback max #{fmt.(i[:cb_max_us])} µs, gap max #{fmt.(i[:gap_max_us])} µs"
 )
 
 print.("spectrum off", off)
@@ -137,7 +138,7 @@ if System.get_env("PRESETS") == "1" do
   tone = fn -> Task.start(fn -> System.cmd("afplay", ["-v", "8", path]) end) end
 
   for preset <- [:voice_recognition, :unprocessed, :voice_performance] do
-    :ok = :rpc.call(node, Humdinger.Audio.Nif, :set_input_preset, [preset])
+    :ok = :rpc.call(node, Humdinger.Audio.Native, :set_input_preset, [preset])
     {quiet, _} = run.(spectrum: false)
     room = quiet |> Enum.map(& &1.db) |> pct.(0.5)
     {readings, r} = run.(spectrum: false, tone: tone)
@@ -150,7 +151,7 @@ if System.get_env("PRESETS") == "1" do
 
     IO.puts(
       "preset #{String.pad_trailing(to_string(preset), 18)} (stream: #{r.info.preset}, burst #{r.info.burst}, " <>
-        "low latency #{r.info.low_latency}, lag p95 #{fmt.(r.info.lag_p95_ms)} ms): " <>
+        "lag p95 #{fmt.(r.info.lag_p95_ms)} ms): " <>
         "room #{fmt.(room)} dBFS, #{hz} Hz tone at #{fmt.(mean)} dBFS ± #{fmt.(sd)}, " <>
         "level p5–p95 #{fmt.(pct.(dbs, 0.05))}…#{fmt.(pct.(dbs, 0.95))}, " <>
         "pitched #{length(pitched)}/#{length(steady)}, median #{fmt.(pct.(pitched, 0.5))} ¢"
@@ -160,4 +161,4 @@ if System.get_env("PRESETS") == "1" do
   end
 end
 
-:ok = :rpc.call(node, Humdinger.Audio.Nif, :set_input_preset, [:voice_performance])
+:ok = :rpc.call(node, Humdinger.Audio.Native, :set_input_preset, [:voice_performance])
