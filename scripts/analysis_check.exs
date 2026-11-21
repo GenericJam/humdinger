@@ -2,7 +2,7 @@
 # phone, over Erlang distribution: cancel_analysis/1, a second analysis by the
 # same owner, the owner's death, the two-owner cap, and the Import screen
 # (another file, Back, pop). Each check reads the engine's running count
-# (`Humdinger.Audio.Native.info().analyses`), the app's CPU time and logcat.
+# (`Humdinger.Audio.Native.info().analyses`) and the app's CPU time.
 #
 #   adb -s <serial> push long.m4a /data/local/tmp/hum_long_ok.m4a
 #   adb -s <serial> shell run-as com.genericjam.humdinger cp /data/local/tmp/hum_long_ok.m4a files/
@@ -24,7 +24,6 @@ true = Node.connect(node)
 file = System.get_env("FILE", "/data/data/com.genericjam.humdinger/files/hum_long_ok.m4a")
 adb = fn args -> elem(System.cmd("adb", ["-s", serial | args], stderr_to_stdout: true), 0) end
 app_pid = String.trim(adb.(~w(shell pidof com.genericjam.humdinger)))
-since = String.trim(adb.(["shell", "date '+%m-%d %H:%M:%S.000'"]))
 results = :ets.new(:results, [:ordered_set, :public])
 
 check = fn name, ok? ->
@@ -210,12 +209,6 @@ Process.sleep(1_000)
 check.("Import again: one running", running.() == 1)
 Mob.Test.pop(node)
 check.("Import: popping the screen cancels it", wait_idle.())
-
-log = adb.(["shell", "logcat -d -T '#{since}' -s hum_audio"])
-cancelled = log |> String.split("\n") |> Enum.count(&String.contains?(&1, "stopped (cancelled)"))
-# Informational: Android's logd may prune an app's repeated lines ("chatty
-# ... expire N lines"); the running count above is the check.
-IO.puts("     logcat: #{cancelled} \"stopped (cancelled)\" lines kept")
 
 check.(
   "app never restarted",

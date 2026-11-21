@@ -8,7 +8,8 @@
          Normal (install-time) permission; no runtime request needed. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- Microphone: the hum_audio engine (c_src/hum_audio.c) and the
+    <!-- Microphone: mob_audio_io's input stream (under c_src/hum_audio.c's
+         "hum_mic" processor; the plugin declares it too) and the
          mob_background :microphone foreground service. Screens ask for it
          with Mob.Permissions.request(socket, :microphone). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />

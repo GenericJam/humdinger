@@ -2,8 +2,9 @@ defmodule Humdinger.Audio do
   @moduledoc """
   The audio engine contract: the microphone's pitch, level and spectrum, and
   offline analysis of an audio file. `impl/0` is `Humdinger.Audio.Native`
-  on a phone (the `hum_audio` NIF, `c_src/hum_audio.c`) and
-  `Humdinger.Audio.Fake` in host tests (`config :humdinger, :audio`).
+  on a phone (`mob_audio_io`'s streams under the `hum_audio` NIF's DSP,
+  `c_src/hum_audio.c`) and `Humdinger.Audio.Fake` in host tests (`config
+  :humdinger, :audio`).
 
   Everything arrives as messages to the `owner` process, tagged with the
   reference the call returned:
@@ -47,8 +48,11 @@ defmodule Humdinger.Audio do
           readings: [reading()]
         }
 
-  @typedoc "A microphone. `kind`: `:builtin_mic`, `:wired_headset`, `:bluetooth`, `:usb` or `:other`."
-  @type input :: %{id: integer(), name: String.t(), kind: atom()}
+  @typedoc """
+  A microphone. `id`: an Android device id or an iOS port UID. `kind`:
+  `:builtin_mic`, `:wired_headset`, `:bluetooth`, `:usb` or `:other`.
+  """
+  @type input :: %{id: integer() | String.t(), name: String.t(), kind: atom()}
 
   @doc """
   Start the microphone, replacing whatever listened before (its reference
