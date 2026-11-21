@@ -38,7 +38,7 @@ defmodule Humdinger.MixProject do
       # Temporary: main's commit until 0.1.0 is on Hex, then
       # {:mob_audio_io, "~> 0.1"} (see mob.exs for its trust entry).
       {:mob_audio_io,
-       github: "GenericJam/mob_audio_io", ref: "ffe299795a79789730b8b51a199503f7d9743dd9"},
+       github: "GenericJam/mob_audio_io", ref: "faf1de89b969f5d43a0bf43ff2740008cd35039b"},
       {:mob_dev, "~> 0.7.31", only: :dev, runtime: false},
       # Resizes the icon master for `mix mob.icon` (scripts/render_icon.exs).
       {:image, "~> 0.54", only: :dev, runtime: false},

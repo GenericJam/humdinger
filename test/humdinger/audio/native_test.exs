@@ -206,7 +206,7 @@ defmodule Humdinger.Audio.NativeTest do
     end
 
     test "a cancelled analysis stops within a chunk, not at the end of the file", %{dir: dir} do
-      # Ten one-second chunks at 100 ms each: a full run takes a second.
+      # 118 chunks of 4096 frames at 100 ms each: a full run takes ~12 s.
       path = Path.join(dir, "long.wav")
       File.write!(path, wav(48_000, 480_000))
       Nif.set(:push_delay, 100)
@@ -218,6 +218,14 @@ defmodule Humdinger.Audio.NativeTest do
       wait_until(fn -> Analyses.running() == 0 end)
       assert System.monotonic_time(:millisecond) - t0 < 400
       refute_received {:hum_audio, ^ref, _}
+    end
+
+    test "a long file reaches the analysis in chunks, never whole", %{dir: dir} do
+      path = Path.join(dir, "long.wav")
+      File.write!(path, wav(48_000, 480_000))
+      {:ok, ref} = Native.analyze_file(self(), path, [])
+      assert_receive {:hum_audio, ^ref, {:analysis, %{duration_ms: 10_000}}}, 5000
+      assert Nif.largest_push() <= 4096 * 4
     end
 
     test "cancel_analysis: nothing arrives for the ref", %{path: path} do

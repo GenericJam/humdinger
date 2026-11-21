@@ -17,8 +17,8 @@
  *                     restarts on the newest audio rather than deliver late
  *                     readings.
  *   analysis          analysis_new/push/finish: YIN and a peak waveform over
- *                     decoded PCM (MobAudioIo.decode/2), pushed in chunks so
- *                     the caller can stop between them.
+ *                     a file's PCM, pushed chunk by chunk as
+ *                     MobAudioIo.decode_stream/3 delivers it.
  *   piano             piano_prepare/2 sets up a phrase for the next
  *                     "hum_piano" stream; piano_position/0 reads its playhead.
  *
@@ -492,8 +492,9 @@ static ERL_NIF_TERM nif_analysis_new(ErlNifEnv *env, int argc, const ERL_NIF_TER
 }
 
 /* analysis_push(Analysis, Pcm) -> ok | {error, alloc}. Pcm: mono 32-bit
- * floats in the machine's byte order, as MobAudioIo.decode/2 makes them.
- * A dirty CPU job: a second of 48 kHz audio is ~100 readings. */
+ * floats in the machine's byte order, as MobAudioIo.decode_stream/3's chunks
+ * come. A dirty CPU job (a 4096-frame chunk at 48 kHz is ~8 readings, but
+ * nothing caps a chunk's size). */
 static ERL_NIF_TERM nif_analysis_push(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[]) {
     (void)argc;
     analysis_res *r;

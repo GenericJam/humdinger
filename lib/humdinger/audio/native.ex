@@ -20,8 +20,8 @@ defmodule Humdinger.Audio.Native do
   listening with `{:error, :device_lost}`, and the owner's exit closes it.
 
   The piano preview is an output stream on `"hum_piano"`
-  (`Humdinger.Audio.Native.Piano`); file analysis decodes with
-  `MobAudioIo.decode/2` and analyses in the NIF
+  (`Humdinger.Audio.Native.Piano`); file analysis streams the file with
+  `MobAudioIo.decode_stream/3` into the NIF's analysis
   (`Humdinger.Audio.Native.Analyses`, started by `Humdinger.App`).
 
   The sensitivity gate is not here: a reading carries `hz` whenever the

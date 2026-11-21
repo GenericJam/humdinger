@@ -895,23 +895,29 @@ of it on `MobAudioIo.Fake` and a NIF double (`Humdinger.Test.FakeAudioNif`,
   crashes), hence scalar partial sums on 32-bit ARM. The same template
   flaw affects every app built from mob_new's `build.zig` that does float
   math in C on armeabi-v7a.
-- **Files.** `analyze_file/3`: AMediaExtractor + AMediaCodec on a thread
-  per owner (m4a/AAC, MP3, WAV, Ogg Opus all checked on the moto g),
-  mixed to mono and analysed as it decodes (only the readings are kept):
-  readings every 10 ms, a peak byte per 50 ms. A container longer than
-  10 min is refused before decoding (`:too_long`). `Mob.Files.pick/2` hands
-  over a copied local path (never a `content://` URI), so paths are all it
-  takes. A job ends early and sends nothing on `cancel_analysis/1`, on a
-  newer analysis by the same owner (one per owner), or when the owner
-  exits (monitored); the decoder checks its cancel flag every buffer. Each
-  owner has one thread: a newer analysis while the owner's previous one is
-  still stopping waits for that thread, which then runs it, and an even
-  newer one replaces the waiting one, so a burst of replacements never
-  piles up decoders. While two other owners have a thread running
-  (cancelled ones too, until they notice) a third owner gets `{:error,
-  :busy}`. `info/0`'s `analyses` counts the running threads. The Import
-  screen cancels its analysis on Back, on `terminate/2` and before another
-  file.
+- **Files.** `analyze_file/3` (`Native.Analyses`): a job process streams
+  the file with `MobAudioIo.decode_stream/3` (mono, at the file's rate,
+  4096-frame chunks, at most 4 in flight: AMediaExtractor + AMediaCodec on
+  Android; m4a/AAC, MP3, WAV, Ogg Opus were checked on the moto g with the
+  old engine) and pushes each chunk into the NIF's analysis
+  (`analysis_new/push/finish`; only the readings are kept): readings every
+  10 ms, a peak byte per 50 ms. `max_ms: 600_500` refuses a container
+  longer than 10 min before decoding (`:too_long`), or as soon as the
+  decoded frames pass it. `Mob.Files.pick/2` hands over a copied local path
+  (never a `content://` URI), so paths are all it takes. A job ends early
+  and sends nothing on `cancel_analysis/1`, on a newer analysis by the same
+  owner (one per owner), or when the owner exits (monitored): the server
+  sends the job `:cancel`, which it takes ahead of queued chunks and
+  answers with `MobAudioIo.decode_cancel/1` (within one codec buffer). The
+  result is sent from the server, so nothing arrives once
+  `cancel_analysis/1` has returned. Each owner has one job: a newer
+  analysis while the owner's previous one is still stopping waits for it,
+  and an even newer one replaces the waiting one, so a burst of
+  replacements never piles up decoders. While two other owners have a job
+  running (cancelled ones too, until they end) a third owner gets
+  `{:error, :busy}`. `info/0`'s `analyses` counts the running jobs. The
+  Import screen cancels its analysis on Back, on `terminate/2` and before
+  another file.
   The generated Android bridge copies picker results into random cache
   filenames, obtains their original names from `OpenableColumns.DISPLAY_NAME`,
   and serializes metadata with `JSONObject`. A document's `lastPathSegment`

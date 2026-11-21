@@ -20,7 +20,15 @@ defmodule Humdinger.Test.FakeAudioNif do
   State is global: `async: false` tests, `reset/0` in `setup`.
   """
 
-  @defaults %{calls: [], listener: nil, listen: :ok, prepare: :ok, positions: [], push_delay: 0}
+  @defaults %{
+    calls: [],
+    listener: nil,
+    listen: :ok,
+    prepare: :ok,
+    positions: [],
+    push_delay: 0,
+    largest_push: 0
+  }
 
   @doc "Back to no calls and the default answers."
   def reset, do: update(fn _ -> @defaults end)
@@ -74,8 +82,12 @@ defmodule Humdinger.Test.FakeAudioNif do
 
   def analysis_push(analysis, pcm) do
     Process.sleep(get(& &1.push_delay))
+    update(&%{&1 | largest_push: max(&1.largest_push, byte_size(pcm))})
     Agent.update(analysis, &%{&1 | frames: &1.frames + div(byte_size(pcm), 4)})
   end
+
+  @doc "The largest PCM chunk (bytes) an analysis was handed since `reset/0`."
+  def largest_push, do: get(& &1.largest_push)
 
   def analysis_finish(analysis) do
     %{rate: rate, frames: frames} = Agent.get(analysis, & &1)

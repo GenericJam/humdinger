@@ -20,7 +20,7 @@ Humdinger is a [Mob](https://hexdocs.pm/mob) mobile application (Elixir on the B
   - **Humdinger virtual MIDI port** (`mob_midi` `~> 0.3.0`, `io.mob.midi.MobMidiDeviceService`): `"Humdinger"` output port declared via `mix mob_midi.gen.virtual_device` (`res/xml/mob_midi_device.xml`) that other Android apps can open.
   - **USB-MIDI & Bluetooth-MIDI**: device enumeration, hot-plug, BLE-MIDI central scan/connect, and queued output via `mob_midi`.
 - **Phrases, review, audio import & export**:
-  - Record live phrases or import audio files up to 10 minutes (`Humdinger.ImportScreen`, decoding with `MobAudioIo.decode/2`, `Humdinger.Transcribe`, `Humdinger.Tempo`).
+  - Record live phrases or import audio files up to 10 minutes (`Humdinger.ImportScreen`, decoding with `MobAudioIo.decode_stream/3`, `Humdinger.Transcribe`, `Humdinger.Tempo`).
   - Browse and manage saved phrases (`Humdinger.PhrasesScreen`), inspect/edit on Piano roll or Staff tabs (`Humdinger.PhraseScreen`), and play phrases out to configured MIDI destinations (`Humdinger.Player`).
   - Preview a phrase on the phone as sampled piano (`Player` `mode: :piano`, `c_src/piano.c` rendered by the `"hum_piano"` processor of `c_src/hum_io.c` into a `mob_audio_io` output stream), with a playhead and the sounding note highlighted on the roll and staff. Samples (`priv/piano/`, prepared by `scripts/prepare_piano.exs`) come from the University of Iowa Musical Instrument Samples; see [`priv/piano/LICENSE`](priv/piano/LICENSE).
   - Local SQLite persistence via `ecto_sqlite3` (`Humdinger.Repo`, migrations in [`priv/repo/migrations/`](priv/repo/migrations/)) plus crash-safe draft recovery (`Humdinger.PhraseDraft`).
